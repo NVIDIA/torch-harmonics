@@ -59,9 +59,9 @@
 // The generic kernel below keeps one neighbour in flight at a time: address, load k,
 // warp reduce, softmax, load v, with every step depending on the one before. That is
 // the same structure attention_cuda_fwd.cu describes having replaced on the product
-// grids, and it measures the same way -- 1.6 TFLOP/s at HEALPix level 5 on GB300,
-// 0.02% of tensor-core peak and under 1% of HBM, so bound by neither arithmetic nor
-// bandwidth but by the latency of a dependency chain 102 neighbours long. The
+// grids, and it profiles the same way -- a negligible fraction of both tensor-core
+// peak and HBM, so bound by neither arithmetic nor bandwidth but by the latency of a
+// dependency chain as long as the neighbourhood. The
 // accumulator sitting in shared memory puts a read-modify-write inside that chain as
 // well, and q is re-read from global on every neighbour because the channel loop has
 // a runtime bound and cannot be hoisted.
@@ -140,7 +140,7 @@
 
 // Largest number of COMPUTE_T registers per lane the special kernel will hold for
 // the accumulator. 16 matches MAX_LOCAL_ARR_LEN in attention_cuda_fwd.cu, so with a
-// 32-lane BDIM_X it covers up to 512 channels per head; HEALDA's dit-5B runs 96.
+// 32-lane BDIM_X it covers up to 512 channels per head.
 #define MAX_LOCAL_ARR_LEN_RAGGED (16)
 
 namespace attention_kernels
@@ -380,15 +380,11 @@ namespace attention_kernels
                 // The two 64-bit multiplies per neighbour look like an obvious target:
                 // col advances by one and wraps at most once per arc, which is what
                 // the arc encoding is for, so they could be one add each with the
-                // multiply hoisted to the arc. Tried, and it loses. Carrying the
-                // running pointers costs registers -- NLOC=3 BFloat16 goes from 56 to
-                // 72 and occupancy from 56% to 44%, or 64 and 50% if the wrap targets
-                // are held instead, which makes fp32 spill. Measured at nside 64 the
-                // forward went 1.363 -> 1.522 ms in bf16 and 1.266 -> 1.430 in fp32,
-                // so the lost occupancy outweighs the saved integer work by about 12%.
-                //
-                // This is the same trade e9092eb found cancelling out, and it says the
-                // kernel is not short of issue slots so much as short of warps. The
+                // multiply hoisted to the arc. Tried, and it loses: carrying the
+                // running pointers costs enough registers to drop occupancy, and
+                // holding the wrap targets instead makes fp32 spill. The lost
+                // occupancy outweighs the saved integer work, which says the kernel is
+                // not short of issue slots so much as short of warps. The
                 // version that might still pay is splitting each arc at its seam into
                 // two runs, so the inner loop is a pure increment with no wrap test and
                 // no extra live pointers -- that needs the NB grouping to respect the

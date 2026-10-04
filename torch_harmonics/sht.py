@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import check
@@ -44,7 +44,7 @@ from torch_harmonics.utils import check
 class RealSHT(nn.Module):
     r"""
     Defines a module for computing the forward (real-valued) SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last two dimensions of the input.
 
     Given a real-valued signal :math:`f(\theta, \lambda)` sampled on the sphere,
@@ -110,6 +110,7 @@ class RealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -188,7 +189,7 @@ class RealSHT(nn.Module):
 class InverseRealSHT(nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials on the nodes of the given grid.
 
     Given complex spherical harmonic coefficients :math:`\hat{f}_l^m`, the inverse
     scalar SHT reconstructs the real-valued signal on the sphere via Legendre
@@ -254,14 +255,15 @@ class InverseRealSHT(nn.Module):
 
     Raises
     ------
-    ValueError
-        If the grid type is unknown
+    TypeError
+        If ``grid`` is not a :class:`~torch_harmonics.grid.RegularGridS2`.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -328,7 +330,7 @@ class InverseRealSHT(nn.Module):
 class RealVectorSHT(nn.Module):
     r"""
     Defines a module for computing the forward (real) vector SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last three dimensions of the input.
 
     Decomposes a tangential vector field
@@ -388,6 +390,7 @@ class RealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -482,7 +485,7 @@ class RealVectorSHT(nn.Module):
 class InverseRealVectorSHT(nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials on the nodes of the given grid.
 
     Given spheroidal and toroidal spectral coefficients :math:`\hat{s}_l^m` and
     :math:`\hat{t}_l^m`, reconstructs the tangential vector field on the sphere
@@ -547,6 +550,7 @@ class InverseRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()

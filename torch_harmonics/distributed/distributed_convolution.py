@@ -48,7 +48,7 @@ from torch_harmonics.disco.optimized.disco_optimized import (
     _maybe_kpack_psi,
     _split_csr_python_offsets,
 )
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.quadrature import effective_theta_cutoff
 from torch_harmonics.truncation import truncate_support
 
@@ -239,23 +239,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             Serial counterpart with full mathematical description and parameter
             documentation.
 
-    The azimuth direction is all-to-all: a channel swap so the sparse psi contraction
-    runs against the full ``nlon_in`` row, then back to channel-distributed. The polar
-    direction is chosen by ``polar_mode=``, which decides whether a rank computes only
-    the output latitudes it owns (borrowing a halo) or all of them (and reduce-scatters
-    the partial sums). That choice governs how the K-expanded intermediate scales, so it
-    is usually the one that decides whether a large model fits. The ``fused=`` flag is
-    orthogonal to it and mirrors the serial conv:
-
-      ``fused=False`` (default) — standard a2a: einsum after the
-        transpose-back; the K-expanded intermediate is saved for backward.
-
-      ``fused=True`` — reordered a2a: the weight einsum runs before the
-        collectives on the local azimuth channel shard, via the fused
-        contraction+einsum op that recomputes the K-expanded in backward
-        instead of saving it. K× lower activation memory and K× less
-        collective volume, at the cost of one extra contraction in
-        backward. CUDA + optimized kernels only.
+    Longitudes are handled by all-to-all transposes; latitudes are handled as
+    selected by ``polar_mode``. Of the options, ``polar_mode`` usually matters most
+    for memory, because it sets how the per-basis-function intermediate scales
+    with the number of polar ranks.
 
     Parameters
     ----------
@@ -284,37 +271,34 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     optimized_kernel : Optional[bool]
         Use the optimized CUDA contraction kernel. Required when ``fused=True``.
     fused : bool
-        Mirrors the serial conv. ``False`` (default): standard all-to-all
-        (the K-expanded intermediate is saved for backward). ``True``:
-        reordered all-to-all — the weight einsum runs before the collectives
-        on the local azimuth channel shard and the K-expanded is recomputed
-        in backward instead of saved, for K× lower activation memory and K×
-        less collective volume (CUDA + optimized kernels only).
+        As in the serial layer: if ``True``, the per-basis-function intermediate is
+        recomputed in the backward pass instead of stored, reducing activation memory
+        and communication volume by a factor of the kernel size at the cost of extra
+        compute. Requires CUDA and ``optimized_kernel=True``. By default ``False``.
     polar_mode : Optional[str]
         How the polar ranks obtain their output latitudes.
 
-        ``"halo-exchange"`` (default): each rank borrows the input rows its own output rows
-        reach into and computes them outright. The K-expanded intermediate is then
-        ``(B, C, K, nlat_out / polar_group_size, nlon_out)``, i.e. it shrinks as polar ranks
-        are added. Requires the filter support to reach no further than the neighbouring
-        rank; when it does not, construction raises and says so, rather than quietly
-        selecting the other mode and leaving the memory problem in place.
+        ``"halo-exchange"`` (default): each rank borrows the neighbouring input rows
+        it needs and computes only its own output latitudes, so the per-basis-function
+        intermediate is ``(B, C, K, nlat_out / polar_size, nlon_out)`` and shrinks as
+        polar ranks are added. The filter support must not extend past the neighbouring
+        rank; otherwise construction raises.
 
-        ``"reduce-scatter"``: every rank computes a partial sum over *all* output latitudes
-        and a reduce-scatter completes and splits it. No bound on the angular reach, so this
-        is the mode for cutoffs wide enough that a halo cannot serve them -- at the cost of an
-        intermediate that stays at the full ``nlat_out`` however many polar ranks are used.
+        ``"reduce-scatter"``: every rank computes partial sums over all output
+        latitudes, which a reduce-scatter completes. Works for any cutoff, but memory
+        does not shrink with the number of polar ranks.
 
     Returns
     -------
     torch.Tensor
-        Output tensor
+        Local output of shape ``(batch, out_channels, nlat_out_local, nlon_out_local)``.
 
     References
     ----------
     :cite:`Ocampo2023`
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,
@@ -646,6 +630,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     :cite:`Ocampo2023`
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,

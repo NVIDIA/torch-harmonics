@@ -23,6 +23,7 @@ tutorials/index
 maxdepth: 1
 caption: User guide
 ---
+guide/grids
 guide/spherical_harmonic_transforms
 guide/spectral_convolutions
 guide/disco_convolutions

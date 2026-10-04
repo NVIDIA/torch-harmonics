@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import check
@@ -53,7 +53,7 @@ from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, pol
 class DistributedRealSHT(nn.Module):
     """
     Distributed version of the forward (real-valued) SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last two dimensions of the input.
 
     **Distribution scheme.**
@@ -78,15 +78,10 @@ class DistributedRealSHT(nn.Module):
     The output has shape ``(B, C, lmax_local, mmax_local)`` with spectral modes
     partitioned in the same way as the spatial grid.
 
-    Keeping ``nlat`` distributed is what makes the precomputed Legendre weights
-    scale: they are partitioned as ``(mmax_local, lmax, nlat_local)``, so the
-    tensor is split across the full process grid rather than replicated over the
-    polar group.  The cost is that the quadrature sum is now accumulated across
-    ranks, so results are not bitwise identical to the serial transform.
-
-    If ``N < azimuth_group_size``, the leading axis is zero-padded before the
-    transposes and the padding is removed afterwards; since the transform is
-    linear this is exact.
+    The precomputed Legendre weights are split across the full process grid rather
+    than replicated. Because the quadrature sum is accumulated across ranks, results
+    are not bitwise identical to the serial transform. A leading axis ``N`` smaller
+    than the group size is supported; it is zero-padded internally, which is exact.
 
     .. seealso::
         :class:`torch_harmonics.RealSHT`
@@ -112,13 +107,14 @@ class DistributedRealSHT(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+        Local spectral coefficients, shape ``(..., lmax_local, mmax_local)``.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -259,7 +255,7 @@ class DistributedRealSHT(nn.Module):
 class DistributedInverseRealSHT(nn.Module):
     """
     Distributed version of the inverse (real-valued) SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials on the nodes of the given grid.
 
     **Distribution scheme.**
     The input tensor has shape ``(B, C, lmax_local, mmax_local)`` where spectral
@@ -281,15 +277,11 @@ class DistributedInverseRealSHT(nn.Module):
     The output has shape ``(B, C, nlat_local, nlon_local)`` with the spatial
     grid partitioned in the same way as the input spectral modes.
 
-    Keeping ``l`` distributed is what makes the precomputed Legendre polynomials
-    scale: they are partitioned as ``(mmax_local, nlat, lmax_local)``, so the
-    tensor is split across the full process grid rather than replicated over the
-    polar group.  The cost is that the synthesis sum is now accumulated across
-    ranks, so results are not bitwise identical to the serial transform.
-
-    If ``N < azimuth_group_size``, the leading axis is zero-padded before the
-    transposes and the padding is removed afterwards; since the transform is
-    linear this is exact.
+    The precomputed Legendre polynomials are split across the full process grid
+    rather than replicated. Because the synthesis sum is accumulated across ranks,
+    results are not bitwise identical to the serial transform. A leading axis ``N``
+    smaller than the group size is supported; it is zero-padded internally, which is
+    exact.
 
     .. seealso::
         :class:`torch_harmonics.InverseRealSHT`
@@ -315,13 +307,14 @@ class DistributedInverseRealSHT(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+        Local spatial signal, shape ``(..., nlat_local, nlon_local)``.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -444,7 +437,7 @@ class DistributedInverseRealSHT(nn.Module):
 class DistributedRealVectorSHT(nn.Module):
     """
     Distributed version of the forward (real) vector SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last three dimensions of the input.
 
     The distribution scheme is the same as for
@@ -476,13 +469,14 @@ class DistributedRealVectorSHT(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+        Local spectral coefficients, shape ``(..., 2, lmax_local, mmax_local)``.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -632,7 +626,7 @@ class DistributedRealVectorSHT(nn.Module):
 class DistributedInverseRealVectorSHT(nn.Module):
     """
     Distributed version of the inverse (real-valued) vector SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials on the nodes of the given grid.
 
     The distribution scheme is the same as for
     :class:`DistributedInverseRealSHT` (see its docstring for a step-by-step
@@ -663,13 +657,14 @@ class DistributedInverseRealVectorSHT(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+        Local spatial vector field, shape ``(..., 2, nlat_local, nlon_local)``.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()

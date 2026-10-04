@@ -40,7 +40,7 @@ from torch_harmonics.attention._attention_utils import _check_dtypes_match, _che
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.quadrature import effective_theta_cutoff
 
 from .primitives import compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
@@ -1082,22 +1082,13 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     of key/value chunks over the azimuth group so that every output point can
     attend to its full spherical neighborhood.
 
-    All three directions of the serial layer are supported: self-attention
-    (grid_in == grid_out), downsampling cross-attention (gather kernels,
-    nlon_in % nlon_out == 0) and upsampling cross-attention (scatter kernels,
-    nlon_out % nlon_in == 0). In all cases K/V (which live on the input grid)
-    rotate around the azimuth ring while Q and the softmax state stay local.
+    Self-attention (``grid_in == grid_out``), downsampling
+    (``nlon_in % nlon_out == 0``) and upsampling (``nlon_out % nlon_in == 0``)
+    cross-attention are supported. In all cases keys and values circulate around the
+    azimuth ranks while queries and the softmax state stay local. Parameters are the
+    same as for the serial layer.
 
-    This is the serial layer with a different list of backends: the parameters, the
-    forward pass and the backend selection are inherited from
-    :class:`torch_harmonics.NeighborhoodAttentionS2`, and the ring backends
-    (``RingGatherBackend``, ``RingUpsampleBackend``) take the serial kernels'
-    layout -- channels-last, heads packed along the channel dim. What is added is the
-    decomposition, settled in ``_setup``, and the shape check against this rank's
-    shard.
-
-    There is no reference path: the ring exchange exists only in the compiled kernels, so
-    ``optimized_kernel`` must stay ``True`` and the kernels must be built.
+    Requires the compiled kernels; ``optimized_kernel`` must be ``True``.
 
     .. seealso::
         :class:`torch_harmonics.NeighborhoodAttentionS2`
@@ -1106,6 +1097,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
 
     _backends = (RingGatherBackend, RingUpsampleBackend)
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,

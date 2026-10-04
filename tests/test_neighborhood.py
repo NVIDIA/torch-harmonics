@@ -206,7 +206,7 @@ class TestNeighborhoodArcs(unittest.TestCase):
         ring, start, length = arcs.segments[:, 0].to(torch.int64), arcs.segments[:, 1].to(torch.int64), arcs.segments[:, 2].to(torch.int64)
         sizes = arcs.ring_size[ring]
 
-        self.assertTrue(bool(((ring >= 0) & (ring < grid.nlat)).all()))
+        self.assertTrue(bool(((ring >= 0) & (ring < grid.nrings)).all()))
         self.assertTrue(bool(((start >= 0) & (start < sizes)).all()), msg="start must be a valid index into its own ring")
         self.assertTrue(bool(((length > 0) & (length <= sizes)).all()), msg="an arc must be non-empty and no longer than its ring")
         self.assertTrue(torch.equal(arcs.ring_base, grid.lon_offsets[:-1]))

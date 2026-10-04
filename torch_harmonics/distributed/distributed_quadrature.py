@@ -33,7 +33,7 @@ from typing import Optional
 
 import torch
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 
 from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -67,6 +67,7 @@ class DistributedQuadratureS2(torch.nn.Module):
 
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
         super().__init__()
 
@@ -91,8 +92,7 @@ class DistributedQuadratureS2(torch.nn.Module):
 
         # the shard builds its own weights, so the per-ring longitudinal factor is written
         # once, in the grid module, and this class cannot drift from its serial
-        # counterpart. It previously derived `2 * pi / nlon` here, which is the same
-        # assumption QuadratureS2 used to make and the same one that is wrong on a grid
+        # counterpart. Deriving `2 * pi / nlon` here instead would be wrong on a grid
         # whose rings differ in length.
         quad_weight = self.shard.quad_weights
 

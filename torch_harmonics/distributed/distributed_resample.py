@@ -35,7 +35,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.resample import _slerp_shortest_arc
 
 from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
@@ -67,6 +67,7 @@ class DistributedResampleS2(nn.Module):
         Interpolation mode (``"bilinear"`` or ``"bilinear-spherical"``), by default ``"bilinear"``
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,
@@ -153,8 +154,7 @@ class DistributedResampleS2(nn.Module):
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
-        # descriptor equality covers the grid type and both extents, which is exactly
-        # the conjunction this used to spell out
+        # descriptor equality covers the grid type and both extents
         self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):

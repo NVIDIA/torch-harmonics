@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
 
@@ -140,6 +140,7 @@ class SpectralConvS2(nn.Module):
     truncations.
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,

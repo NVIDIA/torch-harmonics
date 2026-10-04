@@ -175,18 +175,12 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     r"""
     Default angular cutoff for localized operators on the sphere.
 
-    Both the DISCO convolutions and neighborhood attention need a support radius
-    for their filter basis. The heuristic is to take one latitudinal grid
-    spacing of the coarser of the two grids involved, so that the basis functions
-    of adjacent output points overlap and every output point sees more than the
-    single latitude ring it sits on.
-
-    The spacing is taken from the grid's actual node distribution
-    (:func:`compute_latitude_spacing`) rather than from ``nlat`` alone. Using
-    :math:`\pi / (N_\theta - 1)` is only correct for equiangular grids; on
-    ``lobatto`` and ``trapezoidal`` grids it underestimates the polar
-    spacing by ~21% and ~5x respectively, which collapses the stencil of the
-    polar output latitudes to a single latitude ring.
+    Returns one latitudinal node spacing (:func:`compute_latitude_spacing`) of
+    the grid, times ``scale``, so that the supports of adjacent output points
+    overlap. The spacing is the grid's actual maximum gap, which differs from
+    :math:`\pi / (N_\theta - 1)` on grids that are not uniform in :math:`\theta`.
+    On ``lobatto`` and ``trapezoidal`` grids that older heuristic was too small near
+    the poles, so polar output points saw only their own latitude ring.
 
     Parameters
     ----------
@@ -213,23 +207,8 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
 
     Notes
     -----
-    This routine is the *rule*: it reports one latitudinal node spacing and
-    nothing more. The *policy* on top of it -- applying an explicit
-    ``theta_cutoff`` override, rejecting a non-positive radius, and refusing a
-    shard, whose own node spacing would differ between ranks -- lives in
-    :func:`torch_harmonics.truncate_support`, which is what the layers call.
-    Prefer that over calling this directly.
-
-    It keeps taking ``nlat`` and a grid string rather than a
-    :class:`~torch_harmonics.grid.GridS2` because it sits *below* the descriptors
-    in the layering: ``torch_harmonics.grid`` imports from this module, so a
-    descriptor argument here would close an import cycle. Descriptor-based
-    callers get the same quantity from
-    :attr:`~torch_harmonics.grid.GridS2.max_latitude_spacing`, which derives it
-    from the descriptor's own nodes instead of re-deriving it here. That leaves
-    two routes to one number, so
-    ``test_grid_assumptions.test_theta_cutoff_matches_the_free_function`` pins
-    them to agree exactly.
+    The layers use :func:`torch_harmonics.truncate_support`, which takes a grid
+    descriptor and also accounts for the longitudinal spacing; prefer it.
     """
     dlat_max = compute_latitude_spacing(nlat, grid=grid)
 
@@ -257,7 +236,23 @@ THETA_CUTOFF_EPS = 1e-3
 
 
 def effective_theta_cutoff(theta_cutoff: float, theta_eps: Optional[float] = THETA_CUTOFF_EPS) -> float:
-    """The cutoff a sparsity pattern is actually built with, see ``THETA_CUTOFF_EPS``."""
+    """
+    Cutoff widened by a small relative epsilon, as used when building sparsity patterns.
+
+    The widening keeps nodes lying exactly on the cutoff from being dropped by round-off.
+
+    Parameters
+    ----------
+    theta_cutoff : float
+        Nominal cutoff in radians.
+    theta_eps : float, optional
+        Relative widening, by default ``THETA_CUTOFF_EPS`` (``1e-3``).
+
+    Returns
+    -------
+    float
+        ``(1 + theta_eps) * theta_cutoff``.
+    """
     return (1.0 + theta_eps) * theta_cutoff
 
 
@@ -273,21 +268,8 @@ def latitude_support_band(colats_in: torch.Tensor, colats_out: torch.Tensor, the
         |\theta_\mathrm{in} - \theta_\mathrm{out}| \le \theta_c
 
     is a *necessary* condition for a pair to interact, and the latitudes satisfying it form a
-    contiguous band around each output latitude. Everything outside the band is known to be
-    zero without evaluating it.
-
-    That band is what makes these operators cheap to build and to distribute. The sparsity
-    pattern only has to be evaluated inside it, which is the difference between
-    :math:`O(N_\theta^2 N_\lambda)` and :math:`O(N_\theta N_\lambda b)` work; and a polar shard
-    only ever needs latitudes inside it from its neighbours, which is what bounds the halo.
-
-    The band is a superset of the true support, since it ignores longitude and so admits points
-    that are close in latitude but far apart on the sphere. It is tight in the sense that it
-    cannot be narrowed without knowing the longitudes: a point at the output's own longitude
-    attains the bound.
-
-    Because the criterion is symmetric in the two grids, it does not matter which of them the
-    caller regards as the input -- the transpose direction may pass them the other way round.
+    contiguous band around each output latitude. The band ignores longitude, so it is a superset
+    of the true support, but it cannot be narrowed without it.
 
     Parameters
     ----------
@@ -296,9 +278,8 @@ def latitude_support_band(colats_in: torch.Tensor, colats_out: torch.Tensor, the
     colats_out : torch.Tensor
         Output colatitudes in radians, ascending, shape ``(nlat_out,)``.
     theta_cutoff : float
-        Angular support radius of the filter basis. Pass the same effective value the sparsity
-        pattern is built with, including any widening factor, or the band may exclude entries
-        the pattern would keep.
+        Angular support radius in radians. Pass the widened value from
+        :func:`effective_theta_cutoff` so the band covers the sparsity pattern.
 
     Returns
     -------
@@ -310,11 +291,8 @@ def latitude_support_band(colats_in: torch.Tensor, colats_out: torch.Tensor, the
 
     Notes
     -----
-    The bound is compared inclusively, but only up to floating point: a node sitting exactly
-    ``theta_cutoff`` away falls on whichever side the arithmetic rounds to, and that can differ
-    between platforms. It does not matter for the cutoffs in use, which come from the grid's
-    node spacing widened by ``THETA_CUTOFF_EPS`` and so land between nodes rather than on
-    one. A cutoff chosen to coincide exactly with a node separation is the case to avoid.
+    The bound is inclusive up to floating-point rounding, so avoid a cutoff that coincides
+    exactly with a node separation.
 
     Examples
     --------
@@ -468,8 +446,8 @@ def lobatto_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0,
 
 def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Computation of the Clenshaw-Curtis quadrature nodes and weights.
-    This implementation follows
+    Clenshaw-Curtis quadrature nodes and weights on the interval [a, b], computed
+    with the FFT-based method of :cite:`Waldvogel2006`.
 
     Parameters
     ----------

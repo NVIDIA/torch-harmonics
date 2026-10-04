@@ -127,14 +127,10 @@ def split_tensor_along_dim(tensor, dim, num_chunks):
 def flatten_and_pad_leading_dims(tensor: torch.Tensor, min_leading_size: int, num_trailing_dims: int = 2):
     """Collapse all but the trailing ``num_trailing_dims`` dims into a single leading dim, padding it to at least ``min_leading_size``.
 
-    The distributed (S)HT redistributes this leading ("channel/batch") axis across
-    the process grid via all-to-all transposes, which require every rank to receive
-    a non-empty chunk -- i.e. the leading dim must be at least the (largest) group
-    size. Uneven splits are fine (e.g. 5 elements over 4 ranks -> [2, 1, 1, 1]), so
-    we only pad when the leading dim is *smaller* than the group size, never up to a
-    multiple of it. Since the transforms are linear, zero-padding leaves the real
-    entries untouched; :func:`unpad_and_unflatten_leading_dims` restores the original
-    layout afterwards.
+    The distributed transforms split this leading (batch/channel) axis across ranks,
+    so every rank needs at least one entry. The axis is zero-padded only when it is
+    shorter than ``min_leading_size``; uneven splits are allowed.
+    :func:`unpad_and_unflatten_leading_dims` restores the original layout.
 
     Parameters
     ----------
@@ -186,15 +182,14 @@ def unpad_and_unflatten_leading_dims(tensor: torch.Tensor, lead_shape, lead_size
     The trailing ``num_trailing_dims`` dims are taken from ``tensor`` as-is, so this is
     valid even when the transform changed them (e.g. ``nlat, nlon`` -> ``lmax, mmax``).
     ``num_trailing_dims`` must match the value passed to the flatten call.
-
-    Complex inputs (the forward SHTs call this on their spectral output) are processed as
-    their real view: this is pure layout code touching only the leading dims, and a copy
-    over a complex buffer cannot be codegen'd by inductor -- triton has no complex type,
-    so it fails with ``KeyError: 'complex64'``. ``view_as_real`` appends the re/im pair as
-    a trailing dim, which is simply carried along; the ``contiguous()`` right before the
-    ``view_as_complex`` supplies the unit last-dim stride the latter requires.
     """
 
+    # complex inputs (the forward SHTs call this on their spectral output) are processed as
+    # their real view: this is pure layout code touching only the leading dims, and a copy
+    # over a complex buffer cannot be codegen'd by inductor -- triton has no complex type,
+    # so it fails with KeyError: 'complex64'. view_as_real appends the re/im pair as a
+    # trailing dim, which is simply carried along; the contiguous() right before the
+    # view_as_complex supplies the unit last-dim stride the latter requires.
     is_complex = tensor.is_complex()
     if is_complex:
         tensor = torch.view_as_real(tensor)
@@ -1299,13 +1294,8 @@ def compute_polar_halo_radius(
     largest such overhang over all ranks, which is the halo width
     :func:`polar_halo_exchange` has to move.
 
-    The band bounds are monotone in the output latitude, so only the two ends of each rank's
-    output range are examined, and the whole thing costs a pair of binary searches rather than
-    a pass over a sparsity pattern. Computing it from the geometry rather than by measuring a
-    precomputed pattern is also what lets the pattern itself be built on the band -- otherwise
-    the radius would depend on the very tensor it is supposed to bound.
-
-    It is evaluated identically on every rank, so no communication is involved.
+    The result is computed from the geometry alone and is identical on every rank; no
+    communication is involved.
 
     Parameters
     ----------

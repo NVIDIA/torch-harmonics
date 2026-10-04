@@ -30,6 +30,8 @@
 #
 
 import difflib
+import functools
+import inspect
 import numbers
 from dataclasses import MISSING, dataclass, fields
 from typing import Any, ClassVar, Dict, Optional, Tuple, Type, Union
@@ -177,26 +179,15 @@ class PointSetS2:
     r"""
     Descriptor for a set of sample points on :math:`S^2`.
 
-    The weakest contract in this module, and the base of the hierarchy. A point set
-    is :attr:`npoints` locations on the sphere, each with an angular position and a
-    quadrature weight, and nothing else. It says nothing about how those points are
-    arranged, so it covers an unstructured mesh -- an icosahedral/triangular ICON
-    grid, say -- as well as everything in :class:`GridS2` below it.
+    The base of the grid hierarchy: :attr:`npoints` locations on the sphere, each
+    with an angular position and a quadrature weight, with no assumption about how
+    they are arranged. Each subclass adds a constraint:
 
-    What a consumer may assume grows down the hierarchy, and each level is exactly
-    what some algorithm needs:
-
-    * :class:`PointSetS2` -- points and weights. Enough to **integrate**.
-    * :class:`GridS2` -- adds isolatitude rings with equispaced longitudes. Enough
-      for an **FFT in longitude** (hence a fast SHT), for a neighbourhood search
-      bounded by a binary search over rings rather than a spatial index, and for a
-      contiguous polar decomposition.
-    * :class:`RegularGridS2` -- adds a uniform longitude count. Enough for a dense
-      ``(nlat, nlon)`` layout, the compiled kernels, and a 2D decomposition.
-
-    Every subclass adds a constraint, so every :class:`RegularGridS2` is a
-    :class:`GridS2` is a :class:`PointSetS2`. Which level a grid belongs to is a
-    question of how its points are arranged:
+    * :class:`PointSetS2` -- points and weights; enough to integrate.
+    * :class:`GridS2` -- adds isolatitude rings with equispaced longitudes; enables
+      an FFT in longitude (hence a fast SHT) and a contiguous polar decomposition.
+    * :class:`RegularGridS2` -- adds the same longitude count on every ring; a field
+      is a dense ``(nlat, nlon)`` array.
 
     ======================  ================================================================  =================================================
     level                   arrangement                                                       examples
@@ -206,40 +197,26 @@ class PointSetS2:
     :class:`RegularGridS2`  latitude rings of equal length                                    equiangular (ERA5's 721 x 1440), regular Gaussian
     ======================  ================================================================  =================================================
 
-    Of these, the regular latitude-longitude grids and HEALPix are implemented; the
-    others are listed to place the boundaries, not as supported grids.
+    The regular latitude-longitude grids and HEALPix are implemented; the other
+    examples only mark where the boundaries lie.
 
     This class is abstract, as are :class:`GridS2` and :class:`RegularGridS2`.
-    Instantiate one of the concrete grids, or build one by name with :func:`as_grid`.
+    Instantiate a concrete grid, or build one by name with :func:`as_grid`. Each
+    concrete grid has a class-level ``grid_type`` string, e.g. ``"equiangular"``,
+    used by :func:`as_grid` and for serialization. A subclass that does not declare
+    its own ``grid_type`` is treated as abstract: it is neither registered nor
+    instantiable.
 
-    Each *concrete* subclass carries a class-level ``grid_type`` holding the
-    historical grid string it corresponds to, e.g. ``"equiangular"``. That string
-    is used for serialization and for the registry behind :func:`as_grid`. A class
-    that does not define its own ``grid_type`` is treated as an abstract
-    intermediate: it is neither registered nor instantiable.
-
-    Notes
-    -----
-    Three properties of this type are load-bearing rather than incidental.
-
-    The dataclass fields *are* the parameterization. :meth:`params`, :attr:`key`,
-    :meth:`to_dict` and ``__repr__`` are all derived from them, so a family
-    parameterized by something other than ``(nlat, nlon)`` -- a HEALPix ``nside``,
-    an icosahedral refinement level -- gets correct construction, identity and
-    serialization without registering anything. A subclass cannot forget to extend
-    its own identity, which matters because forgetting would not raise: it would
-    silently collide in every cache keyed on the descriptor.
-
-    Node and weight tensors are deliberately not fields. A descriptor carrying
-    tensors would fall back to identity hashing and defeat those same caches. A
-    family whose nodes are *data* rather than a formula -- read from an ICON grid
-    file, say -- therefore needs an identity that is not its data: a registered
-    name, or a path plus a content hash. Getting that wrong does not raise either;
-    two such grids would collide in every cached sparsity pattern.
-
-    Descriptors stop at the Python layer: compiled kernels keep taking plain ints,
-    and modules unpack the descriptor before calling into them.
+    Descriptors are immutable and hashable; equality and hashing are defined by
+    the grid type and its constructor parameters.
     """
+
+    # Maintainer notes: the dataclass fields *are* the parameterization -- params, key,
+    # to_dict and __repr__ derive from them, so a subclass cannot forget to extend its
+    # identity (which would silently collide in descriptor-keyed caches). Node and weight
+    # tensors are deliberately not fields: tensors would fall back to identity hashing.
+    # A family whose nodes are data (e.g. read from an ICON file) needs a non-data
+    # identity such as a registered name or a path plus content hash.
 
     #: historical grid string; set by each concrete subclass, absent on abstract ones
     grid_type: ClassVar[str]
@@ -250,6 +227,19 @@ class PointSetS2:
         # intermediate such as GridS2 or RegularGridS2 merely inherits the annotation
         grid_type = cls.__dict__.get("grid_type")
         if grid_type is None:
+            # A subclass that declares nothing inherits its parent's grid_type, and with
+            # it the parent's key, hash and equality -- so it would collide with the
+            # parent in every descriptor-keyed cache and be handed the parent's
+            # precomputed geometry. Refuse rather than let a changed grid silently reuse
+            # tables built for a different one. Deriving from an abstract intermediate is
+            # unaffected; those carry no grid_type to inherit.
+            inherited = next((base.__dict__["grid_type"] for base in cls.__mro__[1:] if "grid_type" in base.__dict__), None)
+            if inherited is not None:
+                raise TypeError(
+                    f"{cls.__name__} subclasses a concrete grid without declaring its own grid_type, so it would "
+                    f"inherit '{inherited}' and share that grid's identity. Declare a distinct grid_type, or derive "
+                    f"from an abstract base such as RegularGridS2 instead."
+                )
             return
         if grid_type in _GRID_REGISTRY:
             raise ValueError(f"grid_type '{grid_type}' is already registered to {_GRID_REGISTRY[grid_type].__name__}")
@@ -263,11 +253,7 @@ class PointSetS2:
 
     @classmethod
     def params(cls) -> Tuple[str, ...]:
-        """
-        Names of this descriptor's constructor parameters, in declaration order.
-
-        Derived from the dataclass fields, so it cannot drift from the constructor.
-        """
+        """Names of this descriptor's constructor parameters, in declaration order."""
         return tuple(f.name for f in fields(cls))
 
     @property
@@ -275,12 +261,8 @@ class PointSetS2:
         """
         Canonical, hashable identity of this descriptor.
 
-        Contains only scalars. Everything that distinguishes two descriptors must
-        appear here, and nothing that does not; this tuple backs both ``__hash__``
-        and ``__eq__``, and therefore every cache keyed on a descriptor.
-
-        Derived from :meth:`params` rather than listing the fields, so that a
-        subclass which adds a parameter cannot forget to extend it.
+        A tuple of scalars, the grid type followed by the constructor parameters;
+        it defines both equality and hashing.
         """
         return (self.grid_type,) + tuple(getattr(self, name) for name in self.params())
 
@@ -308,12 +290,9 @@ class PointSetS2:
         """
         Trailing shape of a tensor holding a field sampled on this point set.
 
-        ``(npoints,)`` here, since an unstructured set has no second axis to speak
-        of. :class:`RegularGridS2` overrides it with ``(nlat, nlon)``, where the
-        sampling really is a product of two axes. Consumers that splat this into a
-        ``reshape`` or compare it against ``x.shape[-len(grid.shape):]`` stay
-        correct either way, while those that unpack it into two names do not
-        silently misbehave.
+        ``(npoints,)`` in general; ``(nlat, nlon)`` on a :class:`RegularGridS2`. To
+        stay grid-agnostic, use ``x.reshape(*batch, *grid.shape)`` or
+        ``len(grid.shape)`` rather than unpacking it as ``nlat, nlon = grid.shape``.
         """
         return (self.npoints,)
 
@@ -325,20 +304,12 @@ class PointSetS2:
         Angular position of every point, shape ``(npoints, 2)``.
 
         Column 0 is colatitude :math:`\theta \in [0, \pi]` measured from the north
-        pole, column 1 is longitude :math:`\lambda \in [0, 2\pi)`. Colatitude rather
-        than latitude because that is what the library computes with; see
-        :attr:`GridS2.colats`.
+        pole, column 1 is longitude :math:`\lambda \in [0, 2\pi)`.
 
         Row ``i`` describes element ``i`` of a field flattened to ``(npoints,)``.
-        That correspondence is the load-bearing part of this contract -- getting it
-        wrong transports the right values to the wrong places without raising -- so
-        a family that defines its own flat order must document it. For a
-        :class:`GridS2` the order is ring-major: point ``(ilat, ilon)`` sits at
-        ``lon_offsets[ilat] + ilon``.
-
-        Note that the pole-inclusive grids repeat a physical point: an equiangular
-        grid carries ``nlon`` rows at :math:`\theta = 0`, differing only in a
-        longitude that means nothing there.
+        For a :class:`GridS2` the order is ring-major: point ``(ilat, ilon)`` sits
+        at ``lon_offsets[ilat] + ilon``. Pole-inclusive grids repeat the pole once
+        per longitude.
         """
         raise NotImplementedError(f"{type(self).__name__} does not define coords")
 
@@ -352,11 +323,9 @@ class PointSetS2:
         ``(npoints,)``.
 
         .. warning::
-            Not to be confused with :attr:`GridS2.colat_weights`, which is the
-            *latitudinal* factor alone: shape ``(nrings,)`` and summing to 2, with
-            the longitudinal :math:`2\pi / N_\lambda` excluded. The two differ by
-            exactly that factor, so substituting one for the other scales an
-            integral by :math:`2\pi` and raises nothing.
+            Not to be confused with :attr:`GridS2.colat_weights`, the latitudinal
+            factor alone (shape ``(nrings,)``, summing to 2). Using one in place of
+            the other silently scales an integral by :math:`2\pi`.
         """
         raise NotImplementedError(f"{type(self).__name__} does not define quad_weights")
 
@@ -365,18 +334,9 @@ class PointSetS2:
         """
         Whether every point carries the same quadrature weight, :math:`4\\pi / N`.
 
-        Declared by the grid family rather than measured off :attr:`quad_weights`: it is a
-        property of the construction -- HEALPix pixels have equal area by definition --
-        and a consumer that takes a different code path on it wants that choice fixed at
-        construction, not decided by comparing floats. Tests hold each declaration to the
-        weights.
-
-        A consumer may rely on it to drop the weights wherever they only enter through a
-        normalization, as in attention, where a constant weight cancels in the softmax.
-        ``False`` unless a family says otherwise, which is right for every latitude-longitude
-        grid. The trapezoidal grid comes closest: its rings are equispaced in
-        :math:`\\cos\\theta`, which cuts the sphere into bands of equal area, but the rule
-        gives its two pole rings half weight.
+        Declared by the grid family (``True`` for HEALPix, ``False`` for every
+        latitude-longitude grid). Consumers may use it to drop weights that only enter
+        through a normalization, e.g. in the attention softmax.
         """
         return False
 
@@ -392,10 +352,8 @@ class PointSetS2:
         r"""
         Highest spherical harmonic degree the quadrature rule integrates exactly.
 
-        Non-inclusive, i.e. degrees :math:`0 \le l < l_{\max}`. Determined by the
-        exactness of the rule, so each family answers differently -- and some have
-        no answer at all: an equal-area rule such as HEALPix integrates a constant
-        exactly and nothing beyond, and should raise rather than invent a bound.
+        Non-inclusive, i.e. degrees :math:`0 \le l < l_{\max}`. Raises on grids
+        without such a bound, e.g. HEALPix.
         """
         raise NotImplementedError(f"{type(self).__name__} does not define max_exact_degree")
 
@@ -404,19 +362,10 @@ class PointSetS2:
         r"""
         Whether the quadrature rule converges spectrally.
 
-        An SHT relies on the associated Legendre polynomials being *discretely*
-        orthogonal under the rule. Interpolatory latitudinal rules --
-        Gauss--Legendre, Gauss--Lobatto, Clenshaw--Curtis -- integrate the required
-        degrees exactly, so orthogonality holds to machine precision. A rule that
-        converges only algebraically does not, and refining buys back accuracy far
-        more slowly than raising the truncation loses it.
-
-        ``False`` here, which is the conservative answer and the right default for
-        an arbitrary point set: nothing about a bag of points and weights implies
-        discrete orthogonality. :class:`RegularGridS2` overrides it to ``True``,
-        which is where the interpolatory rules actually live, so a ragged or
-        unstructured family has to claim spectral accuracy deliberately rather than
-        inherit the claim by accident.
+        An accurate SHT needs the associated Legendre polynomials to be discretely
+        orthogonal under the rule, which interpolatory rules (Gauss--Legendre,
+        Gauss--Lobatto, Clenshaw--Curtis) provide. ``False`` unless a grid family
+        declares otherwise.
         """
         return False
 
@@ -425,16 +374,9 @@ class PointSetS2:
         r"""
         Largest great-circle distance between neighbouring nodes, in radians.
 
-        The grid's resolution expressed as an angle: how far apart its coarsest pair
-        of adjacent samples sits on the sphere. A *fact* about the node distribution,
-        which is why it is a spacing rather than a cutoff -- it neither applies a user
-        override nor warns that a default moved. Turning it into the support radius of
-        a localized operator is policy and lives in
-        :func:`torch_harmonics.truncate_support`, which is what the layers call.
-
-        Abstract here because "neighbouring" needs a definition, and an unstructured
-        set has to supply its own -- typically a nearest-neighbour distance over a
-        spatial index. :class:`GridS2` has rings and defines it in closed form.
+        The grid's resolution expressed as an angle.
+        :func:`torch_harmonics.truncate_support` derives the default support radius
+        of localized operators from it.
         """
         raise NotImplementedError(f"{type(self).__name__} does not define max_node_spacing")
 
@@ -442,30 +384,15 @@ class PointSetS2:
 
     @classmethod
     def shard_class(cls) -> Type["GridShardS2"]:
-        """
-        The :class:`GridShardS2` subclass that :meth:`shard` produces.
-
-        Named by the descriptor rather than inferred, so that deserializing a shard
-        can reconstruct the right type from the descriptor alone.
-        """
+        """The :class:`GridShardS2` subclass that :meth:`shard` produces."""
         raise NotImplementedError(f"{cls.__name__} does not define shard_class")
 
     def shard(self, **decomposition: Any) -> "GridShardS2":
         """
         Return the piece of this descriptor held by one rank of a decomposition.
 
-        How a sampling decomposes is a property of the sampling, which is why this
-        is asked of the descriptor rather than computed by the caller. A regular
-        latitude--longitude grid splits as a product of a latitude range and a
-        longitude range, and :meth:`RegularGridS2.shard` takes ``polar`` and
-        ``azimuth`` accordingly. A ragged grid has no single ``nlon`` to split, and
-        an unstructured set has no rings either, so both would take something else;
-        the signature is left to the subclass.
-
-        Deliberately takes plain integers rather than process groups, so that the
-        descriptors stay free of any dependency on :mod:`torch.distributed` and
-        remain testable without a process group. The distributed layers translate
-        their groups into these.
+        The decomposition parameters depend on the grid family and are plain
+        integers, not process groups; see :meth:`RegularGridS2.shard`.
         """
         raise NotImplementedError(f"{type(self).__name__} does not define shard")
 
@@ -475,8 +402,8 @@ class PointSetS2:
         """
         Plain-data representation, suitable for a config file or a checkpoint.
 
-        The grid type plus its own parameters, so a family that takes ``nside``
-        serializes as ``{"grid": ..., "nside": ...}`` without special-casing.
+        The grid type under ``"grid"`` plus the constructor parameters, e.g.
+        ``{"grid": "healpix", "nside": 64}``.
         """
         data = {"grid": self.grid_type}
         data.update({name: getattr(self, name) for name in self.params()})
@@ -495,15 +422,11 @@ class GridS2(PointSetS2):
     r"""
     A point set organized into isolatitude rings.
 
-    Each ring sits at a colatitude :math:`\theta_k` and carries some number of
-    longitudes, equispaced around the circle. That is the whole of what this level
-    adds to :class:`PointSetS2`, and it deliberately says nothing about *how many*
-    longitudes each ring carries, so it covers a reduced Gaussian or HEALPix grid --
-    where the count varies from ring to ring -- as well as the regular
-    latitude--longitude grids in :class:`RegularGridS2`.
-
-    A field on a grid whose rings differ in length cannot be a rectangle, so it is
-    stored flat, ring after ring, with shape ``(npoints,)``:
+    Each ring sits at a colatitude :math:`\theta_k` and carries longitudes
+    equispaced around the circle. The number of longitudes may differ from ring to
+    ring, as on HEALPix or a reduced Gaussian grid. A field on such a grid is stored
+    flat, ring after ring (point ``(ilat, ilon)`` at flat index
+    ``lon_offsets[ilat] + ilon``), with shape ``(npoints,)``:
 
     >>> from torch_harmonics import HealpixGrid
     >>> grid = HealpixGrid(nside=4)
@@ -512,37 +435,10 @@ class GridS2(PointSetS2):
     >>> grid.nlon_per_lat[:4].tolist()  # ring lengths grow away from the pole
     [4, 8, 12, 16]
 
-    An icosahedral or cubed-sphere mesh has no latitude rings at all and is therefore
-    not a :class:`GridS2`, only a :class:`PointSetS2`.
-
-    Still abstract; the node distribution is chosen by the concrete subclasses.
-
-    Notes
-    -----
-    Ring structure is not bookkeeping, it is what several algorithms require:
-
-    * **Separable quadrature.** The weight of a point factorizes as
-      :math:`w_k \cdot 2\pi / N_{\lambda,k}`, so :attr:`colat_weights` stores
-      :math:`O(\text{nrings})` numbers rather than :math:`O(\text{npoints})`.
-    * **An FFT in longitude.** Since
-      :math:`Y_l^m(\theta, \lambda) = P_l^m(\cos\theta)\, e^{im\lambda}`, equispaced
-      longitudes turn the :math:`\lambda` integral into an FFT. This is what makes a
-      fast SHT possible at all; without rings the transform becomes a dense
-      least-squares solve.
-    * **A bounded neighbourhood search.** Only rings within the cutoff of an output
-      colatitude can contribute, which is a binary search rather than a spatial
-      index.
-    * **A contiguous polar decomposition**, and hence a halo exchange with immediate
-      neighbours only.
-
-    :attr:`nlon_per_lat` and :attr:`lon_offsets` exist on the regular grids too,
-    where they are trivial. Consumers that cannot handle a ragged grid should demand
-    a :class:`RegularGridS2` via :func:`require_regular_grid` rather than assume a
-    uniform ``nlon`` stride, so that ragged grids become an additive change instead
-    of a second API break.
-
-    The flat order is ring-major: point ``(ilat, ilon)`` sits at flat index
-    ``lon_offsets[ilat] + ilon``. :attr:`coords` and :attr:`quad_weights` follow it.
+    The quadrature weight of a point on ring :math:`k` factorizes as
+    :math:`w_k \cdot 2\pi / N_{\lambda,k}`, with :math:`w_k` given by
+    :attr:`colat_weights`. Abstract; the node distribution is chosen by the concrete
+    subclasses.
     """
 
     # -- extent --------------------------------------------------------------
@@ -563,12 +459,8 @@ class GridS2(PointSetS2):
         r"""
         Colatitudes :math:`\theta_k \in [0, \pi]`, ascending (north pole first), shape ``(nrings,)``.
 
-        One value per *ring*, not per point; :attr:`coords` is the per-point form.
-
-        This is the primitive the library computes with: the associated Legendre
-        functions are naturally expressed in :math:`\cos\theta`, and every quadrature
-        rule here is formulated on that interval. :attr:`lats` converts to geographic
-        latitude for the callers that want it.
+        One value per ring; :attr:`coords` is the per-point form and :attr:`lats`
+        the geographic latitude.
         """
         raise NotImplementedError(f"{type(self).__name__} does not define colats")
 
@@ -577,15 +469,7 @@ class GridS2(PointSetS2):
         r"""
         Geographic latitudes :math:`\phi_k = \pi/2 - \theta_k \in [-\pi/2, \pi/2]`, shape ``(nrings,)``.
 
-        Descending, north pole first, because :attr:`colats` ascends from the north
-        pole and latitude is its reflection. Provided because plotting, geographic
-        data and anything user-facing want latitude, and because the conversion was
-        previously open-coded at three call sites -- writing :math:`\pi - \theta`
-        instead of :math:`\pi/2 - \theta` yields a number in :math:`[0, \pi]` that
-        looks like a plausible angle and is wrong everywhere except the equator.
-
-        Derived, never stored: :attr:`colats` is the primitive, so the two cannot
-        drift apart.
+        Descending, north pole first, in the same order as :attr:`colats`.
         """
         return torch.pi / 2 - self.colats
 
@@ -594,15 +478,10 @@ class GridS2(PointSetS2):
         r"""
         Latitudinal quadrature weights, shape ``(nrings,)``, paired with :attr:`colats`.
 
-        Formulated in the :math:`\cos\theta` domain, so they already absorb the
-        :math:`\sin\theta` Jacobian and **sum to 2**. The longitudinal factor is
-        *not* included; on a regular grid it is the uniform :math:`2\pi / N_\lambda`.
-
-        .. warning::
-            The per-point :attr:`~PointSetS2.quad_weights` is a different tensor:
-            shape ``(npoints,)`` and summing to :math:`4\pi`, with the longitudinal
-            factor folded in. Substituting one for the other scales an integral by
-            :math:`2\pi` and raises nothing.
+        Formulated in the :math:`\cos\theta` domain, so they absorb the
+        :math:`\sin\theta` Jacobian and **sum to 2**. The longitudinal factor
+        :math:`2\pi / N_{\lambda,k}` is not included; see
+        :attr:`~PointSetS2.quad_weights` for the per-point weights.
         """
         raise NotImplementedError(f"{type(self).__name__} does not define colat_weights")
 
@@ -614,8 +493,7 @@ class GridS2(PointSetS2):
         ----------
         ilat : int, optional
             Index of the latitude ring. Ignored on regular grids, where every ring
-            carries the same longitudes; accepted so that consumers can be written
-            once and keep working on ragged grids.
+            carries the same longitudes.
 
         Returns
         -------
@@ -636,9 +514,7 @@ class GridS2(PointSetS2):
         r"""
         Per-point solid-angle weights, summing to :math:`4\pi`.
 
-        The separable form made explicit: ring :math:`k` contributes
-        :math:`w_k \cdot 2\pi / N_{\lambda,k}` at each of its points, and since
-        :attr:`colat_weights` sums to 2 the total is :math:`4\pi` by construction.
+        A point on ring :math:`k` carries :math:`w_k \cdot 2\pi / N_{\lambda,k}`.
         """
         return _grid_quad_weights(self)
 
@@ -646,21 +522,14 @@ class GridS2(PointSetS2):
         r"""
         Quadrature weight carried by a single point of each ring, shape ``(nrings,)``.
 
-        The separable factorization of :attr:`quad_weights`: ring :math:`k` contributes
-        :math:`w_k \cdot 2\pi / N_{\lambda,k}` at each of its points, so this is that
-        per-point contribution indexed by ring. A consumer that already knows which ring
-        a point belongs to -- a kernel walking a grid ring by ring -- wants this rather
-        than the expanded form, and on a ragged grid it is the only compact form there is.
-
-        Takes a dtype rather than returning float64 and leaving the caller to cast,
-        because the two are not the same number. The arithmetic is done entirely in the
-        requested dtype; rounding a float64 result instead lands about one ulp away, which
-        is a visible shift in the quadrature weights of an already-trained model.
+        Ring :math:`k` carries :math:`w_k \cdot 2\pi / N_{\lambda,k}` at each of its
+        points; this is the compact, per-ring form of :attr:`quad_weights`.
 
         Parameters
         ----------
         dtype : torch.dtype, optional
-            Dtype to compute in, by default ``torch.float64``.
+            Dtype to compute in, by default ``torch.float64``. The arithmetic is done
+            in this dtype, which can differ by an ulp from casting a float64 result.
 
         Returns
         -------
@@ -673,10 +542,8 @@ class GridS2(PointSetS2):
         r"""
         The same quadrature as :meth:`ring_weights`, one entry per point.
 
-        Equal to :attr:`quad_weights` up to rounding -- that property is the descriptor's
-        canonical per-point rule and keeps its own arithmetic, while this one is computed
-        wholly in ``dtype`` so that it stays exactly consistent with
-        :meth:`ring_weights`, which is what a consumer holding both forms needs.
+        Equal to :attr:`quad_weights` up to rounding, and computed in ``dtype`` so
+        that it is exactly consistent with :meth:`ring_weights`.
 
         Parameters
         ----------
@@ -703,14 +570,9 @@ class GridS2(PointSetS2):
         Fractional longitude offset of each ring, shape ``(nrings,)``, in units of one
         point of that ring.
 
-        Zero on the product grids, where every ring starts at :math:`\lambda = 0`.
-        HEALPix staggers successive rings by half a point, which is what makes its
-        pixels rhombic and equal-area; a consumer assuming every ring starts at 0 would
-        misplace half the grid.
-
-        :meth:`lons` already includes the shift, so this exists for the consumers that
-        need the offset *separately* -- reconstructing a point's index within its ring,
-        as the neighbourhood kernels do.
+        Zero on the latitude-longitude grids. On HEALPix it is either 0 or 1/2 (see
+        :attr:`~torch_harmonics.healpix.HealpixGrid.lon_shifts`). :meth:`lons` already
+        includes the shift.
         """
         return torch.zeros(self.nrings, dtype=torch.float64)
 
@@ -720,8 +582,6 @@ class GridS2(PointSetS2):
         Exclusive prefix sum of :attr:`nlon_per_lat`, shape ``(nrings + 1,)``.
 
         A point ``(ilat, ilon)`` sits at flat index ``lon_offsets[ilat] + ilon``.
-        On a regular grid this is just ``ilat * nlon``, but writing the flattening
-        this way keeps consumers valid on ragged grids.
         """
         counts = self.nlon_per_lat
         return torch.cat([torch.zeros(1, dtype=torch.int64), counts.cumsum(0)])
@@ -731,9 +591,8 @@ class GridS2(PointSetS2):
         """
         Whether every latitude ring carries the same number of longitudes.
 
-        Consumers backed by compiled kernels, which index with a uniform ``nlon``
-        stride, should demand a :class:`RegularGridS2` outright rather than test
-        this, so that the failure is a clear error at construction.
+        Code that needs a dense ``(nlat, nlon)`` layout should call
+        :func:`require_regular_grid` rather than test this or assume a uniform stride.
         """
         counts = self.nlon_per_lat
         return bool((counts == counts[0]).all())
@@ -744,10 +603,6 @@ class GridS2(PointSetS2):
     def latitude_spacing(self) -> torch.Tensor:
         r"""
         Gaps :math:`\theta_{k+1} - \theta_k` between adjacent latitudes, shape ``(nrings - 1,)``.
-
-        Taken on the colatitudes, but the gaps are the same either way: latitude is
-        colatitude reflected, so the differences only change sign, and every consumer
-        here wants the magnitude.
         """
         colats = self.colats
         return colats[1:] - colats[:-1]
@@ -757,9 +612,7 @@ class GridS2(PointSetS2):
         r"""
         Largest gap between adjacent latitudes, :math:`\max_k (\theta_{k+1} - \theta_k)`.
 
-        This is the grid's own notion of "one latitudinal grid spacing". Only
-        :class:`EquiangularGrid` is uniform in :math:`\theta`, where it reduces to
-        :math:`\pi / (N_\theta - 1)`.
+        On :class:`EquiangularGrid` this is :math:`\pi / (N_\theta - 1)`.
         """
         return self.latitude_spacing.max().item()
 
@@ -773,17 +626,12 @@ class GridS2(PointSetS2):
         r"""
         Largest great-circle distance between adjacent nodes *within* a ring, in radians.
 
-        The great-circle arc, not the coordinate gap :math:`2\pi / N_{\lambda,k}`. The
-        two differ by the :math:`\sin\theta` foreshortening:
+        The great-circle arc rather than the coordinate gap :math:`2\pi / N_{\lambda,k}`,
+        so polar rings count as narrow:
 
         .. math::
 
             d_k = 2 \arcsin\!\left( \sin\theta_k \, \sin\frac{\pi}{N_{\lambda,k}} \right)
-
-        Using the coordinate gap instead would report the polar rings as the widest,
-        when their points are in fact nearly coincident -- on a ring at
-        :math:`\theta \to 0` the gap tends to :math:`2\pi / N_\lambda` while the
-        distance tends to 0.
         """
         colats = self.colats
         dlambda = 2.0 * torch.pi / self.nlon_per_lat.to(colats.dtype)
@@ -794,14 +642,10 @@ class GridS2(PointSetS2):
         r"""
         Largest great-circle distance between neighbouring nodes, in radians.
 
-        The coarser of :attr:`max_latitude_spacing` and :attr:`max_longitude_spacing`,
-        because a ring grid's neighbours run in both directions and the support of an
-        operator has to reach the further one.
-
-        Which of the two wins is not a formality. It is latitudinal on an equiangular
-        grid at :math:`N_\lambda = 2 N_\theta`, but longitudinal on a Gauss grid at the
-        same resolution, on any grid with :math:`N_\lambda < 2 N_\theta`, and on
-        HEALPix, whose in-ring spacing exceeds its ring spacing by roughly 1.8x.
+        The larger of :attr:`max_latitude_spacing` and :attr:`max_longitude_spacing`.
+        The latitudinal spacing dominates on an equiangular grid with
+        ``nlon = 2 * nlat``; the longitudinal one dominates on a Gauss grid at the same
+        resolution, on any grid with ``nlon < 2 * nlat``, and on HEALPix.
         """
         return max(self.max_latitude_spacing, self.max_longitude_spacing)
 
@@ -821,19 +665,10 @@ class RegularGridS2(GridS2):
     r"""
     A grid whose latitude rings all carry the same number of longitudes.
 
-    *Regular* is meant in the sense of numerical weather prediction and GRIB, where
-    ``regular_ll`` and ``regular_gg`` name grids with the same number of equispaced
-    longitudes on every latitude, and a *reduced* grid (``reduced_gg``, the octahedral
-    grid) is one whose rings shrink toward the poles. HEALPix and icosahedral grids
-    such as ICON are regular in the geometric sense -- uniform cells derived from a
-    regular polyhedron -- but not in this one: HEALPix is a :class:`GridS2`, ICON only
-    a :class:`PointSetS2`.
-
-    Mathematically the sampling is a tensor product of a latitudinal rule and a
-    uniform longitudinal one, which is what makes a field on it a dense
-    ``(nlat, nlon)`` array, makes the spherical harmonic transform separable, and
-    makes a 2D process decomposition meaningful. Everything that depends on those
-    facts lives here rather than on :class:`GridS2`.
+    *Regular* in the sense of numerical weather prediction and GRIB
+    (``regular_ll``, ``regular_gg``), as opposed to a *reduced* grid whose rings
+    shrink toward the poles. The sampling is a tensor product of a latitudinal rule
+    and equispaced longitudes, so a field on it is a dense ``(nlat, nlon)`` array.
 
     >>> from torch_harmonics import as_grid
     >>> grid = as_grid("legendre-gauss", nlat=64, nlon=128)  # a regular Gaussian grid
@@ -842,7 +677,7 @@ class RegularGridS2(GridS2):
     >>> bool((grid.nlon_per_lat == 128).all())
     True
 
-    Still abstract: the latitudinal rule is chosen by the concrete subclasses
+    Abstract: the latitudinal rule is chosen by the concrete subclasses
     (:class:`EquiangularGrid`, :class:`LegendreGaussGrid`, :class:`LobattoGrid`,
     :class:`TrapezoidalGrid`).
 
@@ -914,14 +749,7 @@ class RegularGridS2(GridS2):
 
     @property
     def is_spectrally_accurate(self) -> bool:
-        """
-        ``True``: the latitudinal rules of this family are interpolatory.
-
-        Overrides the conservative ``False`` on :class:`PointSetS2`. Declared at
-        this level rather than higher up so that a ragged or unstructured family
-        has to claim spectral accuracy deliberately -- HEALPix would inherit the
-        wrong answer from a base that defaulted to ``True``.
-        """
+        """``True``: the latitudinal rules of this family are interpolatory."""
         return True
 
     @property
@@ -929,8 +757,7 @@ class RegularGridS2(GridS2):
         r"""
         Nyquist limit of the longitudinal sampling, :math:`\lfloor N_\lambda / 2 \rfloor + 1`.
 
-        Non-inclusive. Well defined only because every ring is sampled alike; on a
-        ragged grid each ring has its own limit.
+        Non-inclusive.
         """
         return self.nlon // 2 + 1
 
@@ -959,14 +786,7 @@ class RegularGridS2(GridS2):
         return RegularGridShardS2(grid=self, polar_rank=polar[0], polar_size=polar[1], azimuth_rank=azimuth[0], azimuth_size=azimuth[1])
 
     def lat_shapes(self, num_chunks: int) -> Tuple[int, ...]:
-        """
-        Latitude counts held by each rank of a ``num_chunks``-way polar split.
-
-        Balancing rings balances work because every ring is the same length here; see
-        the note on :class:`GridS2` for why that reasoning does not survive contact
-        with a ragged grid, and why this therefore lives on this class rather than on
-        the base.
-        """
+        """Latitude counts held by each rank of a ``num_chunks``-way polar split."""
         return tuple(compute_split_shapes(self.nlat, num_chunks))
 
     def lon_shapes(self, num_chunks: int) -> Tuple[int, ...]:
@@ -979,25 +799,11 @@ class GridShardS2:
     r"""
     One rank's piece of a decomposed :class:`GridS2`.
 
-    A shard is deliberately **not** a :class:`GridS2`, because it is not a grid on the
-    sphere. A band of latitudes does not cover :math:`S^2`, so:
-
-    * its quadrature weights are partial. :attr:`RegularGridShardS2.colat_weights` does
-      not sum to 2 and :attr:`RegularGridShardS2.quad_weights` does not sum to
-      :math:`4\pi`; each is the local contribution to an integral that a collective
-      reduction completes;
-    * quantities that describe the quadrature *rule* rather than this piece of it --
-      the spectral bounds, the angular support radius -- are global, and a shard does
-      not define them at all. Ask :attr:`global_grid` for them. Absent is a stronger
-      guarantee than forwarded: a support radius derived from a shard's own node
-      spacing would differ between ranks, and ranks disagreeing about the support of
-      an operator is a correctness bug rather than an inefficiency.
-
-    Making this a separate type keeps that distinction enforceable: a shard cannot be
-    passed where a global grid is required, and :func:`require_grid` says so.
-
-    This class is abstract; which decomposition parameters exist depends on how the
-    grid splits, so they live on the subclasses. See :class:`RegularGridShardS2`.
+    A shard is not a :class:`GridS2`, since it does not cover the sphere: its
+    quadrature weights are partial sums that a collective completes, and global
+    quantities such as the spectral bounds or the support radius are not defined on
+    it -- use :attr:`global_grid` for those. Abstract; see
+    :class:`RegularGridShardS2`.
 
     Parameters
     ----------
@@ -1022,12 +828,7 @@ class GridShardS2:
 
     @property
     def key(self) -> Tuple[Any, ...]:
-        """
-        Canonical identity, including the global grid's own key.
-
-        Derived from :meth:`params`, so a shard type with different decomposition
-        parameters extends it automatically.
-        """
+        """Canonical identity, including the global grid's own key."""
         return tuple(self.grid.key if name == "grid" else getattr(self, name) for name in self.params())
 
     def __hash__(self) -> int:
@@ -1064,9 +865,7 @@ class GridShardS2:
         r"""
         Per-point solid-angle weights of this rank's block.
 
-        The local counterpart of :attr:`~PointSetS2.quad_weights`, and like everything
-        else on a shard a *partial* quantity: these sum to :math:`4\pi` only once summed
-        across every rank, which is what the collective in the layer completes.
+        These sum to :math:`4\pi` only across all ranks.
         """
         raise NotImplementedError(f"{type(self).__name__} does not define quad_weights")
 
@@ -1078,11 +877,7 @@ class GridShardS2:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "GridShardS2":
-        """
-        Inverse of :meth:`to_dict`.
-
-        The shard type follows from the grid type, so no separate tag is stored.
-        """
+        """Inverse of :meth:`to_dict`."""
         if "grid" not in data:
             raise ValueError("grid shard dict is missing 'grid'")
         grid = GridS2.from_dict(data["grid"])
@@ -1098,10 +893,8 @@ class RegularGridShardS2(GridShardS2):
     r"""
     One rank's piece of a :class:`RegularGridS2` under a 2D decomposition.
 
-    A regular grid is a product of a latitude axis and a longitude axis, so it
-    splits as a product of a latitude range and a longitude range. Both halves of
-    that are specific to this grid family: a ragged grid has no single ``nlon`` to
-    split, and so no meaningful azimuthal rank.
+    The local piece is a contiguous latitude range times a contiguous longitude
+    range.
 
     Parameters
     ----------
@@ -1201,9 +994,7 @@ class RegularGridShardS2(GridShardS2):
         r"""
         This rank's per-point solid-angle weights, shape ``(nlat * nlon,)``.
 
-        Built from the *global* ring lengths and the *local* point counts: splitting a
-        ring across azimuth ranks divides its points up without changing how much solid
-        angle each one covers. Sums to :math:`4\pi` only across all ranks.
+        Sums to :math:`4\pi` only across all ranks.
         """
         return _shard_quad_weights(self)
 
@@ -1217,9 +1008,8 @@ class EquiangularGrid(RegularGridS2):
     r"""
     Equiangular grid with Clenshaw--Curtis quadrature.
 
-    Nodes are equally spaced in :math:`\theta` and include both poles, so the
-    latitudinal spacing is exactly :math:`\pi / (N_\theta - 1)` everywhere. This is
-    the default grid throughout torch-harmonics.
+    Nodes are equally spaced in :math:`\theta` and include both poles, with spacing
+    :math:`\pi / (N_\theta - 1)`.
     """
 
     grid_type: ClassVar[str] = "equiangular"
@@ -1239,9 +1029,8 @@ class LegendreGaussGrid(RegularGridS2):
     r"""
     Gauss--Legendre grid; nodes are the roots of :math:`P_N(\cos\theta)`.
 
-    Optimal quadrature accuracy per node, exact for polynomials up to degree
-    :math:`2N - 1`, but the nodes exclude the poles and are not uniform in
-    :math:`\theta`.
+    Exact for polynomials up to degree :math:`2N - 1`; the nodes exclude the poles
+    and are not uniform in :math:`\theta`.
     """
 
     grid_type: ClassVar[str] = "legendre-gauss"
@@ -1257,8 +1046,8 @@ class LobattoGrid(RegularGridS2):
     r"""
     Gauss--Lobatto grid; nodes are the roots of :math:`P'_{N-1}(\cos\theta)` plus both poles.
 
-    Nodes cluster towards the equator, so the polar spacing is noticeably coarser
-    than :math:`\pi / (N_\theta - 1)`.
+    Exact for polynomials up to degree :math:`2N - 3`. Nodes cluster towards the
+    equator, so the polar spacing is coarser than :math:`\pi / (N_\theta - 1)`.
     """
 
     grid_type: ClassVar[str] = "lobatto"
@@ -1274,15 +1063,10 @@ class TrapezoidalGrid(RegularGridS2):
     r"""
     Trapezoidal rule applied on the :math:`\cos\theta` interval :math:`[-1, 1]`.
 
-    The nodes are equispaced in :math:`\cos\theta`, **not** in :math:`\theta`, which
-    makes the spacing in :math:`\theta` strongly non-uniform: the polar spacing is a
-    factor :math:`\sqrt{N_\theta - 1}` coarser than the equatorial one, so the
-    disparity grows with resolution instead of staying fixed. At
-    :math:`N_\theta = 17` the nodes sit up to 19 degrees away from
-    :class:`EquiangularGrid`'s.
-
-    Previously called ``"equiangular-trapezoidal"``, which named it after nodes it
-    does not have. That string is no longer accepted.
+    The nodes are equispaced in :math:`\cos\theta`, **not** in :math:`\theta`, so
+    the polar spacing is about :math:`\sqrt{N_\theta - 1}` times coarser than the
+    equatorial one. Formerly named ``"equiangular-trapezoidal"``; that name is no
+    longer accepted.
     """
 
     grid_type: ClassVar[str] = "trapezoidal"
@@ -1292,9 +1076,8 @@ class TrapezoidalGrid(RegularGridS2):
         r"""
         Matches the equiangular grid, :math:`\lfloor (N_\theta + 1) / 2 \rfloor`.
 
-        Retained for backwards compatibility, but see
-        :attr:`is_spectrally_accurate`: the trapezoidal rule is not accurate
-        enough to reach this degree, so the value is optimistic.
+        Kept for backwards compatibility; the value is optimistic, see
+        :attr:`is_spectrally_accurate`.
         """
         return (self.nlat + 1) // 2
 
@@ -1303,27 +1086,10 @@ class TrapezoidalGrid(RegularGridS2):
         r"""
         ``False``. The trapezoidal rule converges only algebraically, as :math:`O(h^2)`.
 
-        The consequence for an SHT is severe, because the default truncation grows
-        with resolution faster than the accuracy does. Measured round-trip relative
-        error at ``nlat = 64``, against ~1e-15 for the interpolatory rules:
-
-        ========  ========
-        ``lmax``  rel. err
-        ========  ========
-        1         9e-16
-        2         2.2e-4
-        4         1.6e-3
-        8         2.4e-2
-        16        1.3e-1
-        32        6.7e-1
-        ========  ========
-
-        Only ``lmax = 1`` -- the constant mode -- is exact; the rule integrates
-        functions linear in :math:`\cos\theta` without error, and nothing beyond.
-        ``lmax = 32`` is the default this grid is assigned at ``nlat = 64``. Refining
-        the grid helps only as :math:`n^{-2}`, so this grid is usable for a transform
-        at very low truncation and not otherwise. It remains perfectly
-        serviceable for plain quadrature and for the localized operators.
+        An SHT on this grid is therefore accurate only at very low truncation, far
+        below the default ``lmax`` that :func:`~torch_harmonics.truncate_sht` assigns;
+        pass a small ``lmax`` explicitly. The grid remains suitable for quadrature and
+        for the localized operators.
         """
         return False
 
@@ -1332,10 +1098,7 @@ def require_point_set(grid: Any, name: Optional[str] = "grid") -> PointSetS2:
     """
     Validate that a routine received a descriptor of *some* sampling of the sphere.
 
-    The weakest of the three guards, for routines that need only points and weights
-    -- integration, or asking for an angular support radius. Use it in preference to
-    :func:`require_grid` wherever the routine genuinely does not care how the points
-    are arranged, so that an unstructured family works without a second API break.
+    For routines that need only points and weights, such as integration.
 
     Parameters
     ----------
@@ -1363,16 +1126,9 @@ def require_grid(grid: Any, name: Optional[str] = "grid") -> GridS2:
     """
     Validate that a routine received a ring-structured grid.
 
-    Layers used to take a shape plus a grid name; they now take a descriptor.
-    Passing either of the old arguments would otherwise fail deep inside the
-    constructor with an opaque ``AttributeError``, so intercept it here and say what
-    to write instead.
-
-    This demands a :class:`GridS2` rather than a :class:`PointSetS2`, i.e. that the
-    points are organized into isolatitude rings. That is what an FFT in longitude,
-    a ring-bounded neighbourhood search and a contiguous polar decomposition all
-    rely on; an unstructured set has none of it. Routines needing only points and
-    weights should call :func:`require_point_set` instead.
+    For routines that need the points organized into isolatitude rings. A grid
+    name or ``(nlat, nlon)`` shape is rejected with a message showing how to build
+    the descriptor.
 
     Parameters
     ----------
@@ -1422,20 +1178,10 @@ def _raise_not_a_descriptor(grid: Any, name: str) -> None:
 
 def require_regular_grid(grid: Any, name: Optional[str] = "grid") -> RegularGridS2:
     """
-    Validate that a routine received a grid it can actually handle.
+    Validate that a routine received a :class:`RegularGridS2`.
 
-    Most of torch-harmonics is backed by kernels that address a field as a dense
-    ``(nlat, nlon)`` array with a uniform longitude stride. That is a property of
-    :class:`RegularGridS2`, not of :class:`GridS2`: a ragged grid such as a reduced
-    Gaussian or HEALPix grid has a different number of longitudes on each latitude
-    ring, and handing one to those kernels would not raise -- it would silently
-    index the wrong points.
-
-    Every routine with that assumption calls this, so the assumption is stated once
-    per routine and fails loudly at construction. As support for other grid
-    families lands in a backend, the corresponding call relaxes to
-    :func:`require_grid`; the guards are meant to be removed one at a time rather
-    than all at once.
+    For routines that address a field as a dense ``(nlat, nlon)`` array, which a
+    ragged grid such as HEALPix is not.
 
     Parameters
     ----------
@@ -1487,10 +1233,7 @@ def grid_params(spec: Union[PointSetS2, str, Type[PointSetS2]]) -> Tuple[str, ..
     """
     Names of the parameters a grid type is constructed from, in order.
 
-    Lets a caller -- or a config loader, or an error message -- ask what a grid
-    takes without knowing its class, since the parameterization differs between
-    grid families: a regular latitude--longitude grid takes ``(nlat, nlon)``, while
-    a HEALPix or icosahedral grid takes a refinement level.
+    A latitude--longitude grid takes ``(nlat, nlon)``; HEALPix takes ``(nside,)``.
 
     Examples
     --------
@@ -1507,12 +1250,8 @@ def as_grid(spec: Union[PointSetS2, str, Type[PointSetS2]], **params: Any) -> Po
     """
     Construct a grid descriptor from a grid type name and its parameters.
 
-    The single construction entry point, so that a grid can also be built from a
-    config file or a checkpoint where the type is a string. Parameters are passed
-    by keyword and validated against the parameterization of the requested grid,
-    which means a parameter that is meaningless for a grid family is rejected with
-    a message naming what that family does take, rather than being silently
-    ignored or misinterpreted.
+    Parameters are passed by keyword and validated against the requested grid
+    type; one that does not apply to it is rejected rather than ignored.
 
     Parameters
     ----------
@@ -1582,3 +1321,75 @@ def as_grid(spec: Union[PointSetS2, str, Type[PointSetS2]], **params: Any) -> Po
         raise ValueError(message)
 
     return cls(**params)
+
+
+def _rejects_legacy_signature(init):
+    r"""
+    Turn a pre-v1.0.0 constructor call into an actionable error.
+
+    Layers used to take the resolution and the grid name as separate arguments,
+    ``Layer(nlat, nlon, grid="equiangular")``; they now take a descriptor that carries
+    both. The guards in this module already catch an old call whose arguments happen to
+    land on the new parameters, but the *idiomatic* old call does not get that far:
+    ``grid`` named the grid string then and names the descriptor now, so Python rejects
+    the binding with ``got multiple values for argument 'grid'`` before any body runs.
+    That message says nothing about what to do instead.
+
+    This wrapper inspects the call before binding and raises the migration text, with
+    the actual arguments substituted so the replacement can be copied. It only rejects;
+    a legacy call is never translated and run, so nothing silently changes meaning.
+
+    Applied to ``__init__`` of the layers whose signature changed. Uses
+    :func:`functools.wraps`, so ``inspect.signature`` and the documentation still report
+    the real, descriptor-taking signature.
+    """
+
+    @functools.wraps(init)
+    def wrapper(self, *args, **kwargs):
+        _reject_legacy_grid_call(type(self), init, args, kwargs)
+        return init(self, *args, **kwargs)
+
+    # marker so a test can assert every grid-taking constructor carries the guard
+    wrapper._rejects_legacy_signature = True
+    return wrapper
+
+
+def _is_resolution(value: Any) -> bool:
+    """An ``nlat``/``nlon`` the old signature would have taken, rather than a descriptor."""
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
+def _reject_legacy_grid_call(cls: Type, init: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> None:
+    """Raise if ``args``/``kwargs`` look like the pre-v1.0.0 signature. See above."""
+    names_in_order = [p for p in inspect.signature(init).parameters if p != "self"]
+    grid_params_of = [p for p in names_in_order if p in ("grid", "grid_in", "grid_out")]
+    if not grid_params_of:
+        return
+
+    # look only at what actually lands in a descriptor slot: the grids are not always
+    # the leading parameters (PdeDataset takes dt and nsteps first, and dt is an int)
+    in_grid_slot = [args[names_in_order.index(p)] for p in grid_params_of if names_in_order.index(p) < len(args)]
+    in_grid_slot += [kwargs[p] for p in grid_params_of if p in kwargs]
+
+    # a resolution where a descriptor belongs, or the grid *name* the old signature took
+    if not any(_is_resolution(v) or isinstance(v, str) for v in in_grid_slot):
+        return
+
+    # recover the old arguments where we can, so the suggestion is copy-pasteable
+    resolutions = [a for a in args if _is_resolution(a)]
+    names = [v for v in in_grid_slot if isinstance(v, str)]
+
+    def descriptor(i: int) -> str:
+        name = repr(names[i]) if i < len(names) else (repr(names[0]) if names else "<grid name>")
+        if len(resolutions) >= 2 * (i + 1):
+            return f"as_grid({name}, nlat={resolutions[2 * i]}, nlon={resolutions[2 * i + 1]})"
+        return f"as_grid({name}, nlat=..., nlon=...)"
+
+    replacement = ", ".join(descriptor(i) for i in range(len(grid_params_of)))
+    old = "(nlat, nlon, grid=...)" if len(grid_params_of) == 1 else "(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=..., grid_out=...)"
+    raise TypeError(
+        f"{cls.__name__} no longer takes {old}; since v1.0.0 it takes a grid descriptor, which carries the "
+        f"resolution with it. Write {cls.__name__}({replacement}, ...) instead. A descriptor also knows its own "
+        f"parameters, so a grid family that is not described by (nlat, nlon) -- HEALPix, for instance -- fits the "
+        f"same call."
+    )

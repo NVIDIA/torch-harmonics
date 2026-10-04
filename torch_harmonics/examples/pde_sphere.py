@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.grid import require_regular_grid
+from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
 
 
 class SphereSolver(nn.Module):
@@ -64,6 +64,7 @@ class SphereSolver(nn.Module):
         Coefficient for the PDE, by default 0.001
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid, dt, lmax=None, mmax=None, radius=1.0, coeff=0.001):
         super().__init__()
 

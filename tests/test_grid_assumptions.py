@@ -45,18 +45,20 @@ properties, so that the refactor can be validated against them:
   agree by accident.
 """
 
+import dataclasses
 import functools
 import inspect
 import math
 import unittest
 import warnings
-from typing import Tuple
+from typing import ClassVar, Tuple
 
 import numpy as np
 import torch
 from parameterized import parameterized
 from testutils import compare_tensors, regular_grid_types
 
+import torch_harmonics as th
 from torch_harmonics.disco.convolution import _precompute_convolution_tensor_s2
 from torch_harmonics.distributed.primitives import split_tensor_along_dim
 from torch_harmonics.filter_basis import get_filter_basis
@@ -134,6 +136,38 @@ def _min_latitude_rings_in_cutoff(nlat: int, grid: str) -> int:
     # the strict comparison in _precompute_convolution_tensor_s2, not a real gap
     within = (lats.unsqueeze(0) - lats.unsqueeze(1)).abs() <= cutoff * (1.0 + 1e-9)
     return int(within.sum(dim=1).min().item())
+
+
+def _grid_taking_constructors():
+    """Every public class whose ``__init__`` takes a grid descriptor.
+
+    Discovered across the package rather than listed, so the coverage of the
+    legacy-signature guard tracks the code instead of a hand-maintained table.
+    """
+    import torch_harmonics.distributed as _thd
+    import torch_harmonics.examples as _thex
+    import torch_harmonics.random_fields as _thrf
+    from torch_harmonics.examples import losses as _thloss
+    from torch_harmonics.examples import metrics as _thmet
+
+    found, seen = [], set()
+    for module in (th, _thd, _thex, _thrf, _thloss, _thmet):
+        for name in dir(module):
+            obj = getattr(module, name)
+            if not inspect.isclass(obj) or obj.__name__ in seen:
+                continue
+            # shards are obtained from grid.shard(), never constructed by a caller
+            if issubclass(obj, (GridShardS2,)) or obj.__name__.endswith("ShardS2"):
+                continue
+            try:
+                params = inspect.signature(obj.__init__).parameters
+            except (ValueError, TypeError):
+                continue
+            grid_param_names = [p for p in ("grid", "grid_in", "grid_out") if p in params]
+            if grid_param_names and not inspect.isabstract(obj):
+                seen.add(obj.__name__)
+                found.append((obj, grid_param_names))
+    return found
 
 
 class TestThetaCutoffContract(unittest.TestCase):
@@ -741,6 +775,93 @@ class TestGridDescriptor(unittest.TestCase):
         self.assertEqual(set(regular_grid_types()), set(_ALL_GRIDS))
         # the registry itself carries the ragged families too
         self.assertEqual(set(grid_types()), set(_ALL_GRIDS) | {"healpix"})
+
+    def test_subclassing_a_concrete_grid_without_a_grid_type_is_refused(self):
+        """
+        Identity is ``(grid_type,) + params``, and ``grid_type`` is a ClassVar, so a
+        subclass that declares none inherits its parent's key, hash and equality. It
+        would then collide with the parent in every descriptor-keyed cache and be handed
+        geometry precomputed for a different grid -- silently, because the result still
+        has the right shape. Refused at class-creation time instead.
+        """
+        with self.assertRaises(TypeError) as caught:
+
+            class ShiftedEquiangular(EquiangularGrid):
+                pass
+
+        message = str(caught.exception)
+        self.assertIn("grid_type", message)
+        self.assertIn("equiangular", message)
+
+    def test_a_subclass_declaring_its_own_grid_type_is_accepted(self):
+        """The guard asks a new family to say what it is, not to stay out of the tree."""
+
+        @dataclasses.dataclass(frozen=True)
+        class CustomRegularGrid(RegularGridS2):
+            grid_type: ClassVar[str] = "custom-regular-for-test"
+
+        try:
+            g = CustomRegularGrid(nlat=8, nlon=16)
+            self.assertEqual(g.key, ("custom-regular-for-test", 8, 16))
+            self.assertNotEqual(g, as_grid("equiangular", nlat=8, nlon=16))
+        finally:
+            _GRID_REGISTRY.pop("custom-regular-for-test", None)
+
+    def test_every_grid_taking_constructor_rejects_the_old_signature(self):
+        """
+        Discovered rather than listed, so a layer added later cannot miss the guard.
+
+        The old call named the grid string ``grid``, which is now the descriptor, so
+        Python rejects the binding before any body runs -- with ``got multiple values
+        for argument 'grid'``, which says nothing about what to do. Every constructor
+        that takes a descriptor checks the call first and raises the migration text.
+        """
+        guarded = _grid_taking_constructors()
+        self.assertGreater(len(guarded), 20, msg="discovery found implausibly few constructors")
+
+        for cls, grid_param_names in guarded:
+            with self.subTest(cls=cls.__name__):
+                self.assertTrue(
+                    getattr(cls.__init__, "_rejects_legacy_signature", False),
+                    msg=f"{cls.__name__} takes {', '.join(grid_param_names)} but carries no legacy-signature guard",
+                )
+
+                # build the pre-v1.0.0 call for however many grids this layer takes
+                resolutions, names = [], {}
+                for i, p in enumerate(grid_param_names):
+                    resolutions += [64 // (i + 1), 128 // (i + 1)]
+                    names[p] = "equiangular"
+                with self.assertRaises(TypeError) as caught:
+                    cls(*resolutions, **names)
+
+                message = str(caught.exception)
+                self.assertIn(cls.__name__, message)
+                self.assertIn("as_grid(", message)
+                self.assertIn("nlat=64", message)
+                self.assertNotIn("multiple values", message)
+
+    def test_rejecting_the_old_call_leaves_the_signature_introspectable(self):
+        """The guard wraps __init__, so autodoc and help() must still see the real one."""
+        for cls, grid_param_names in _grid_taking_constructors():
+            with self.subTest(cls=cls.__name__):
+                params = inspect.signature(cls.__init__).parameters
+                self.assertNotIn("args", params, msg="the wrapper's *args leaked into the public signature")
+                self.assertTrue(set(grid_param_names) <= set(params))
+
+    def test_a_descriptor_call_is_not_mistaken_for_a_legacy_one(self):
+        """The guard must not fire on the supported form, including a ragged grid."""
+        g = as_grid("equiangular", nlat=32, nlon=64)
+        self.assertEqual(th.RealSHT(g).nlat, 32)
+        self.assertIsNotNone(th.ResampleS2(g, as_grid("equiangular", nlat=16, nlon=32)))
+        self.assertIsNotNone(th.QuadratureS2(HealpixGrid(nside=2)))
+
+    def test_deriving_from_an_abstract_base_is_unaffected(self):
+        """RegularGridS2 and friends carry no grid_type, so there is nothing to inherit."""
+
+        class AbstractIntermediate(GridS2):
+            pass
+
+        self.assertFalse(hasattr(AbstractIntermediate, "grid_type"))
 
 
 class TestDirectConstructionMatchesFactory(unittest.TestCase):
@@ -1426,21 +1547,23 @@ class TestHealpixGrid(unittest.TestCase):
         g = HealpixGrid(nside=nside)
         self.assertEqual(g.grid_type, "healpix")
         self.assertEqual(g.npoints, 12 * nside**2)
-        self.assertEqual(g.nlat, 4 * nside - 1)
-        self.assertEqual(g.nlon, 4 * nside)
+        self.assertEqual(g.nrings, 4 * nside - 1)
         self.assertFalse(g.is_regular)
         self.assertEqual(g.shape, (12 * nside**2,))
 
     @parameterized.expand([[n] for n in _NSIDES])
-    def test_nlon_is_the_widest_ring_not_a_stride(self, nside):
+    def test_the_grid_is_ragged(self, nside):
         """
-        The trap this grid exists to expose: ``nlat * nlon`` overcounts a ragged grid
-        by a third, so anything that strides by ``nlon`` reads past the ring it is on.
+        Ring sizes grow from the pole to the equator, so the pixel count is strictly
+        below what a rectangular grid of the same extents would hold. The descriptor
+        exposes no ``nlon``, because there is no single ring length to stride by.
         """
         g = HealpixGrid(nside=nside)
-        self.assertEqual(int(g.nlon_per_lat.max().item()), g.nlon)
+        widest = int(g.nlon_per_lat.max().item())
+        self.assertEqual(widest, 4 * nside)
+        self.assertFalse(hasattr(g, "nlon"))
         if nside > 1:
-            self.assertLess(g.npoints, g.nlat * g.nlon)
+            self.assertLess(g.npoints, g.nrings * widest)
 
     def test_invalid_nside_is_rejected(self):
         for bad in [0, -1, -8]:
@@ -1475,7 +1598,7 @@ class TestHealpixGrid(unittest.TestCase):
         offsets = g.lon_offsets
 
         self.assertEqual(offsets.dtype, torch.int64)
-        self.assertEqual(offsets.shape, (g.nlat + 1,))
+        self.assertEqual(offsets.shape, (g.nrings + 1,))
         self.assertEqual(int(offsets[0].item()), 0)
         self.assertEqual(int(offsets[-1].item()), g.npoints)
         self.assertTrue(torch.equal(offsets[1:] - offsets[:-1], g.nlon_per_lat))
@@ -1498,7 +1621,7 @@ class TestHealpixGrid(unittest.TestCase):
         colats = g.colats
 
         self.assertEqual(colats.dtype, torch.float64)
-        self.assertEqual(colats.shape, (g.nlat,))
+        self.assertEqual(colats.shape, (g.nrings,))
         self.assertTrue(bool((colats[1:] > colats[:-1]).all()), msg="colatitudes must ascend from the north pole")
         self.assertGreater(float(colats[0]), 0.0)
         self.assertLess(float(colats[-1]), math.pi)
@@ -1520,7 +1643,7 @@ class TestHealpixGrid(unittest.TestCase):
         g = HealpixGrid(nside=nside)
         shifts = g.lon_shifts
 
-        for ilat in range(g.nlat):
+        for ilat in range(g.nrings):
             with self.subTest(ilat=ilat):
                 lons = g.lons(ilat)
                 n = int(g.nlon_per_lat[ilat].item())
@@ -1544,15 +1667,15 @@ class TestHealpixGrid(unittest.TestCase):
         with self.assertRaises(ValueError):
             g.lons()
         with self.assertRaises(ValueError):
-            g.lons(g.nlat)
+            g.lons(g.nrings)
 
     @parameterized.expand([[n] for n in _NSIDES])
     def test_flat_geometry_matches_the_per_ring_geometry(self, nside, verbose=False):
         """``all_lons``/``all_colats`` are what a ragged operator consumes; they must be
         exactly the concatenation of the rings, in RING order."""
         g = HealpixGrid(nside=nside)
-        expected_lons = torch.cat([g.lons(ilat) for ilat in range(g.nlat)])
-        expected_lats = torch.cat([torch.full((int(g.nlon_per_lat[ilat].item()),), float(g.colats[ilat]), dtype=torch.float64) for ilat in range(g.nlat)])
+        expected_lons = torch.cat([g.lons(ilat) for ilat in range(g.nrings)])
+        expected_lats = torch.cat([torch.full((int(g.nlon_per_lat[ilat].item()),), float(g.colats[ilat]), dtype=torch.float64) for ilat in range(g.nrings)])
 
         self.assertTrue(compare_tensors(f"all_lons (nside={nside})", g.all_lons(), expected_lons, atol=0.0, rtol=0.0, verbose=verbose))
         self.assertTrue(compare_tensors(f"all_colats (nside={nside})", g.all_colats(), expected_lats, atol=0.0, rtol=0.0, verbose=verbose))
@@ -1576,10 +1699,10 @@ class TestHealpixGrid(unittest.TestCase):
     @parameterized.expand([[n] for n in [1, 2, 4, 8]])
     def test_pixel_centres_match_earth2grid(self, nside, verbose=False):
         """
-        Interop, not correctness: healda stores its fields on ``earth2grid``'s HEALPix
-        grid, so a field handed to a torch-harmonics operator has to be indexed the
-        same way. A disagreement here means the two libraries disagree about which
-        pixel a value belongs to, which no amount of numerics downstream would catch.
+        Interop, not correctness: a field stored on ``earth2grid``'s HEALPix grid has to
+        be indexed the same way once it is handed to a torch-harmonics operator. A
+        disagreement here means the two libraries disagree about which pixel a value
+        belongs to, which no amount of numerics downstream would catch.
         """
         try:
             from earth2grid import healpix as e2g_healpix
@@ -1600,14 +1723,14 @@ class TestHealpixGrid(unittest.TestCase):
     @parameterized.expand([[n] for n in _NSIDES])
     def test_weights_are_equal_area(self, nside):
         r"""
-        Every pixel must carry exactly :math:`4\pi / N_{pix}`. This is the property
-        healda picks HEALPix for, and in this library's per-ring :math:`\cos\theta`
+        Every pixel must carry exactly :math:`4\pi / N_{pix}`. This is the defining
+        property of HEALPix, and in this library's per-ring :math:`\cos\theta`
         convention it constrains ``quad_weights`` to be proportional to the ring size.
         """
         g = HealpixGrid(nside=nside)
         w = g.colat_weights
 
-        self.assertEqual(w.shape, (g.nlat,))
+        self.assertEqual(w.shape, (g.nrings,))
         self.assertAlmostEqual(float(w.sum()), 2.0, places=14)
 
         per_pixel = 2.0 * math.pi * w / g.nlon_per_lat.to(torch.float64)
@@ -1683,7 +1806,7 @@ class TestHealpixGrid(unittest.TestCase):
 
         self.assertGreaterEqual(int(counts.min()), 5, msg="a stencil should hold at least the pixel and its four neighbours")
 
-        rings = torch.repeat_interleave(torch.arange(g.nlat), g.nlon_per_lat)
+        rings = torch.repeat_interleave(torch.arange(g.nrings), g.nlon_per_lat)
         for ipix in [0, g.npoints // 2, g.npoints - 1]:
             with self.subTest(ipix=ipix):
                 touched = rings[distances[ipix] <= truncate_support(g)].unique()
@@ -1717,7 +1840,11 @@ class TestHealpixGrid(unittest.TestCase):
         self.assertEqual(len({a, b}), 1)
         self.assertEqual(a.key, ("healpix", nside))
         self.assertNotEqual(a, HealpixGrid(nside=nside + 1))
-        self.assertNotEqual(a, as_grid("equiangular", nlat=a.nlat, nlon=a.nlon))
+        # a rectangular grid built from HEALPix's two extents -- its ring count and its
+        # widest ring -- is a different point set, since every ring of the equiangular
+        # grid holds 4*nside points where HEALPix's caps hold fewer. Identity is keyed on
+        # the descriptor, not on a pair of numbers that happen to coincide.
+        self.assertNotEqual(a, as_grid("equiangular", nlat=a.nrings, nlon=4 * nside))
         self.assertEqual(repr(a), f"HealpixGrid(nside={nside})")
 
     @parameterized.expand([[n] for n in _NSIDES])

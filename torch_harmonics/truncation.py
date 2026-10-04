@@ -99,12 +99,9 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     :math:`l_{\max} = m_{\max} = \min(l_{\max},\, m_{\max})`, so that every
     retained degree has a full set of orders.
 
-    The bounds themselves come from the grid descriptor
-    (:attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` and
-    :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`), which reports what
-    the grid can represent. This routine owns the *policy* on top of that: applying
-    user overrides, enforcing the triangular truncation, and warning where the
-    default changed.
+    The bounds are taken from
+    :attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` and
+    :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`.
 
     Parameters
     ----------
@@ -208,48 +205,25 @@ def truncate_support(grid: PointSetS2, theta_cutoff: Optional[float] = None, sca
     r"""
     Determine the angular support radius of a localized operator on a grid.
 
-    The spatial counterpart of :func:`truncate_sht`. Where that decides how far
-    up in degree an SHT keeps, this decides how far out in angle the filter basis
-    of a DISCO convolution or of neighborhood attention reaches. Both take the
-    bound the grid can support, apply a user override if one is given, and warn
-    when the default they pick differs from the one a previous release used.
-
-    The default is one node spacing of the grid, so that the basis functions of
-    adjacent output points overlap and every output point sees more than the single
-    node it sits on. That spacing is a fact about the node distribution, which the
-    descriptor reports as
-    :attr:`~torch_harmonics.grid.PointSetS2.max_node_spacing`; the policy of turning
-    it into a default, of rejecting a non-positive result, and of warning that the
-    default moved, lives here.
-
-    The spacing comes off the descriptor, via
-    :attr:`~torch_harmonics.grid.PointSetS2.max_node_spacing`, which is the distance
-    to the grid's coarsest *neighbour* -- along a ring or across rings, whichever is
-    further. The free function
-    :func:`torch_harmonics.quadrature.compute_theta_cutoff` reports the latitudinal
-    spacing alone and remains available, but it is keyed on ``(nlat, grid_type)`` and
-    so can neither see the longitudinal direction nor express a family's override.
+    The spatial counterpart of :func:`truncate_sht`: it decides how far the filter
+    of a DISCO convolution or neighborhood attention reaches. The default is one
+    node spacing of the grid,
+    :attr:`~torch_harmonics.grid.PointSetS2.max_node_spacing` (the distance to the
+    coarsest neighbour, along or across rings), so that the supports of adjacent
+    output points overlap.
 
     Parameters
     ----------
     grid : PointSetS2
         Descriptor of the grid that sets the cutoff. This is the output grid of a
         forward transform and the input grid of a transpose one, mirroring which
-        of the two is the coarser. It must be the global grid: a cutoff taken
-        from a shard's own spacing would differ between ranks, and ranks
-        disagreeing about the support of an operator is a correctness bug.
-
-        Any :class:`~torch_harmonics.grid.PointSetS2` is accepted, not only a ring
-        grid: a support radius is an angle, and asking for it commits the caller to
-        nothing about how the sampling is laid out. The routines that go on to build a
-        sparsity pattern from that radius impose their own requirements.
+        of the two is the coarser. Must be a global grid, not a shard.
     theta_cutoff : float, optional
         Explicit cutoff in radians. If None (default), the grid's node spacing is
         used. Must be positive.
     scale : float, optional
         Multiplier applied to the default spacing, by default 1.0. Ignored when
-        *theta_cutoff* is given, which is already a final value. Must leave the
-        resulting radius positive.
+        *theta_cutoff* is given.
 
     Returns
     -------

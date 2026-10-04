@@ -1884,8 +1884,8 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
             # off-by-one there reads a neighbouring channel block and still returns a
             # smooth, plausible field.
             #
-            # 96 per head is what healda's dit-5B runs, and is an exact multiple of the
-            # warp, so it never exercises the guard on the final register; 80 and 40
+            # 96 per head is an exact multiple of the warp, so it never exercises the
+            # guard on the final register; 80 and 40
             # leave that one partial (only 16 and 8 lanes of the last register are in
             # range) and are here for the boundary. 192 over 2 heads puts NLOC > 1 and
             # a head offset together, since the head stride is what the unrolled
@@ -2047,8 +2047,10 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
         grid = HealpixGrid(nside=2)
         model = NeighborhoodAttentionS2(grid_in=grid, grid_out=grid, in_channels=4).to(self.device)
 
+        # the rectangular shape a caller might reach for, (rings, widest ring), which is
+        # not how a ragged field is laid out and does not even hold npoints values
         with self.assertRaises(RuntimeError):
-            model(torch.randn(2, 4, grid.nlat, 4 * grid.nside, device=self.device))
+            model(torch.randn(2, 4, grid.nrings, 4 * grid.nside, device=self.device))
 
         with self.assertRaises(RuntimeError):
             model(torch.randn(2, 4, grid.npoints + 1, device=self.device))

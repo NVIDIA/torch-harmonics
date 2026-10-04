@@ -149,11 +149,9 @@ namespace attention_kernels
         // over the output grid, which is what this walk needs without extra precompute.
         //
         // This kernel is atomics-heavy -- atomicMaxf per neighbor in pass 1, atomicAdd
-        // into numer/denom in pass 2 -- which was long taken to mean the divide could not
-        // be on the critical path, so the conversion was skipped. Measured, that was
-        // wrong: 180x360 -> 360x720 fp32 C=64 forward went 6.69 -> 5.88 ms (acc) and
-        // 5.32 -> 4.20 ms (max), about -14% overall. "Bound by X" did not imply "Y cannot
-        // help".
+        // into numer/denom in pass 2 -- which invites the assumption that the divide
+        // cannot be on the critical path. Measured, that assumption is wrong and the
+        // conversion pays here too: "bound by X" does not imply "Y cannot help".
         const int seg_beg = seg_off[hi];
         const int seg_end = seg_off[hi + 1];
 

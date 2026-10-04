@@ -31,7 +31,7 @@
 
 import torch
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 
 from .sht import InverseRealSHT
 
@@ -87,6 +87,7 @@ class GaussianRandomFieldS2(torch.nn.Module):
     torch.Size([4, 128, 256])
     """
 
+    @_rejects_legacy_signature
     def __init__(self, grid: RegularGridS2, alpha=2.0, tau=3.0, sigma=None, radius=1.0, dtype=torch.float32):
         super().__init__()
 

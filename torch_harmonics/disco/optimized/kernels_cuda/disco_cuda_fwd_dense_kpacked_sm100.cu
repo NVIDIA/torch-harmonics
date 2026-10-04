@@ -166,19 +166,13 @@ namespace disco_kernels
                 T *dst = A_tile + bc_local * (8 * NZ_CHUNK) + nz_local * 8;
 
                 // The windowed gather (gather_window_rt, disco_cuda.cuh), ported from
-                // the SM_90a kernel after measuring it here rather than assuming it
-                // carried over. Measured on GB200, bf16, BC=64, bit-identical:
-                //
-                //   pscale 1   360x720 self          2.38 -> 1.855 ms  1.28x
-                //   pscale 2   720x1440 -> 360x720   6.94 -> 6.21 ms   1.12x
-                //
-                // Both larger than the Hopper wins (1.20x / 1.04x): this baseline had
-                // more L1 headroom (66.9% vs 79.9% at pscale 1), so the ~31% fewer
-                // instructions converted instead of being absorbed by a saturated L1.
-                //
-                // At pscale 2 the win is *entirely* instruction count -- global loads
-                // and sectors are flat (+1.8%, +0.6%, which is the seam fallback) --
-                // confirming issue pressure rather than memory was the constraint.
+                // the SM_90a kernel after confirming it pays here rather than assuming
+                // it carried over; bit-identical. It helps more on this architecture
+                // than on Hopper because the baseline leaves more L1 headroom, so the
+                // instructions it saves convert instead of being absorbed by a
+                // saturated L1. At pscale 2 the gain is entirely instruction count --
+                // global loads and sectors are flat -- which is what identifies issue
+                // pressure rather than memory as the constraint.
                 bool staged = false;
                 {
                     int s = wi_base + wo_base * pscale;

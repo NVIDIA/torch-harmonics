@@ -123,10 +123,8 @@ class NeighborhoodArcsS2(NamedTuple):
     segments : torch.Tensor
         ``int32``, shape ``(nsegs, 3)``, columns ``(ring, start, length)``. One arc of
         ``length`` consecutive points of input ring ``ring``, beginning at index
-        ``start`` within that ring and wrapping at the ring's end. ``start`` is always
-        a valid index into the ring and ``length`` never exceeds the ring size, so a
-        consumer can advance with a single compare-and-subtract and never needs a
-        modulo.
+        ``start`` within that ring and wrapping at the ring's end. ``start`` is a
+        valid index into the ring and ``length`` never exceeds the ring size.
     offsets : torch.Tensor
         ``int32``, shape ``(nrows + 1,)``. Segments of row ``r`` are
         ``segments[offsets[r]:offsets[r + 1]]``.
@@ -137,9 +135,7 @@ class NeighborhoodArcsS2(NamedTuple):
         and the rest of the ring is recovered by shifting.
     ring_base : torch.Tensor
         ``int64``, shape ``(nrings_in,)``. Flat index of the first point of each input
-        ring, i.e. the input grid's ``lon_offsets[:-1]``. Carried alongside so a
-        consumer can turn ``(ring, offset within ring)`` into a flat column without
-        holding the grid.
+        ring, i.e. the input grid's ``lon_offsets[:-1]``.
     ring_size : torch.Tensor
         ``int64``, shape ``(nrings_in,)``. Points on each input ring, i.e. the input
         grid's ``nlon_per_lat``. Needed to wrap an arc.
@@ -148,17 +144,11 @@ class NeighborhoodArcsS2(NamedTuple):
     lon_shift : int, optional
         ``None`` when the pattern is stored per output point.
 
-        Otherwise the longitude axis has been folded away: there is one row per output
-        ring, and the neighbourhood of the point at longitude index ``w`` of ring ``k``
-        is row ``k``'s arcs with every ``start`` advanced by ``w * lon_shift`` within its
-        ring. That is only valid when shifting the output longitude maps the pattern onto
-        itself, which needs both grids regular, unstaggered rings, and
-        ``nlon_in % nlon_out == 0``; :func:`precompute_neighborhood_arcs_s2` checks all
-        three before folding.
-
-        Worth the check: folding divides the stored pattern by ``nlon_out``. At 1024
-        output longitudes that is the difference between 631 thousand entries and 646
-        million.
+        Otherwise the longitude axis has been folded away, reducing storage by a
+        factor ``nlon_out``: there is one row per output ring, and the neighbourhood of
+        the point at longitude index ``w`` of ring ``k`` is row ``k``'s arcs with every
+        ``start`` advanced by ``w * lon_shift`` within its ring. Folding requires both
+        grids regular, unstaggered rings, and ``nlon_in % nlon_out == 0``.
     """
 
     segments: torch.Tensor
@@ -176,9 +166,6 @@ class NeighborhoodArcsS2(NamedTuple):
     def columns(self, ipoint: int) -> torch.Tensor:
         r"""
         Expand one output point's arcs into the flat input indices they stand for.
-
-        The inverse of the arc encoding, for the reference paths and for tests: the
-        arcs are the representation the kernels want, and this is what they mean.
 
         Parameters
         ----------
@@ -203,14 +190,9 @@ class NeighborhoodArcsS2(NamedTuple):
 
     def to_csr(self) -> Tuple[torch.Tensor, torch.Tensor]:
         r"""
-        Expand the whole pattern into a CSR-style column list keyed by output point.
+        Expand the whole pattern into a CSR-style column list keyed by output row.
 
-        The arcs are the form the kernels want, because an arc can be walked with a
-        compare-and-subtract while a column list costs an integer division per
-        neighbour. This is the other form: what the reference paths and the sparse
-        linear algebra in the tests consume. Materializing it is what makes those
-        consumers independent of the arc derivation, so a mistake in the encoding
-        cannot hide by being made identically on both sides.
+        Use :func:`precompute_neighborhood_csr_s2` for a cached expansion.
 
         Returns
         -------
@@ -219,17 +201,8 @@ class NeighborhoodArcsS2(NamedTuple):
             row.
         row_off : torch.Tensor
             ``int64``, shape ``(nrows + 1,)``. Neighbours of row ``p`` are
-            ``col_idx[row_off[p]:row_off[p + 1]]``. A row is what it is in the arcs: an
-            output point, or with :attr:`NeighborhoodArcsS2.lon_shift` set an output ring, whose columns
-            are then those of the ring's first point.
-
-        Notes
-        -----
-        The expansion is vectorized over arcs rather than looping over output points,
-        because the loop is over ``npoints_out`` and so grows with the grid: at HEALPix
-        ``nside`` 32 it is twelve thousand iterations of small allocations, and every
-        attention layer in a model pays it again. :func:`precompute_neighborhood_csr_s2`
-        is the cached entry point that keeps layers sharing one expansion.
+            ``col_idx[row_off[p]:row_off[p + 1]]``. A row is an output point, or, with
+            :attr:`lon_shift` set, an output ring (holding the columns of its first point).
         """
         npoints_out = self.offsets.numel() - 1
         seg_off = self.offsets.to(torch.int64)
@@ -312,35 +285,23 @@ def precompute_neighborhood_arcs_s2(
     r"""
     Geodesic neighbourhood of every output point, as contiguous arcs of input points.
 
-    Works on any isolatitude grid, ragged or not, because it uses only the ring
-    geometry the descriptor exposes: ring colatitudes, ring sizes and the fractional
-    longitude offset of each ring.
-
-    The derivation: an output point sits at :math:`(\theta_o, \phi_o)`. The points of input ring
-    :math:`m`, at colatitude :math:`\theta_m`, that lie within a geodesic radius
-    :math:`r` of it are exactly those whose longitude satisfies
-
-    .. math::
-        \cos r \le \cos\theta_o \cos\theta_m + \sin\theta_o \sin\theta_m \cos(\phi - \phi_o),
-
-    which is one interval in :math:`\phi` centred on :math:`\phi_o`:
+    Works on any isolatitude grid, ragged or not. For an output point at
+    :math:`(\theta_o, \phi_o)`, the points of input ring :math:`m` (colatitude
+    :math:`\theta_m`) within geodesic radius :math:`r` form one interval in longitude:
 
     .. math::
         |\phi - \phi_o| \le \Delta_m, \qquad
         \cos \Delta_m = \frac{\cos r - \cos\theta_o \cos\theta_m}{\sin\theta_o \sin\theta_m}.
 
-    A right-hand side at or below :math:`-1` means the whole ring is inside the ball
-    and the arc is the entire ring; at or above :math:`+1` the ring is missed
-    entirely. Otherwise the ring's points, at
-    :math:`\phi_j = \frac{2\pi}{n_m}(j + \delta_m)`, give the index range
+    If the right-hand side is :math:`\le -1` the whole ring is inside; if
+    :math:`\ge 1` none of it is. Otherwise the ring's points
+    :math:`\phi_j = \frac{2\pi}{n_m}(j + \delta_m)` give the index range
 
     .. math::
         j \in \left[\left\lceil \frac{n_m}{2\pi}(\phi_o - \Delta_m) - \delta_m \right\rceil,
                     \left\lfloor \frac{n_m}{2\pi}(\phi_o + \Delta_m) - \delta_m \right\rfloor\right],
 
-    contiguous by construction and wrapping at the seam. Only rings with
-    :math:`|\theta_m - \theta_o| \le r` can contribute, which bounds the search to a
-    band found by binary search on the sorted ring colatitudes.
+    wrapping at the seam. Only rings with :math:`|\theta_m - \theta_o| \le r` are searched.
 
     Parameters
     ----------
@@ -352,12 +313,10 @@ def precompute_neighborhood_arcs_s2(
         Angular radius of the neighbourhood, in radians. Positive. Usually obtained
         from :func:`torch_harmonics.truncate_support`.
     theta_eps : float, optional
-        Relative widening of the radius, by default
-        ``torch_harmonics.quadrature.THETA_CUTOFF_EPS``, the same widening the DISCO
-        precompute and the distributed halo radius use, so all three agree on which
-        latitudes a cutoff reaches. It keeps a point that lands exactly on the cutoff -- which happens on
-        symmetric grids far more often than a random-geometry intuition suggests --
-        from falling in or out on a floating-point tie.
+        Relative widening of the radius that keeps points lying exactly on the cutoff
+        from being dropped by round-off, by default
+        ``torch_harmonics.quadrature.THETA_CUTOFF_EPS``. This matches the widening used
+        by the DISCO convolutions.
     fold_longitude : bool, optional
         Store one row per output ring instead of one per output point, the rest of the
         ring being recovered by a longitude shift, by default ``False``. Requires both
@@ -367,8 +326,7 @@ def precompute_neighborhood_arcs_s2(
     Returns
     -------
     NeighborhoodArcsS2
-        The pattern. Cached on the descriptors, which is why they are required to be
-        hashable and to exclude tensors.
+        The pattern. Results are cached per grid pair and radius.
 
     Raises
     ------
@@ -378,12 +336,8 @@ def precompute_neighborhood_arcs_s2(
 
     Notes
     -----
-    A ring that sits exactly on a pole -- which every equiangular grid has, at both
-    ends -- degenerates to a single location repeated ``nlon`` times, so its distance
-    to an output point does not depend on longitude and the arc is either the whole
-    ring or nothing. The same is true of an output point on a pole. Both are handled
-    as the whole-ring case rather than rejected, which is what makes the pattern agree
-    with the DISCO precompute on an equiangular grid.
+    A ring (or output point) on a pole has no longitude dependence, so its arc is
+    either the whole ring or empty.
     """
     grid_in = require_grid(grid_in, "grid_in")
     grid_out = require_grid(grid_out, "grid_out")
@@ -502,15 +456,11 @@ def precompute_neighborhood_csr_s2(
     grid_in: GridS2, grid_out: GridS2, theta_cutoff: float, theta_eps: Optional[float] = THETA_CUTOFF_EPS, fold_longitude: Optional[bool] = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     r"""
-    Cached CSR form of the neighbourhood, for consumers that want columns not arcs.
+    Geodesic neighbourhood as an explicit CSR column list.
 
-    :func:`precompute_neighborhood_arcs_s2` is cached, so layers built on the same
-    grid pair and radius already share the arcs. Expanding those arcs is the other
-    half of the cost, and without a cache of its own every layer repeats it: a DiT
-    backbone stacks tens of attention blocks on one grid, which is tens of identical
-    expansions of a pattern that is a pure function of its arguments. Caching here
-    rather than inside :meth:`NeighborhoodArcsS2.to_csr` keeps the arcs a plain
-    ``NamedTuple``, with no per-instance state to invalidate.
+    The cached equivalent of
+    ``precompute_neighborhood_arcs_s2(...).to_csr()``, for consumers that want
+    columns rather than arcs.
 
     Parameters
     ----------

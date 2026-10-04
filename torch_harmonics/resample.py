@@ -36,7 +36,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics.grid import RegularGridS2, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 
 
 def _slerp_shortest_arc(start: torch.Tensor, end: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -140,8 +140,7 @@ class ResampleS2(nn.Module):
           f(t) = f_0 + t \cdot \mathrm{wrap}_\pi(f_1 - f_0),
           \qquad \mathrm{wrap}_\pi(\delta) \in (-\pi, \pi]
 
-      This is the two-dimensional closed form of slerp; see the
-      ``_slerp_shortest_arc`` helper in this module for the derivation.  Since
+      This is the two-dimensional closed form of slerp.  Since
       :math:`\mathrm{wrap}_\pi` is the identity whenever
       :math:`|f_1 - f_0| \le \pi`, this mode is **identical to** ``"bilinear"``
       except across a :math:`2\pi` phase wrap -- precisely the discontinuity it
@@ -177,6 +176,7 @@ class ResampleS2(nn.Module):
     torch.Size([1, 128, 256])
     """
 
+    @_rejects_legacy_signature
     def __init__(
         self,
         grid_in: RegularGridS2,
@@ -248,8 +248,7 @@ class ResampleS2(nn.Module):
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
 
-        # descriptor equality covers the grid type and both extents, which is exactly
-        # the conjunction this used to spell out
+        # descriptor equality covers the grid type and both extents
         self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):
