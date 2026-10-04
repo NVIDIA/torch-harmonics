@@ -1,4 +1,4 @@
-name: Run local tests
+name: Tests
 
 on:
   push:
@@ -11,50 +11,9 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Run local tests
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v5
-
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v6
-      with:
-        python-version: "3.11"
-
-    - name: Install dependencies
-      run: |
-        python3 -m pip install --upgrade pip setuptools wheel
-        python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
-
-    - name: Install package with dev dependencies
-      run: |
-        python3 -m pip install --no-build-isolation -e ".[dev]"
-
-    - name: Test with pytest
-      env:
-        # a distinct name, so the coverage job can combine it with the distributed suite's
-        COVERAGE_FILE: .coverage.serial
-      run: |
-        python3 -m pytest -ra --cov-report term --cov-config=.coveragerc --cov=torch_harmonics \
-          --ignore-glob="**/test_distributed_*" ./tests/
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: coverage-serial
-        path: .coverage.serial
-        include-hidden-files: true
-
-    # Execute the ">>>" examples in the package docstrings. Sphinx renders them
-    # into the API docs, where they read as verified output, so an unchecked one
-    # is documentation that lies: before this step existed every example in the
-    # package was inert, and several had been wrong for releases. Kept separate
-    # from the suite above so that a broken example is its own red mark and does
-    # not move the coverage number.
-    - name: Doctest the package docstrings
-      run: |
-        python3 -m pytest -ra --doctest-modules ./torch_harmonics/
+  # The serial suite and the doctests, on every push and pull request.
+  serial:
+    uses: ./.github/workflows/test_serial.yml
 
   # The distributed suite: on pull requests, and once per merge to main, so the coverage
   # below covers both suites. Not on plain branch pushes -- up to 8 ranks per grid is heavy.
@@ -66,7 +25,7 @@ jobs:
   # request together with the coverage of the lines it changes -- and prepare the badge.
   coverage:
     name: Coverage
-    needs: [build, distributed]
+    needs: [serial, distributed]
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
