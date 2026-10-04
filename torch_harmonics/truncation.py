@@ -132,20 +132,25 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
 
     Returns
     -------
-    _SpectralTruncation
-        Resolved ``(lmax, mmax, lmmax)`` bounds.
+    object
+        Resolved spectral bounds with ``lmax``, ``mmax``, and ``lmmax``
+        attributes. ``lmmax`` is ``None`` when the degree-minus-order
+        bandwidth is unrestricted.
 
     Examples
     --------
     >>> from torch_harmonics import as_grid, truncate_sht
-    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256))
-    _SpectralTruncation(lmax=128, mmax=128, lmmax=None)
-    >>> truncate_sht(as_grid("lobatto", nlat=128, nlon=256))
-    _SpectralTruncation(lmax=127, mmax=127, lmmax=None)
-    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), lmax=32)
-    _SpectralTruncation(lmax=32, mmax=32, lmmax=None)
-    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), lmax=85, mmax=43, lmmax=43)
-    _SpectralTruncation(lmax=85, mmax=43, lmmax=43)
+    >>> trunc = truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256))
+    >>> (trunc.lmax, trunc.mmax, trunc.lmmax)
+    (128, 128, None)
+    >>> trunc = truncate_sht(
+    ...     as_grid("legendre-gauss", nlat=128, nlon=256),
+    ...     lmax=85,
+    ...     mmax=43,
+    ...     lmmax=43,
+    ... )
+    >>> (trunc.lmax, trunc.mmax, trunc.lmmax)
+    (85, 43, 43)
     """
 
     # a shard has no spectral bounds of its own; say so with the migration message
