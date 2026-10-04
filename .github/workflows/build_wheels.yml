@@ -75,7 +75,7 @@ jobs:
             python-builds: 'cp311-* cp312-* cp313-* cp314-*'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:92e9a8cf7caa9d460570aa94dc8ea6a2406dfb5626ac04323a617821dab9403b'
-          - torch-version: '2.14.0'
+          - torch-version: '2.14.1'
             torch-cuda: 'cu132'
             cuda-version: '13.2'
             # newest torch on newest CUDA is published as the -cuda-latest package
@@ -93,7 +93,7 @@ jobs:
           # system libraries this wheel is built against, with no diff saying so.
           # The digest below is what cibuildwheel 4.2.1 selects, so pinning it is
           # a no-op today; updating the image is now its own reviewable change.
-          - torch-version: '2.14.0'
+          - torch-version: '2.14.1'
             torch-cuda: 'cpu'
             cuda-version: 'none'
             dist-tag: 'cpu'
@@ -355,7 +355,7 @@ jobs:
         path: wheelhouse/*.whl
 
     - name: Repack wheels for PyPI (strip local version identifier)
-      if: matrix.torch-version == '2.14.0' && matrix.torch-cuda == 'cu132'
+      if: matrix.torch-version == '2.14.1' && matrix.torch-cuda == 'cu132'
       run: |
         pip install -r .github/requirements/build-tools.txt
         mkdir -p pypi-wheelhouse
@@ -376,7 +376,7 @@ jobs:
         done
 
     - name: Inspect repacked wheels and .so files
-      if: always() && (matrix.torch-version == '2.14.0' && matrix.torch-cuda == 'cu132')
+      if: always() && (matrix.torch-version == '2.14.1' && matrix.torch-cuda == 'cu132')
       run: |
         pip install -r .github/requirements/build-tools.txt
 
