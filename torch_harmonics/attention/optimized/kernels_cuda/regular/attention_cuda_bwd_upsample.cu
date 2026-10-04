@@ -276,7 +276,7 @@ namespace attention_kernels
         // scratch is indexed by (batch, head); dqy is packed along channels
         const int64_t scell = int64_t(bh) * nlat_out * nlon_out + wid;
         const float s = S[scell];
-        const float s_inv = 1.0f / s;
+        const float s_inv = reciprocal_or_zero(s);
         const float avw = Avw[scell];
         const float *_Ak = Ak + scell * nchan_in;
         const float *_Akvw = Akvw + scell * nchan_in;

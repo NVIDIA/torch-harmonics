@@ -154,6 +154,24 @@ class TestNeighborhoodArcs(unittest.TestCase):
         expected = _brute_force_neighborhood(grid, grid, cutoff)
         self.assertTrue(torch.equal(_arcs_to_mask(arcs, grid.npoints), expected))
 
+    @parameterized.expand([["equiangular", 16, 1], ["legendre-gauss", 16, 1], ["equiangular", 16, 2], ["legendre-gauss", 8, 4]])
+    def test_folded_columns_match_the_unfolded_pattern(self, name, nlat_out, lon_ratio):
+        """
+        ``columns`` takes a flat output point index whether or not the longitude axis was
+        folded away; on a folded pattern it has to find the point's ring row and apply
+        that point's longitude shift, ``lon_ratio`` input steps per output step.
+        """
+        grid_out = as_grid(name, nlat=nlat_out, nlon=2 * nlat_out)
+        grid_in = as_grid(name, nlat=2 * nlat_out, nlon=2 * nlat_out * lon_ratio)
+        cutoff = grid_out.max_latitude_spacing
+        unfolded = precompute_neighborhood_arcs_s2(grid_in, grid_out, cutoff)
+        folded = precompute_neighborhood_arcs_s2(grid_in, grid_out, cutoff, fold_longitude=True)
+        self.assertEqual(folded.lon_shift, lon_ratio)
+
+        for ipoint in range(grid_out.npoints):
+            with self.subTest(ipoint=ipoint):
+                self.assertEqual(folded.columns(ipoint).tolist(), unfolded.columns(ipoint).tolist())
+
     def test_it_agrees_with_the_disco_precompute_on_a_product_grid(self):
         """
         The interop property that makes this a drop-in replacement: on a grid where

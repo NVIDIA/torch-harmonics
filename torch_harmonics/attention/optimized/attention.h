@@ -36,6 +36,7 @@
 #include <torch/library.h>
 
 #include "attention_checks.h"
+#include "attention_math.h"
 #include <cassert>
 
 // Device only; the layout is checked by check_dense in attention_checks.h, see the CUDA side.

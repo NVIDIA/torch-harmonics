@@ -100,8 +100,9 @@ class DistributedQuadratureS2(torch.nn.Module):
         if normalize:
             quad_weight = quad_weight / (4.0 * torch.pi)
 
-        # lay the weights out like the local block they multiply
-        quad_weight = quad_weight.reshape(1, 1, *self.shard.shape).to(torch.float32).contiguous()
+        # lay the weights out like the local block they multiply, with no leading singleton
+        # axes, which broadcasting would add to inputs with fewer leading dims
+        quad_weight = quad_weight.reshape(*self.shard.shape).to(torch.float32).contiguous()
 
         # how many trailing axes `forward` reduces over, derived from the same shape as
         # the buffer so the two cannot disagree

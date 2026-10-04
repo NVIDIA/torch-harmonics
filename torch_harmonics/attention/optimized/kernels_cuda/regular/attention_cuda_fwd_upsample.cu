@@ -266,7 +266,7 @@ namespace attention_kernels
 
         // scratch is indexed by (batch, head); y is packed along channels
         const int64_t scell = int64_t(bh) * nlat_out * nlon_out + wid;
-        const float inv = 1.0f / denom[scell];
+        const float inv = reciprocal_or_zero(denom[scell]);
         const float *_numer = numer + scell * nchan_out;
         STORAGE_T *_y = y + (int64_t(batch) * nlat_out * nlon_out + wid) * ldo + int64_t(head) * nchan_out;
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { vstore(_y, chan, _numer[chan] * inv); }

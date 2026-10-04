@@ -232,7 +232,7 @@ namespace attention_kernels
             }
         }
 
-        const float alpha_sum_inv = 1.0f / alpha_sum;
+        const float alpha_sum_inv = reciprocal_or_zero(alpha_sum);
 
         integral *= alpha_sum_inv;
 
@@ -571,7 +571,7 @@ namespace attention_kernels
             }
         }
 
-        const float alpha_sum_inv = 1.0f / alpha_sum;
+        const float alpha_sum_inv = reciprocal_or_zero(alpha_sum);
 
         integral *= alpha_sum_inv;
 

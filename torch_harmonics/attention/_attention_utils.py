@@ -34,6 +34,19 @@ import torch
 
 from torch_harmonics.utils import check
 
+
+def _reciprocal_or_zero(alpha_sum: torch.Tensor) -> torch.Tensor:
+    """
+    ``1 / alpha_sum``, or zero where ``alpha_sum`` is zero.
+
+    An output point whose neighbourhood is empty -- possible across two grids when the
+    cutoff is below the input spacing -- has an empty softmax sum. Every path, the
+    references, the kernels and the distributed finalize, returns zero output and zero
+    gradient for it instead of dividing by that zero.
+    """
+    return torch.where(alpha_sum > 0, alpha_sum.reciprocal(), torch.zeros_like(alpha_sum))
+
+
 # Input validation helpers.
 #
 # These exist because torch._check messages have to survive dynamo. A *callable*

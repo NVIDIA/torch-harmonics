@@ -576,7 +576,7 @@ namespace attention_kernels
 
         // the statistics are final: every chunk has been seen by pass1
         const int64_t stat_off = int64_t(bh) * nlat_out * nlon_out + int64_t(ho) * nlon_out + wo;
-        const float alpha_sum_inv = 1.0f / alpha_sum_buf[stat_off];
+        const float alpha_sum_inv = reciprocal_or_zero(alpha_sum_buf[stat_off]);
         const float qdotk_max = qdotk_max_buf[stat_off];
         const float integral = integral_norm_buf[stat_off];
 
@@ -806,7 +806,7 @@ namespace attention_kernels
 
         // the statistics are final: every chunk has been seen by pass1
         const int64_t stat_off = int64_t(bh) * nlat_out * nlon_out + int64_t(ho) * nlon_out + wo;
-        const float alpha_sum_inv = 1.0f / alpha_sum_buf[stat_off];
+        const float alpha_sum_inv = reciprocal_or_zero(alpha_sum_buf[stat_off]);
         const float qdotk_max = qdotk_max_buf[stat_off];
         const float integral = integral_norm_buf[stat_off];
 

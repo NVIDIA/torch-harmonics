@@ -177,12 +177,21 @@ class NeighborhoodArcsS2(NamedTuple):
         torch.Tensor
             ``int64`` flat input indices, ascending.
         """
+        row, shift = ipoint, 0
+        if self.lon_shift is not None:
+            # folded: one row per output ring, and the point at longitude w is that row
+            # shifted by w * lon_shift. Folding implies regular grids, so every input ring
+            # holds nlon_out * lon_shift points.
+            nlon_out = int(self.ring_size[0]) // self.lon_shift
+            row, w = divmod(ipoint, nlon_out)
+            shift = w * self.lon_shift
+
         cols = []
-        for iseg in range(int(self.offsets[ipoint]), int(self.offsets[ipoint + 1])):
+        for iseg in range(int(self.offsets[row]), int(self.offsets[row + 1])):
             ring, start, length = (int(x) for x in self.segments[iseg])
             n = int(self.ring_size[ring])
             base = int(self.ring_base[ring])
-            offsets_in_ring = (start + torch.arange(length, dtype=torch.int64)) % n
+            offsets_in_ring = (start + shift + torch.arange(length, dtype=torch.int64)) % n
             cols.append(base + offsets_in_ring)
         if not cols:
             return torch.empty(0, dtype=torch.int64)

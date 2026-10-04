@@ -48,7 +48,7 @@ import torch
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.utils import check
 
-from .._attention_utils import _setup_context_attention_regular_reference_backward
+from .._attention_utils import _reciprocal_or_zero, _setup_context_attention_regular_reference_backward
 
 
 # =====================================================================================
@@ -126,7 +126,7 @@ def _neighborhood_s2_attention_regular_fwd_torch(
                 # define new max
                 qdotk_max = qdotk_max_tmp
 
-            y[:, :, ho, wo] = y[:, :, ho, wo] / alpha_sum[:, None]
+            y[:, :, ho, wo] = y[:, :, ho, wo] * _reciprocal_or_zero(alpha_sum)[:, None]
 
     return y
 
@@ -166,6 +166,11 @@ def _neighborhood_s2_attention_regular_bwd_dv_torch(
         # get number of nonzeros
         zstart = row_off[ho]
         zend = row_off[ho + 1]
+
+        # an empty neighbourhood contributes no gradient (see _reciprocal_or_zero); skipped
+        # outright, since the softmax maximum over no neighbours is undefined
+        if zend == zstart:
+            continue
 
         for wo in range(nlon_out):
 
@@ -248,6 +253,11 @@ def _neighborhood_s2_attention_regular_bwd_dk_torch(
         zstart = row_off[ho]
         zend = row_off[ho + 1]
 
+        # an empty neighbourhood contributes no gradient (see _reciprocal_or_zero); skipped
+        # outright, since the softmax maximum over no neighbours is undefined
+        if zend == zstart:
+            continue
+
         for wo in range(nlon_out):
 
             qdotk_nz = torch.zeros((batch_size, zend - zstart), dtype=dy.dtype, device=dy.device)
@@ -288,7 +298,7 @@ def _neighborhood_s2_attention_regular_bwd_dk_torch(
                 # integral term
                 integral[:] += alpha[:, idz - zstart] * gdotv[:]
 
-            integral[:] = integral[:] / alpha_sum[:]
+            integral[:] = integral[:] * _reciprocal_or_zero(alpha_sum)
 
             for idz in range(zstart, zend):
                 nz_col_idx = col_idx[idz]
@@ -345,6 +355,11 @@ def _neighborhood_s2_attention_regular_bwd_dq_torch(
         zstart = row_off[ho]
         zend = row_off[ho + 1]
 
+        # an empty neighbourhood contributes no gradient (see _reciprocal_or_zero); skipped
+        # outright, since the softmax maximum over no neighbours is undefined
+        if zend == zstart:
+            continue
+
         for wo in range(nlon_out):
 
             alpha = torch.zeros((batch_size, zend - zstart), dtype=dy.dtype, device=dy.device)
@@ -391,7 +406,8 @@ def _neighborhood_s2_attention_regular_bwd_dq_torch(
                 alpha_vw[:] += alpha[:, idz_i] * gdotv[:]
                 alpha_kvw[:, :] += alpha[:, None, idz_i] * k_hi_wi * gdotv[:, None]
 
-            dqy[:, :, ho, wo] = (alpha_kvw * alpha_sum[:, None] - alpha_vw[:, None] * alpha_k) / (alpha_sum[:, None] * alpha_sum[:, None])
+            inv_sum = _reciprocal_or_zero(alpha_sum)[:, None]
+            dqy[:, :, ho, wo] = (alpha_kvw * alpha_sum[:, None] - alpha_vw[:, None] * alpha_k) * (inv_sum * inv_sum)
 
     return dqy
 
@@ -659,7 +675,7 @@ def _neighborhood_s2_attention_upsample_fwd_torch(
                 y_acc[:, :, ho, wop] += alpha.unsqueeze(1) * vx[:, :, hi, wi]
 
     # finalize
-    y = y_acc / alpha_sum.unsqueeze(1)
+    y = y_acc * _reciprocal_or_zero(alpha_sum).unsqueeze(1)
     return y
 
 
@@ -786,7 +802,7 @@ def _neighborhood_s2_attention_upsample_bwd_dk_torch(
                 alpha_sum[:, ho, wop] += alpha
                 gdotv = torch.sum(dy[:, :, ho, wop] * vx[:, :, hi, wi], dim=1)  # [B]
                 integral[:, ho, wop] += alpha * gdotv
-    integral = integral / alpha_sum
+    integral = integral * _reciprocal_or_zero(alpha_sum)
 
     # --- pass 3: scatter dkx ---
     dkx = torch.zeros_like(kx)
@@ -871,5 +887,6 @@ def _neighborhood_s2_attention_upsample_bwd_dq_torch(
                 alpha_kvw[:, :, ho, wop] += (alpha * gdotv).unsqueeze(1) * kx[:, :, hi, wi]
 
     alpha_sum_1 = alpha_sum.unsqueeze(1)
-    dqy = (alpha_kvw * alpha_sum_1 - alpha_vw.unsqueeze(1) * alpha_k) / (alpha_sum_1 * alpha_sum_1)
+    inv_sum = _reciprocal_or_zero(alpha_sum_1)
+    dqy = (alpha_kvw * alpha_sum_1 - alpha_vw.unsqueeze(1) * alpha_k) * (inv_sum * inv_sum)
     return dqy

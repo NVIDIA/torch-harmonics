@@ -147,8 +147,9 @@ class QuadratureS2(nn.Module):
 
         # lay the weights out like the field they multiply: (nlat, nlon) on a regular grid,
         # flat (npoints,) otherwise. `grid.shape` is what a field on this grid looks like,
-        # so this stays correct for both without branching on the family.
-        quad_weight = quad_weight.reshape(1, 1, *self.grid.shape).to(torch.float32).contiguous()
+        # so this stays correct for both without branching on the family. No leading
+        # singleton axes: broadcasting would add them to inputs with fewer leading dims.
+        quad_weight = quad_weight.reshape(*self.grid.shape).to(torch.float32).contiguous()
 
         # how many trailing axes `forward` reduces over; 2 for a regular grid, 1 for a
         # ragged one. Derived from the same `grid.shape`, so it cannot disagree with the

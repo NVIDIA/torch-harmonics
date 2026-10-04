@@ -65,6 +65,8 @@ import torch
 
 from torch_harmonics.utils import check
 
+from .._attention_utils import _reciprocal_or_zero
+
 __all__ = ["_neighborhood_s2_attention_ragged_torch"]
 
 
@@ -126,13 +128,15 @@ def _neighborhood_s2_attention_ragged_fwd_torch(
 
     for ipoint in range(npoints_out):
         cols = _gather_neighbors(col_idx, row_off, ipoint)
+        # an empty neighbourhood keeps its zero output (see _reciprocal_or_zero); skipped
+        # outright, since the softmax maximum over no neighbours is undefined
         if cols.numel() == 0:
             continue
 
         alpha, alpha_sum = _softmax_state(kx, qy, point_weights, cols, ipoint)
 
         # (batch, channels, nnz) weighted by (batch, 1, nnz), summed over neighbours
-        y[:, :, ipoint] = torch.sum(alpha.unsqueeze(1) * vx[:, :, cols], dim=-1) / alpha_sum
+        y[:, :, ipoint] = torch.sum(alpha.unsqueeze(1) * vx[:, :, cols], dim=-1) * _reciprocal_or_zero(alpha_sum)
 
     return y
 
@@ -155,7 +159,7 @@ def _neighborhood_s2_attention_ragged_bwd_dv_torch(
             continue
 
         alpha, alpha_sum = _softmax_state(kx, qy, point_weights, cols, ipoint)
-        alpha_norm = alpha / alpha_sum
+        alpha_norm = alpha * _reciprocal_or_zero(alpha_sum)
 
         # index_add_ rather than `dvx[:, :, cols] +=`: advanced-index assignment
         # silently keeps only the last write for a repeated index, so it would be
@@ -186,7 +190,7 @@ def _neighborhood_s2_attention_ragged_bwd_dk_torch(
             continue
 
         alpha, alpha_sum = _softmax_state(kx, qy, point_weights, cols, ipoint)
-        alpha_norm = alpha / alpha_sum
+        alpha_norm = alpha * _reciprocal_or_zero(alpha_sum)
 
         gdotv = torch.sum(dy[:, :, ipoint].unsqueeze(-1) * vx[:, :, cols], dim=1)
         integral = torch.sum(alpha_norm * gdotv, dim=-1, keepdim=True)
@@ -215,7 +219,7 @@ def _neighborhood_s2_attention_ragged_bwd_dq_torch(
             continue
 
         alpha, alpha_sum = _softmax_state(kx, qy, point_weights, cols, ipoint)
-        alpha_norm = alpha / alpha_sum
+        alpha_norm = alpha * _reciprocal_or_zero(alpha_sum)
 
         gdotv = torch.sum(dy[:, :, ipoint].unsqueeze(-1) * vx[:, :, cols], dim=1)
         integral = torch.sum(alpha_norm * gdotv, dim=-1, keepdim=True)

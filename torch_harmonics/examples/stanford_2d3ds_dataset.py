@@ -202,13 +202,24 @@ class Stanford2D3DSDownloader:
 
         # a context manager, so the connection is closed however the transfer ends
         with requests.get(url, headers=headers, stream=True, timeout=30) as response:
-            # a range starting at the end of the file: a previous run wrote the whole archive
-            # and stopped before the rename, so it is complete and only needs verifying
+            # an unsatisfiable range. If the part is exactly as long as the remote file, which
+            # the server reports as "bytes */<length>", a previous run wrote the whole archive
+            # and stopped before the rename, so it only needs verifying. Anything else is stale
+            # or oversized and is fetched again from scratch.
             if part_size > 0 and response.status_code == 416:
-                say(f"Note: {filename} was fully downloaded before, finishing it")
-                os.rename(temp_path, local_path)
-                self._verify_checksum(filename, local_path, say=say)
-                return local_path
+                remote_size = response.headers.get("content-range", "").rpartition("/")[2]
+                if remote_size.isdigit() and int(remote_size) == part_size:
+                    say(f"Note: {filename} was fully downloaded before, finishing it")
+                    os.rename(temp_path, local_path)
+                    self._verify_checksum(filename, local_path, say=say)
+                    return local_path
+                say(f"Warning: Partial download of {filename} does not match the remote file, restarting it")
+                os.remove(temp_path)
+                # the shared bar counted the part as done up front
+                if progress is not None:
+                    progress.update(-part_size)
+                response.close()
+                return self._download_file(filename, progress=progress)
             response.raise_for_status()
 
             # only append if the server honored our range request, otherwise we start from scratch
@@ -308,9 +319,14 @@ class Stanford2D3DSDownloader:
             local_path = os.path.join(self.local_dir, file)
             if os.path.exists(os.path.join(self.local_dir, extracted_folder_name)) or os.path.exists(local_path):
                 continue
-            head = requests.head(f"{self.base_url}/{file}", allow_redirects=True, timeout=30)
-            head.raise_for_status()
-            total += int(head.headers.get("content-length", 0))
+            # the size only feeds the bar, so a mirror that refuses HEAD but serves GET must
+            # not stop the download; the bar's total is then just short by this archive
+            try:
+                head = requests.head(f"{self.base_url}/{file}", allow_redirects=True, timeout=30)
+                head.raise_for_status()
+                total += int(head.headers.get("content-length", 0))
+            except requests.RequestException:
+                pass
             temp_path = os.path.splitext(local_path)[0] + ".part"
             if os.path.exists(temp_path):
                 done += os.stat(temp_path).st_size

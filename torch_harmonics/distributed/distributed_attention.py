@@ -36,7 +36,7 @@ import torch.distributed as dist
 from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics.attention import attention_kernels
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
+from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim, _reciprocal_or_zero
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
@@ -224,7 +224,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
 
         # Finalize: y = y_acc / alpha_sum, per head. Cast back to the input dtype
         # to keep the op faithful to its input dtype.
-        y_out = (_per_head(y_acc, num_heads) / _stat_per_head(alpha_sum)).flatten(-2)  # [B, H, W, nh * C_v]
+        y_out = (_per_head(y_acc, num_heads) * _stat_per_head(_reciprocal_or_zero(alpha_sum))).flatten(-2)  # [B, H, W, nh * C_v]
         y_out = y_out.to(dtype=inp_dtype)
 
         # alpha_sum and qdotk_max are returned so setup_context can save them;
@@ -378,7 +378,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # Finalize pass-1 outputs.
         # Use the SAVED forward alpha_sum/qdotk_max (same values, but authoritative).
         # ----------------------------------------------------------------
-        alpha_sum_inv = 1.0 / fwd_alpha_sum  # [B, nh, H, W]
+        alpha_sum_inv = _reciprocal_or_zero(fwd_alpha_sum)  # [B, nh, H, W]
 
         # integral_norm only feeds pass-2; skip if neither kw nor vw needs grad.
         if kw_needs_grad or vw_needs_grad:
@@ -595,7 +595,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
 
         # Finalize: y = y_acc / alpha_sum, per head. Cast back to the input dtype
         # to keep the op faithful to its input dtype.
-        y_out = (_per_head(y_acc, num_heads) / _stat_per_head(alpha_sum)).flatten(-2)  # [B, H, W, nh * C_v]
+        y_out = (_per_head(y_acc, num_heads) * _stat_per_head(_reciprocal_or_zero(alpha_sum))).flatten(-2)  # [B, H, W, nh * C_v]
         y_out = y_out.to(dtype=inp_dtype)
 
         # alpha_sum and qdotk_max are returned so setup_context can save them;
@@ -739,7 +739,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # ----------------------------------------------------------------
         # Finalize pass-1 outputs.
         # ----------------------------------------------------------------
-        alpha_sum_inv = 1.0 / fwd_alpha_sum  # [B, nh, H, W]
+        alpha_sum_inv = _reciprocal_or_zero(fwd_alpha_sum)  # [B, nh, H, W]
 
         # integral_norm only feeds pass-2; skip if neither kw nor vw needs grad.
         if kw_needs_grad or vw_needs_grad:

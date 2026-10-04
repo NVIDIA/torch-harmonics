@@ -267,7 +267,7 @@ namespace attention_kernels
                         // finalize: divide by alpha_sum and write to y (stride-1 in co)
                         for (int64_t wo = wo_start; wo < wo_end; wo++) {
                             const int64_t wob = wo - wo_start;
-                            const float inv_sum = 1.0f / alpha_sum[wob];
+                            const float inv_sum = reciprocal_or_zero(alpha_sum[wob]);
                             const float *__restrict__ y_tmp_wob = y_tmp.data() + wob * nchannels_out;
                             scalar_t *__restrict__ y_bow = y_b_ho + wo * y_sW;
                             for (int64_t co = 0; co < nchannels_out; co++) {

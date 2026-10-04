@@ -244,6 +244,36 @@ class TestQuadratureS2Constructor(unittest.TestCase):
         self.assertNotIn("multiple values", message, msg="the binding error must never reach the caller")
 
 
+@parameterized_class(("device",), _devices)
+class TestQuadratureLeadingDimensions(unittest.TestCase):
+    """
+    Only the spatial axes are reduced. The weight buffer must not broadcast extra
+    leading axes onto an input that has fewer than two of its own -- a single field or a
+    plain batch -- on a regular grid, whose fields are ``(..., nlat, nlon)``, or on a
+    ragged one, whose fields are ``(..., npoints)``.
+    """
+
+    @parameterized.expand(
+        [
+            ["equiangular", False],
+            ["legendre-gauss", True],
+            ["healpix", False],
+            ["healpix", True],
+        ]
+    )
+    def test_only_the_spatial_axes_are_reduced(self, grid_name, normalize):
+        grid = th.HealpixGrid(nside=4) if grid_name == "healpix" else th.as_grid(grid_name, nlat=8, nlon=16)
+        quad = th.QuadratureS2(grid, normalize=normalize).to(self.device)
+        expected_integral = 1.0 if normalize else 4.0 * math.pi
+        for leading in ((), (3,), (2, 3), (2, 1, 3), (0,)):
+            with self.subTest(leading=leading):
+                amplitudes = torch.arange(1, math.prod(leading) + 1, dtype=torch.float32, device=self.device).reshape(leading)
+                field = amplitudes.reshape(*leading, *([1] * len(grid.shape))) * torch.ones(grid.shape, device=self.device)
+                out = quad(field)
+                self.assertEqual(out.shape, torch.Size(leading))
+                self.assertTrue(compare_tensors(f"integral {leading}", out, amplitudes * expected_integral, atol=1e-5, rtol=1e-5))
+
+
 class TestQuadratureWeightPrecision(unittest.TestCase):
     """Every quadrature rule must carry its weights in the same precision as its nodes."""
 

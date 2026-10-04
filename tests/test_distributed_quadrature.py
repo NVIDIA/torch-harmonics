@@ -117,6 +117,9 @@ class TestDistributedQuadrature(unittest.TestCase):
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
+        # only the spatial axes are reduced: a single field integrates to a scalar
+        self.assertEqual(quad_dist(inp_local[0, 0].detach()).shape, torch.Size([]))
+
         # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
         # rank so a failure on any rank fails the test consistently (see reduce_success).
         verbose = verbose and self.world_rank == 0

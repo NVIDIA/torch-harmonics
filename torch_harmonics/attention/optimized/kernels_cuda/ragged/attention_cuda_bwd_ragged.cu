@@ -382,7 +382,7 @@ namespace attention_kernels
                 }
             }
 
-            alpha_sum_inv = 1.0f / alpha_sum;
+            alpha_sum_inv = reciprocal_or_zero(alpha_sum);
 
             integral *= alpha_sum_inv;
 
@@ -402,7 +402,7 @@ namespace attention_kernels
 
             qdotk_max = qdotk_max_fwd[istat];
             integral = integral_fwd[istat];
-            alpha_sum_inv = 1.0f / alpha_sum_fwd[istat];
+            alpha_sum_inv = reciprocal_or_zero(alpha_sum_fwd[istat]);
         }
 
         // The walk. Under TWO_PASS it is the replay of arcs pass 1 has already been
@@ -853,7 +853,7 @@ namespace attention_kernels
                 }
             }
 
-            alpha_sum_inv = 1.0f / alpha_sum;
+            alpha_sum_inv = reciprocal_or_zero(alpha_sum);
 
             integral *= alpha_sum_inv;
 
@@ -879,7 +879,7 @@ namespace attention_kernels
 
             qdotk_max = qdotk_max_fwd[istat];
             integral = integral_fwd[istat];
-            alpha_sum_inv = 1.0f / alpha_sum_fwd[istat];
+            alpha_sum_inv = reciprocal_or_zero(alpha_sum_fwd[istat]);
         }
 
         // The walk; see the generic kernel for which gradients it carries in which

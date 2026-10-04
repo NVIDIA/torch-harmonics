@@ -159,7 +159,7 @@ namespace attention_kernels
                     alpha_sum_out[istat] = alpha_sum;
                     qdotk_max_out[istat] = qdotk_max;
 
-                    const float inv = 1.0f / alpha_sum;
+                    const float inv = reciprocal_or_zero(alpha_sum);
                     float *__restrict__ y_p = y + istat * nchan_out;
                     for (int64_t c = 0; c < nchan_out; c++) { y_p[c] = acc[c] * inv; }
                 }
@@ -216,7 +216,7 @@ namespace attention_kernels
                     float *dk_b = dkx + bh * npoints_in * nchan_in;
                     float *dv_b = dvx + bh * npoints_in * nchan_out;
 
-                    const float inv_sum = 1.0f / alpha_sum_in[istat];
+                    const float inv_sum = reciprocal_or_zero(alpha_sum_in[istat]);
                     const float qdotk_max = qdotk_max_in[istat];
                     const float integ = integral[istat];
 

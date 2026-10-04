@@ -1415,6 +1415,60 @@ class TestCrossDeviceExecution(unittest.TestCase):
 
 
 @parameterized_class(("device"), _devices)
+class TestEmptyNeighborhood(unittest.TestCase):
+    """
+    A cutoff below the input spacing leaves output points between input points with no
+    neighbour at all. Their softmax has an empty sum, and every path -- the references,
+    the CPU and CUDA kernels, regular and ragged -- returns zero output and zero gradient
+    for them rather than dividing by that zero and returning NaN.
+    """
+
+    def setUp(self):
+        disable_tf32()
+        set_seed(333)
+
+    @parameterized.expand(
+        [
+            ["ragged", HealpixGrid(nside=2), HealpixGrid(nside=8)],
+            ["regular upsample", as_grid("equiangular", nlat=4, nlon=8), as_grid("equiangular", nlat=16, nlon=32)],
+            ["regular downsample", as_grid("legendre-gauss", nlat=16, nlon=32), as_grid("equiangular", nlat=8, nlon=16)],
+        ]
+    )
+    def test_the_optimized_path_matches_the_reference(self, name, grid_in, grid_out, atol=1e-5, rtol=1e-3):
+        cutoff = 0.25 * grid_in.max_node_spacing
+        model, ref = (
+            NeighborhoodAttentionS2(grid_in=grid_in, grid_out=grid_out, in_channels=4, num_heads=2, theta_cutoff=cutoff, optimized_kernel=optimized).to(self.device)
+            for optimized in (True, False)
+        )
+        if not model.optimized_kernel:
+            raise unittest.SkipTest("needs the compiled kernels")
+        ref.load_state_dict(model.state_dict())
+
+        # the case under test exists: some rows empty, but not all of them
+        _, roff_idx = precompute_neighborhood_csr_s2(grid_in, grid_out, model.theta_cutoff)
+        empty = roff_idx[1:] == roff_idx[:-1]
+        self.assertTrue(bool(empty.any()) and not bool(empty.all()), f"{name}: {int(empty.sum())} of {empty.numel()} rows empty")
+
+        make = lambda grid: torch.randn(2, 4, *grid.shape, device=self.device, requires_grad=True)
+        inputs = {"q": make(grid_out), "k": make(grid_in), "v": make(grid_in)}
+        inputs_ref = {key: tensor.detach().clone().requires_grad_() for key, tensor in inputs.items()}
+        out = model(inputs["q"], inputs["k"], inputs["v"])
+        out_ref = ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
+        self.assertTrue(torch.isfinite(out_ref).all(), "reference output")
+        self.assertTrue(torch.isfinite(out).all(), "output")
+        self.assertTrue(compare_tensors(f"{name} output", out, out_ref, atol=atol, rtol=rtol))
+
+        grad = torch.randn_like(out)
+        grads = torch.autograd.grad(out, list(inputs.values()) + list(model.parameters()), grad_outputs=grad)
+        grads_ref = torch.autograd.grad(out_ref, list(inputs_ref.values()) + list(ref.parameters()), grad_outputs=grad)
+        names = list(inputs.keys()) + [key for key, _ in model.named_parameters()]
+        for key, got, expected in zip(names, grads, grads_ref):
+            self.assertTrue(torch.isfinite(expected).all(), f"reference grad {key}")
+            self.assertTrue(torch.isfinite(got).all(), f"grad {key}")
+            self.assertTrue(compare_tensors(f"{name} grad {key}", got, expected, atol=atol, rtol=rtol))
+
+
+@parameterized_class(("device"), _devices)
 class TestBackendState(unittest.TestCase):
     """
     A layer holds exactly the state of the backend it selected, and nothing else.

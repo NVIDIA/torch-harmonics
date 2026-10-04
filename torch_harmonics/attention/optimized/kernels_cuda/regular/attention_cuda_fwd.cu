@@ -192,7 +192,7 @@ namespace attention_kernels
             }
         }
 
-        alpha_sum = 1.0f / alpha_sum;
+        alpha_sum = reciprocal_or_zero(alpha_sum);
         for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { vstore(y, chan, __vscale(alpha_sum, shy[chan])); }
 
         return;
@@ -464,7 +464,7 @@ namespace attention_kernels
             }
         }
 
-        alpha_sum = 1.0f / alpha_sum;
+        alpha_sum = reciprocal_or_zero(alpha_sum);
 
 #pragma unroll
         for (int i = 0; i < NLOC_M1; i++) { vstore(y, i * BDIM_X, __vscale(alpha_sum, locy[i])); }

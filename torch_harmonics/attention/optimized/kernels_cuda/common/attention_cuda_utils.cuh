@@ -42,6 +42,7 @@
 #include <utility>
 
 #include "../../attention_checks.h"
+#include "../../attention_math.h"
 
 #define WARP_SIZE (32)
 #define FULL_MASK (0xFFFFFFFF)
