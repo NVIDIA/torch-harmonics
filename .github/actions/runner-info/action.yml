@@ -1,0 +1,14 @@
+name: Runner info
+description: >-
+  Log the runner's CPU and how PyTorch uses it. Hosted runners are not all the same machine, and
+  PyTorch's CPU kernels dispatch on the instruction set and split their sums by thread count, so
+  a numerical test can round differently from one run to the next. This puts the CPU model, the
+  instruction-set level PyTorch dispatches to and its thread count into the log of every run, so
+  a failure can be matched to the hardware it ran on.
+runs:
+  using: composite
+  steps:
+  - shell: bash
+    run: |
+      lscpu | grep -E "^(Model name|CPU\(s\)|Thread\(s\) per core):"
+      python3 -c "import torch; print(f'torch {torch.__version__}, CPU capability {torch.backends.cpu.get_cpu_capability()}, threads {torch.get_num_threads()}')"
