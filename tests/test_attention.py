@@ -307,11 +307,17 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             grad_opt = inputs_opt[inp].grad.cpu()
             self.assertTrue(compare_tensors(f"input grad {inp}", grad_opt, grad_ref, atol=atol, rtol=rtol, verbose=verbose))
 
-        # Check parameter gradient equivalence
+        # Check parameter gradient equivalence. The k bias gradient is zero analytically -- a
+        # bias on k shifts every score of a row by the same q . b, which the softmax ignores --
+        # so both sides hold only the rounding residue of a sum of terms the size of the other
+        # gradients. Its absolute tolerance therefore scales with that size, a few float32 ulps
+        # of the largest parameter gradient, rather than staying fixed.
+        pgrad_scale = max(p_ref.grad.abs().max().item() for _, p_ref in model_ref.named_parameters())
+        patol = max(atol, 8 * torch.finfo(torch.float32).eps * pgrad_scale)
         for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
             pgrad_opt = p_opt.grad.cpu()
             pgrad_ref = p_ref.grad.cpu()
-            self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=patol, rtol=rtol, verbose=verbose))
 
     @parameterized.expand(
         [
