@@ -335,9 +335,9 @@ jobs:
             "cuda_tag": dist_tag,
             "cuda_version": "${{ matrix.cuda-version }}",
             "torch_version": torch_version,
-            # ABI breaks across torch minor versions, so pin to the exact minor
-            # the extension was compiled against.
-            "torch_pin": f">={major}.{minor}.0,<{major}.{int(minor)+1}.0",
+            # ABI breaks across torch minor versions. Use the exact build patch
+            # as the lower bound so a wheel never resolves an older patch release.
+            "torch_pin": f">={torch_version},<{major}.{int(minor)+1}.0",
             "base_version": "${{ env.BASE_VERSION }}",
             "cuda_arch_list": "${{ env.TORCH_CUDA_ARCH_LIST }}",
             "build_cuda": "${{ matrix.build-cuda }}" == "1",
@@ -352,7 +352,9 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: wheel-torch-${{ matrix.torch-version }}-${{ matrix.torch-cuda }}
-        path: wheelhouse/*.whl
+        path: |
+          wheelhouse/*.whl
+          wheelhouse/build-metadata.json
 
     - name: Repack wheels for PyPI (strip local version identifier)
       if: matrix.torch-version == '2.14.1' && matrix.torch-cuda == 'cu132'
@@ -366,7 +368,13 @@ jobs:
           dist_info=$(ls "$pkg_dir" | grep '\.dist-info$')
           base_ver=$(grep '^Version:' "$pkg_dir/$dist_info/METADATA" | sed 's/Version: //' | sed 's/+.*//')
           pkg_name=$(echo "$dist_info" | sed 's/-[^-]*\.dist-info//')
+          torch_version='${{ matrix.torch-version }}'
+          torch_major=${torch_version%%.*}
+          torch_rest=${torch_version#*.}
+          torch_minor=${torch_rest%%.*}
+          torch_upper="${torch_major}.$((torch_minor + 1)).0"
           sed -i "s/^Version:.*/Version: $base_ver/" "$pkg_dir/$dist_info/METADATA"
+          sed -i "s/^Requires-Dist: torch.*/Requires-Dist: torch>=${torch_version},<${torch_upper}/" "$pkg_dir/$dist_info/METADATA"
           new_dist_info="${pkg_name}-${base_ver}.dist-info"
           [ "$dist_info" != "$new_dist_info" ] && mv "$pkg_dir/$dist_info" "$pkg_dir/$new_dist_info"
           new_pkg_dir="$tmpdir/${pkg_name}-${base_ver}"
