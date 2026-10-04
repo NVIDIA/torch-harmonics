@@ -48,6 +48,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 [![tests](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml/badge.svg)](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml)
 [![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NVIDIA/torch-harmonics/coverage-data/badge.json&cacheSeconds=3600)](https://github.com/NVIDIA/torch-harmonics/tree/coverage-data)
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
+[![arXiv](https://img.shields.io/badge/arXiv-2609.39737-b31b1b.svg)](https://arxiv.org/abs/2609.39737)
 
 ## Overview
 
@@ -311,7 +312,21 @@ Depending on the problem, it might be beneficial to upcast data to `float64` ins
 
 ## Cite us
 
-If you use `torch-harmonics` in an academic paper, please cite [1]
+If you use `torch-harmonics` in your work, please cite the paper describing the library [7]:
+
+```bibtex
+@misc{kurth2026library,
+      title={A library for differentiable signal processing and machine learning on the sphere},
+      author={Thorsten Kurth and Max Rietmann and Mauro Bisson and Andrea Paris and Alberto Carpentieri and Jean Kossaifi and Anima Anandkumar and Christian Hundt and Boris Bonev},
+      year={2026},
+      eprint={2609.39737},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2609.39737}
+}
+```
+
+If you use Spherical Fourier Neural Operators, please also cite [1]:
 
 ```bibtex
 @misc{bonev2023spherical,
@@ -351,3 +366,8 @@ Ocampo, Price, McEwen, Scalable and equivariant spherical CNNs by discrete-conti
 
 <a id="1">[6]</a>
 Bonev B., Rietmann M., Paris A., Carpentieri A., Kurth T.; Attention on the Sphere; [arxiv link](https://arxiv.org/abs/2505.11157)
+
+<a id="1">[7]</a>
+Kurth T., Rietmann M., Bisson M., Paris A., Carpentieri A., Kossaifi J., Anandkumar A., Hundt C., Bonev B.;
+A library for differentiable signal processing and machine learning on the sphere;
+arXiv preprint, 2026. [arxiv link](https://arxiv.org/abs/2609.39737)

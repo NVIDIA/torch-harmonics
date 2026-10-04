@@ -57,6 +57,23 @@ coeffs = sht(signal)          # -> spherical harmonic coefficients
 reconstructed = isht(coeffs)  # -> back to grid space
 ```
 
+## Citing torch-harmonics
+
+If you use `torch-harmonics` in your work, please cite the paper describing the
+library {cite:p}`Kurth2026`:
+
+```bibtex
+@misc{kurth2026library,
+      title={A library for differentiable signal processing and machine learning on the sphere},
+      author={Thorsten Kurth and Max Rietmann and Mauro Bisson and Andrea Paris and Alberto Carpentieri and Jean Kossaifi and Anima Anandkumar and Christian Hundt and Boris Bonev},
+      year={2026},
+      eprint={2609.39737},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2609.39737}
+}
+```
+
 ```{toctree}
 ---
 maxdepth: 1
