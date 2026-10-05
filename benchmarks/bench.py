@@ -37,6 +37,21 @@ from typing import Any, Callable, Optional
 import torch
 import torch.nn as nn
 
+from torch_harmonics import as_grid
+
+# ------------------------------------------------------------------------------
+# Grids
+# ------------------------------------------------------------------------------
+
+# The grids the entries run on. Configs name their grids by descriptor, the way the
+# layers take them, and size their inputs from grid.shape, so an entry on another grid
+# family (HEALPix, say) needs no change to the setup functions. The "1deg", "hdeg" and
+# "qdeg" in the entry names refer to these; the names are the keys of
+# reference_results.csv, so they stay as they are.
+EQUIANGULAR_GRID_1DEG = as_grid("equiangular", nlat=180, nlon=360)
+EQUIANGULAR_GRID_HDEG = as_grid("equiangular", nlat=360, nlon=720)
+EQUIANGULAR_GRID_QDEG = as_grid("equiangular", nlat=721, nlon=1440)
+
 # ------------------------------------------------------------------------------
 # Precision contexts
 # ------------------------------------------------------------------------------

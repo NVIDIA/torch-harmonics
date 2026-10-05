@@ -28,20 +28,20 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import torch
-from bench import BenchmarkEntry, register
+from bench import EQUIANGULAR_GRID_1DEG, EQUIANGULAR_GRID_HDEG, BenchmarkEntry, register
 
-from torch_harmonics import InverseRealSHT, RealSHT, as_grid
+from torch_harmonics import InverseRealSHT, RealSHT
 
 # ------------------------------------------------------------------------------
 # Setup / forward / backward / reference
 # ------------------------------------------------------------------------------
 
 
-def _sht_setup(nlat, nlon, batch):
+def _sht_setup(grid, batch):
     def setup(device, dtype):
-        x = torch.randn(batch, nlat, nlon, dtype=dtype, device=device, requires_grad=True)
-        sht = RealSHT(as_grid("equiangular", nlat=nlat, nlon=nlon)).to(device=device, dtype=dtype)
-        return {"x": x, "sht": sht, "nlat": nlat, "nlon": nlon}
+        x = torch.randn(batch, *grid.shape, dtype=dtype, device=device, requires_grad=True)
+        sht = RealSHT(grid).to(device=device, dtype=dtype)
+        return {"x": x, "sht": sht, "grid": grid}
 
     return setup
 
@@ -55,7 +55,7 @@ def _sht_backward(state, out):
 
 
 def _sht_reference(state):
-    sht_ref = RealSHT(as_grid("equiangular", nlat=state["nlat"], nlon=state["nlon"])).to(dtype=torch.float64)
+    sht_ref = RealSHT(state["grid"]).to(dtype=torch.float64)
     return sht_ref(state["x"].detach().cpu().double())
 
 
@@ -66,13 +66,13 @@ _REAL_TO_COMPLEX = {
 }
 
 
-def _isht_setup(nlat, nlon, batch):
+def _isht_setup(grid, batch):
     def setup(device, dtype):
         complex_dtype = _REAL_TO_COMPLEX[dtype]
-        sht_ref = RealSHT(as_grid("equiangular", nlat=nlat, nlon=nlon))
-        x_hat = sht_ref(torch.randn(batch, nlat, nlon, dtype=torch.float64)).to(dtype=complex_dtype, device=device).detach().requires_grad_(True)
-        isht = InverseRealSHT(as_grid("equiangular", nlat=nlat, nlon=nlon)).to(device=device, dtype=dtype)
-        return {"x_hat": x_hat, "isht": isht, "nlat": nlat, "nlon": nlon}
+        sht_ref = RealSHT(grid)
+        x_hat = sht_ref(torch.randn(batch, *grid.shape, dtype=torch.float64)).to(dtype=complex_dtype, device=device).detach().requires_grad_(True)
+        isht = InverseRealSHT(grid).to(device=device, dtype=dtype)
+        return {"x_hat": x_hat, "isht": isht, "grid": grid}
 
     return setup
 
@@ -86,7 +86,7 @@ def _isht_backward(state, out):
 
 
 def _isht_reference(state):
-    isht_ref = InverseRealSHT(as_grid("equiangular", nlat=state["nlat"], nlon=state["nlon"])).to(dtype=torch.float64)
+    isht_ref = InverseRealSHT(state["grid"]).to(dtype=torch.float64)
     return isht_ref(state["x_hat"].detach().cpu().cdouble())
 
 
@@ -96,20 +96,20 @@ def _isht_reference(state):
 
 _SHT_CONFIGS = [
     # 1 degree, CPU
-    dict(name="sht_fwd_bwd_1deg_b8_float32_cpu", device="cpu", dtype=torch.float32, nlat=180, nlon=360, batch=8, skip_correctness=False, tags=["sht", "cpu"]),
+    dict(name="sht_fwd_bwd_1deg_b8_float32_cpu", device="cpu", dtype=torch.float32, grid=EQUIANGULAR_GRID_1DEG, batch=8, skip_correctness=False, tags=["sht", "cpu"]),
     # 1 degree, CUDA
-    dict(name="sht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, nlat=180, nlon=360, batch=8, skip_correctness=False, tags=["sht"]),
+    dict(name="sht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_1DEG, batch=8, skip_correctness=False, tags=["sht"]),
     # half degree, CUDA
-    dict(name="sht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=360, nlon=720, batch=1, skip_correctness=True, tags=["sht"]),
+    dict(name="sht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_HDEG, batch=1, skip_correctness=True, tags=["sht"]),
 ]
 
 _ISHT_CONFIGS = [
     # 1 degree, CPU
-    dict(name="isht_fwd_bwd_1deg_b8_float32_cpu", device="cpu", dtype=torch.float32, nlat=180, nlon=360, batch=8, skip_correctness=False, tags=["isht", "cpu"]),
+    dict(name="isht_fwd_bwd_1deg_b8_float32_cpu", device="cpu", dtype=torch.float32, grid=EQUIANGULAR_GRID_1DEG, batch=8, skip_correctness=False, tags=["isht", "cpu"]),
     # 1 degree, CUDA
-    dict(name="isht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, nlat=180, nlon=360, batch=8, skip_correctness=False, tags=["isht"]),
+    dict(name="isht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_1DEG, batch=8, skip_correctness=False, tags=["isht"]),
     # half degree, CUDA
-    dict(name="isht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, nlat=360, nlon=720, batch=1, skip_correctness=True, tags=["isht"]),
+    dict(name="isht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_HDEG, batch=1, skip_correctness=True, tags=["isht"]),
 ]
 
 for cfg in _SHT_CONFIGS:
@@ -118,7 +118,7 @@ for cfg in _SHT_CONFIGS:
             name=cfg["name"],
             device=cfg["device"],
             dtype=cfg["dtype"],
-            setup=_sht_setup(nlat=cfg["nlat"], nlon=cfg["nlon"], batch=cfg["batch"]),
+            setup=_sht_setup(grid=cfg["grid"], batch=cfg["batch"]),
             forward=_sht_forward,
             backward=_sht_backward,
             reference=_sht_reference,
@@ -133,7 +133,7 @@ for cfg in _ISHT_CONFIGS:
             name=cfg["name"],
             device=cfg["device"],
             dtype=cfg["dtype"],
-            setup=_isht_setup(nlat=cfg["nlat"], nlon=cfg["nlon"], batch=cfg["batch"]),
+            setup=_isht_setup(grid=cfg["grid"], batch=cfg["batch"]),
             forward=_isht_forward,
             backward=_isht_backward,
             reference=_isht_reference,
