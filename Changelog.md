@@ -4,6 +4,7 @@
 
 ### v0.9.3b1 (unreleased)
 
+* **Breaking**: `PdeDataset` is renamed `ShallowWaterDataset`, and its `pde` argument is gone. The class only ever built a `ShallowWaterSolver` -- the `pde` switch had a single branch and raised `NotImplementedError` for anything else -- and the rest of its surface is time-stepping specific (`dt`, `nsteps`, `initial_condition`, `set_initial_condition`), so the general name described an intent the code never had. Datasets here are now named for the equation they solve, pairing with the solver that generates them: `ShallowWaterSolver`/`ShallowWaterDataset`. The module path `torch_harmonics.examples.pde_dataset` is unchanged.
 * Fixed single-longitude inputs producing non-finite values and gradients in `ResampleS2` and `DistributedResampleS2`.
 * Fixed Gaussian random-field sampling retaining stale dtype or device buffers after module conversions, including conversions of a parent module.
 * Fixed `DiceLossS2` including ignored pixels in the class-zero denominator; ignored targets now contribute to neither term of the Dice score.
