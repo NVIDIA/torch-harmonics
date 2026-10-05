@@ -37,7 +37,7 @@ from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, trapezoidal_weights
+from torch_harmonics.quadrature import geometric_weights, precompute_latitudes, precompute_longitudes, precompute_radii, trapezoidal_weights
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -203,6 +203,155 @@ class TestQuadrature(unittest.TestCase):
                 verbose=verbose,
             )
         )
+
+
+class TestGeometricWeights(unittest.TestCase):
+    """Geometrically spaced quadrature nodes and weights on a positive interval."""
+
+    @parameterized.expand(
+        [
+            # n, a, b
+            [8, 1e-3, 1e3],
+            [64, 1e-3, 1e3],
+            [512, 1e-3, 1e3],
+            [33, 1.0, 2.0],
+            [65, 1e-6, 1.0],
+        ]
+    )
+    def test_inverse_integral(self, n, a, b, verbose=False):
+        """The rule is exact for f(x) = 1/x, whose integral over [a, b] is log(b / a).
+
+        The nodes are equispaced in t = log(x), so f dx/dt = 1 is constant and the
+        trapezoidal rule integrates it without discretization error at any n. This
+        pins down both the node placement and the dx/dt Jacobian carried by the
+        weights: dropping it turns the result into something n-dependent.
+        """
+
+        x, w = geometric_weights(n, a, b)
+
+        integral = (w / x).sum()
+        expected = torch.as_tensor(math.log(b / a), dtype=integral.dtype)
+
+        self.assertTrue(compare_tensors("inverse integral", integral, expected, atol=1e-12, rtol=1e-12, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # n, a, b
+            [16, 1e-3, 1e3],
+            [65, 1e-2, 1.0],
+        ]
+    )
+    def test_node_placement(self, n, a, b, verbose=False):
+        """Nodes span [a, b] and are geometrically spaced, i.e. a constant ratio apart."""
+
+        x, w = geometric_weights(n, a, b)
+
+        self.assertEqual(x.shape, (n,))
+        self.assertEqual(w.shape, (n,))
+        self.assertTrue(compare_tensors("endpoints", x[[0, -1]], torch.as_tensor([a, b], dtype=x.dtype), atol=1e-12, rtol=1e-12, verbose=verbose))
+
+        ratio = x[1:] / x[:-1]
+        expected = torch.full_like(ratio, (b / a) ** (1.0 / (n - 1)))
+        self.assertTrue(compare_tensors("node ratio", ratio, expected, atol=1e-12, rtol=1e-12, verbose=verbose))
+        self.assertTrue(torch.all(w > 0.0))
+
+    def test_convergence(self, verbose=False):
+        """For f(x) = 1, which is not exact, the error decays at second order in h = log(b / a) / (n - 1)."""
+
+        a, b = 1.0, 10.0
+        errors = [abs(geometric_weights(n, a, b)[1].sum().item() - (b - a)) for n in (64, 128, 256)]
+
+        for coarse, fine in zip(errors[:-1], errors[1:]):
+            self.assertGreater(coarse / fine, 3.5)
+
+    def test_invalid_bounds(self):
+        """A geometric grid is undefined for a non-positive lower bound.
+
+        Matched on the message rather than the type: math.log raises ValueError for
+        these inputs by itself, so a bare assertRaises would also pass if the explicit
+        bound check were removed.
+        """
+
+        for a in (0.0, -1.0):
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                geometric_weights(8, a, 10.0)
+
+
+class TestPrecomputeRadii(unittest.TestCase):
+    """Radial grids of the half-line and the exterior domain, built on geometric_weights."""
+
+    @parameterized.expand(
+        [
+            # nr, vmin, vmax
+            [16, 1e-1, 1e3],
+            [65, 1e-2, 1e2],
+        ]
+    )
+    def test_half_line(self, nr, vmin, vmax, verbose=False):
+        """On the half-line the grid is the geometric rule itself, with x = log(r)."""
+
+        x, r, w = precompute_radii(nr, vmin, vmax, domain="half-line")
+        rg, wg = geometric_weights(nr, vmin, vmax)
+
+        self.assertTrue(compare_tensors("nodes", r, rg, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors("weights", w, wg, atol=0.0, rtol=0.0, verbose=verbose))
+        self.assertTrue(compare_tensors("log nodes", x, torch.log(rg), atol=0.0, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # nr, vmin, vmax, inner_radius
+            [16, 1e-1, 1e3, 1.0],
+            [65, 1e-2, 1e2, 2.5],
+        ]
+    )
+    def test_exterior_mapping(self, nr, vmin, vmax, inner_radius, verbose=False):
+        """On the exterior domain the geometric rule is applied to rho = (r - R) / R, so r = R (1 + rho) and dr = R drho."""
+
+        x, r, w = precompute_radii(nr, vmin, vmax, domain="exterior", inner_radius=inner_radius)
+        rho, wrho = geometric_weights(nr, vmin, vmax)
+
+        self.assertTrue(compare_tensors("nodes", r, inner_radius * (1.0 + rho), atol=1e-12, rtol=1e-12, verbose=verbose))
+        self.assertTrue(compare_tensors("weights", w, inner_radius * wrho, atol=1e-12, rtol=1e-12, verbose=verbose))
+        self.assertTrue(compare_tensors("log nodes", x, torch.log(rho), atol=1e-12, rtol=1e-12, verbose=verbose))
+        self.assertTrue(torch.all(r > inner_radius))
+
+    @parameterized.expand(
+        [
+            # nr, vmin, vmax, inner_radius
+            [8, 1e-2, 1e2, 1.0],
+            [128, 1e-4, 1e3, 3.0],
+        ]
+    )
+    def test_exterior_inverse_integral(self, nr, vmin, vmax, inner_radius, verbose=False):
+        """The exterior rule is exact for f(r) = 1 / (r - R), whose integral is log(vmax / vmin).
+
+        This is the exterior counterpart of the 1/x case for geometric_weights: the
+        integrand is 1/rho in the reduced coordinate, so the result is independent of
+        nr and of R only if both the node mapping and the factor R in the weights are right.
+        """
+
+        _, r, w = precompute_radii(nr, vmin, vmax, domain="exterior", inner_radius=inner_radius)
+
+        integral = (w / (r - inner_radius)).sum()
+        expected = torch.as_tensor(math.log(vmax / vmin), dtype=integral.dtype)
+
+        self.assertTrue(compare_tensors("inverse integral", integral, expected, atol=1e-10, rtol=1e-10, verbose=verbose))
+
+    def test_dtype(self):
+        """Nodes and weights come back in the requested precision, float64 by default."""
+
+        for domain, inner_radius in (("half-line", None), ("exterior", 1.0)):
+            for dtype in (torch.float64, torch.float32):
+                out = precompute_radii(8, 1e-1, 1e1, domain=domain, inner_radius=inner_radius, dtype=dtype)
+                self.assertTrue(all(t.dtype == dtype for t in out))
+
+    def test_invalid_arguments(self):
+        """The exterior domain needs an inner radius, and only the two known domains are accepted."""
+
+        with self.assertRaisesRegex(ValueError, "inner_radius must be given"):
+            precompute_radii(8, 1e-1, 1e1, domain="exterior")
+        with self.assertRaisesRegex(ValueError, "unknown domain"):
+            precompute_radii(8, 1e-1, 1e1, domain="shell")
 
 
 class TestQuadratureWeightPrecision(unittest.TestCase):
