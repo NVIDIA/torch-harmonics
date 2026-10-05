@@ -48,5 +48,5 @@ repos:
         name: Check SPDX license headers
         entry: python3 scripts/check_license_header.py
         language: system
-        types: [python]
+        types_or: [python, c, c++, cuda]
         pass_filenames: true
