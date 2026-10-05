@@ -31,8 +31,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-"""Check that Python files contain the required SPDX license header."""
+"""Check that Python and C/C++/CUDA sources contain the required SPDX license header."""
 
+import os
 import sys
 
 REQUIRED_LINES = [
@@ -42,6 +43,10 @@ REQUIRED_LINES = [
 
 # Maximum number of lines to scan at the top of each file
 HEADER_SCAN_LINES = 10
+
+# Source files that must carry the header. The markers are matched as plain text,
+# so the comment style (# or //) does not matter.
+CHECKED_SUFFIXES = (".py", ".c", ".cc", ".cpp", ".h", ".hpp", ".cu", ".cuh")
 
 
 def check_file(path):
@@ -64,7 +69,7 @@ def check_file(path):
 def main():
     failed = []
     for path in sys.argv[1:]:
-        if not path.endswith(".py"):
+        if os.path.splitext(path)[1] not in CHECKED_SUFFIXES:
             continue
         if not check_file(path):
             failed.append(path)
@@ -74,9 +79,10 @@ def main():
         for path in failed:
             print(f"  {path}")
         print()
-        print("Every .py file must contain these lines near the top:")
+        print("Every Python and C/C++/CUDA source must contain these lines near the top,")
+        print("in a # comment (Python) or a // comment (C/C++/CUDA):")
         for marker in REQUIRED_LINES:
-            print(f"  # {marker}")
+            print(f"  {marker}")
         print()
         print("See CONTRIBUTING.md for the full header template.")
         sys.exit(1)
