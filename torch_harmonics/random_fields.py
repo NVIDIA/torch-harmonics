@@ -75,8 +75,8 @@ class GaussianRandomFieldS2(torch.nn.Module):
         Radius of the sphere.  Default ``1.0``.
     dtype : torch.dtype, optional
         Floating-point dtype for the spectral amplitudes and internally sampled
-        fields. With supplied ``xi``, the output dtype follows the coefficients.
-        Default ``torch.float32``.
+        fields. With supplied ``xi``, the output dtype follows type promotion
+        between ``xi`` and the field's dtype. Default ``torch.float32``.
 
     Examples
     --------
