@@ -4,6 +4,7 @@
 
 ### v0.9.3b1 (unreleased)
 
+* Fixed Gaussian random-field spectral amplitudes ignoring the requested dtype during construction, losing double precision or underflowing before sampling. For ordinary float32 parameters, spectra may differ from earlier releases in the last bit due to correctly rounded float64 intermediates. For extreme parameters such as very large `tau`, amplitudes that previously underflowed to zero may now remain nonzero. Loading a checkpoint saved before this fix restores the old spectrum through the `sqrt_eig` buffer.
 * Fixed single-longitude inputs producing non-finite values and gradients in `ResampleS2` and `DistributedResampleS2`.
 * Fixed Gaussian random-field sampling retaining stale dtype or device buffers after module conversions, including conversions of a parent module.
 * Fixed `DiceLossS2` including ignored pixels in the class-zero denominator; ignored targets now contribute to neither term of the Dice score.
