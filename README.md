@@ -50,7 +50,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
 [![conda-forge](https://img.shields.io/conda/vn/conda-forge/torch-harmonics)](https://anaconda.org/conda-forge/torch-harmonics)
 [![downloads](https://static.pepy.tech/badge/torch-harmonics/month)](https://pepy.tech/projects/torch-harmonics)
-[![docs](https://img.shields.io/website?url=https%3A%2F%2Fnvidia.github.io%2Ftorch-harmonics%2F&label=docs)](https://nvidia.github.io/torch-harmonics/)
+[![docs](https://img.shields.io/badge/docs-latest-blue)](https://nvidia.github.io/torch-harmonics/)
 [![license](https://img.shields.io/github/license/NVIDIA/torch-harmonics)](LICENSE.txt)
 [![arXiv](https://img.shields.io/badge/arXiv-2609.39737-b31b1b.svg)](https://arxiv.org/abs/2609.39737)
 
