@@ -48,6 +48,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 [![tests](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml/badge.svg)](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml)
 [![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NVIDIA/torch-harmonics/coverage-data/badge.json&cacheSeconds=3600)](https://github.com/NVIDIA/torch-harmonics/tree/coverage-data)
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
+[![conda-forge](https://img.shields.io/conda/vn/conda-forge/torch-harmonics)](https://anaconda.org/conda-forge/torch-harmonics)
+[![downloads](https://img.shields.io/pypi/dm/torch_harmonics)](https://pypistats.org/packages/torch-harmonics)
+[![docs](https://img.shields.io/website?url=https%3A%2F%2Fnvidia.github.io%2Ftorch-harmonics%2F&label=docs)](https://nvidia.github.io/torch-harmonics/)
+[![license](https://img.shields.io/github/license/NVIDIA/torch-harmonics)](LICENSE.txt)
 [![arXiv](https://img.shields.io/badge/arXiv-2609.39737-b31b1b.svg)](https://arxiv.org/abs/2609.39737)
 
 ## Overview
