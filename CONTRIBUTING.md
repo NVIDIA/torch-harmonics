@@ -292,15 +292,14 @@ Hooks include:
 - **black** (line length 180, see `pyproject.toml`)
 - **ruff** (lint + import sorting; notebooks excluded)
 - **clang-format** for C, C++, and CUDA
-- **SPDX license header** check on Python files (`scripts/check_license_header.py`)
+- **SPDX license header** check on Python and C/C++/CUDA files (`scripts/check_license_header.py`)
 
 ### License headers
 
-New Python files must include the BSD-3-Clause SPDX header block used elsewhere in the repo
-(`SPDX-FileCopyrightText` and `SPDX-License-Identifier: BSD-3-Clause`). Copy the header
-from an existing file in the same directory.
-
-C/C++/CUDA sources use the same SPDX comment style at the top of the file.
+New Python and C/C++/CUDA files must include the BSD-3-Clause SPDX header block used
+elsewhere in the repo (`SPDX-FileCopyrightText` and `SPDX-License-Identifier: BSD-3-Clause`)
+within their first ten lines. Copy the header from an existing file in the same directory;
+C/C++/CUDA sources use `//` comments instead of `#`.
 
 ### Python conventions
 
