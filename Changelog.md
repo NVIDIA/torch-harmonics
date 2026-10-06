@@ -31,7 +31,7 @@
 * Fixed a stride mismatch in attention's channel-layout conversions against the registered fake kernel.
 * Removed a redundant autocast decorator from the distributed autograd Functions that blocked full-graph compilation.
 * Added tests for the loss and metric modules under `torch_harmonics/examples`.
-* CI: the serial tests run as build, unit-test and doctest stages against a wheel built with OpenMP, as the released wheels are. The workflow is renamed from "Run local tests" to "Tests". The documentation deploys automatically only on full releases, not on pre-releases.
+* CI: the serial tests run as build, unit-test and doctest stages against a wheel built with OpenMP, as the released wheels are. The workflow is renamed from "Run local tests" to "Tests". The documentation deploys automatically only on full releases, not on pre-releases. The release wheels are built in one job per variant and Python version, merged per variant afterwards, so no job approaches the 6-hour limit of a hosted runner.
 
 ### v0.9.2
 
