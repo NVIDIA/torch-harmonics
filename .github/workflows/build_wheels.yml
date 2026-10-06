@@ -248,7 +248,7 @@ jobs:
         # TORCH_CUDA_ARCH_LIST must be listed here explicitly: variables set on
         # the runner do not reach the build container, which is why the arch
         # list previously had no effect. Quoted because it contains ';'.
-        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_BUILD_CUDA_EXTENSION=${{ matrix.build-cuda }} TORCH_CUDA_ARCH_LIST='${{ env.TORCH_CUDA_ARCH_LIST }}' TORCH_HARMONICS_ENABLE_OPENMP=1 TORCHINDUCTOR_COMPILE_THREADS=1"
+        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_BUILD_CUDA_EXTENSION=${{ matrix.build-cuda }} TORCH_CUDA_ARCH_LIST='${{ env.TORCH_CUDA_ARCH_LIST }}' TORCH_HARMONICS_ENABLE_OPENMP=1 TORCHINDUCTOR_COMPILE_THREADS=1 MAX_JOBS=2"
         CIBW_REPAIR_WHEEL_COMMAND_LINUX: |
           set -e
           TORCH_LIB=$(python -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
@@ -278,7 +278,16 @@ jobs:
             rm -rf /tmp/strip_tmp
           done
 
+      # MAX_JOBS=2 (in CIBW_ENVIRONMENT above): torch's extension build otherwise
+      # starts one nvcc per core, each compiling every arch in the list. On the
+      # CUDA 13 rows, with the sm_100a/sm_103a tcgen05 kernels, that ran a
+      # 16 GB hosted runner out of memory: the build was killed and the runner
+      # reported "received a shutdown signal" (v0.9.3rc1, rc2). The memory log
+      # shows how close a build comes, should it happen again.
       run: |
+        ( while sleep 30; do
+            free -m | awk -v t="$(date -u +%H:%M:%S)" '/^Mem:/ { printf "[mem %s] used %d of %d MB, %d MB available\n", t, $3, $2, $7 }'
+          done ) &
         cibuildwheel --platform linux
 
     - name: Inspect built wheels and .so files
