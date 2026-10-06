@@ -288,6 +288,10 @@ jobs:
         ( while sleep 30; do
             free -m | awk -v t="$(date -u +%H:%M:%S)" '/^Mem:/ { printf "[mem %s] used %d of %d MB, %d MB available\n", t, $3, $2, $7 }'
           done ) &
+        # A background process outlives its step on a runner; stop the sampler
+        # when this step ends, whether cibuildwheel succeeded or failed.
+        mem_sampler=$!
+        trap 'kill "$mem_sampler" 2>/dev/null || true' EXIT
         cibuildwheel --platform linux
 
     - name: Inspect built wheels and .so files
