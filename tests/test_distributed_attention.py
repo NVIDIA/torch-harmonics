@@ -301,6 +301,12 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_ATTN_SHAPES and not _run_slow_tests:
             self.skipTest("slow test; set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
 
+        # Without the ring kernels these cases only check the refusal, which the small ones
+        # already do; the large channel counts exist for the kernels' tiling, and building
+        # their layers on every rank of an 8-rank CPU run exhausts the runner's memory.
+        if in_channels > 64 and self.device.type not in _RING_GATHER_DEVICES & _RING_UPSAMPLE_DEVICES:
+            self.skipTest("large-channel case needs the ring kernels; the refusal is covered by the small cases")
+
         set_seed(333)
 
         B, C, Hi, Wi, Ho, Wo = batch_size, in_channels, nlat_in, nlon_in, nlat_out, nlon_out
