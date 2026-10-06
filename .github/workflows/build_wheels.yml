@@ -380,8 +380,10 @@ jobs:
           wheelhouse/*.whl
           wheelhouse/build-metadata.json
 
+    # Every job checks its wheel in the form it is published -- local version
+    # stripped -- with twine, auditwheel and a look at the .so files. Cheap,
+    # and a broken wheel in any variant is caught here rather than at release.
     - name: Repack wheels for PyPI (strip local version identifier)
-      if: matrix.dist-tag == 'cuda-latest'
       run: |
         pip install -r .github/requirements/build-tools.txt
         mkdir -p pypi-wheelhouse
@@ -402,7 +404,7 @@ jobs:
         done
 
     - name: Inspect repacked wheels and .so files
-      if: always() && matrix.dist-tag == 'cuda-latest'
+      if: always()
       run: |
         pip install -r .github/requirements/build-tools.txt
 
@@ -431,9 +433,10 @@ jobs:
           rm -rf "$tmpdir"
         done
 
-    # The runner's Python is 3.11, so only the cp311 wheel installs here; every
-    # wheel is already import-tested in its own interpreter by cibuildwheel's
-    # test-command. This checks the repacked wheel, as published.
+    # One end-to-end install of a repacked wheel, with the torch it pins and
+    # nothing else. The runner's Python is 3.11, so the cp311 wheel; every wheel
+    # is already import-tested in its own interpreter by cibuildwheel's
+    # test-command, so doing this per job would only add a CUDA torch download.
     - name: Install and import the repacked wheel
       if: always() && matrix.dist-tag == 'cuda-latest' && matrix.python == 'cp311'
       run: |
