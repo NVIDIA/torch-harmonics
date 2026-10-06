@@ -31,12 +31,19 @@
 
 import contextlib
 import os
+import unittest
 
 import torch
 import torch.distributed as dist
 from packaging import version
 
 import torch_harmonics.distributed as thd
+from torch_harmonics.utils import torch_compile_supported
+
+# For tests that call torch.compile themselves: torch refuses it outright on some
+# PyTorch/Python combinations (torch 2.9 on Python 3.14), which is not a failure of the code
+# under test. Goes directly on the test function, below @parameterized.expand.
+requires_torch_compile = unittest.skipUnless(torch_compile_supported(), "torch.compile is unavailable with this PyTorch and Python")
 
 
 def _is_sm90():

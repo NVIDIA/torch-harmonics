@@ -61,6 +61,8 @@ import os
 import pytest
 import torch
 
+from torch_harmonics.utils import torch_compile_supported
+
 
 def _grid():
     return int(os.getenv("GRID_H", 1)), int(os.getenv("GRID_W", 1))
@@ -112,13 +114,15 @@ def reset_dynamo():
 
     Resetting per test makes each case independent of collection order and of how
     many parameterizations precede it. It is a no-op for tests that never invoke
-    torch.compile, beyond clearing caches that should not outlive a test anyway.
+    torch.compile, beyond clearing caches that should not outlive a test anyway, and
+    is skipped where torch.compile is unavailable altogether (torch 2.9 on Python 3.14).
 
     autouse fixtures apply to unittest.TestCase methods as well as plain test
     functions, so this covers the whole suite.
     """
 
-    torch._dynamo.reset()
+    if torch_compile_supported():
+        torch._dynamo.reset()
     yield
 
 

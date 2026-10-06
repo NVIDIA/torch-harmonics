@@ -38,6 +38,7 @@ import torch.nn as nn
 from torch_harmonics import InverseRealSHT, RealSHT
 from torch_harmonics.quadrature import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.utils import compile_if_supported
 
 
 class SpectralConvS2(nn.Module):
@@ -195,7 +196,7 @@ class SpectralConvS2(nn.Module):
             self.spectral_bias = nn.Parameter(torch.zeros(1, self.in_channels, self.lmax, self.mmax, dtype=torch.complex64))
             self.quadrature = QuadratureS2(img_shape=in_shape, grid=grid_in, normalize=False)
 
-    @torch.compile
+    @compile_if_supported
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
         resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
         return resc

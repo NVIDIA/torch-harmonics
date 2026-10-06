@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import functools
 import os
 import tempfile
 import urllib.request
@@ -140,6 +141,43 @@ class _EnsureContiguous(torch.autograd.Function):
 def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:
     """Ensures the tensor is contiguous in both the forward and backward pass."""
     return _EnsureContiguous.apply(x)
+
+
+# How torch.compile words its refusal on an unsupported Python, in torch 2.6 to 2.10 at least.
+_TORCH_COMPILE_REFUSAL = "torch.compile is not supported on Python"
+
+
+@functools.lru_cache(maxsize=None)
+def torch_compile_supported() -> bool:
+    """
+    Whether ``torch.compile`` can be used at all with this PyTorch and Python.
+
+    False where torch refuses it outright -- torch 2.9 on Python 3.14, torch 2.10 on 3.15, a
+    free-threaded build -- which it does with a RuntimeError starting with the prefix below in
+    every supported version. Any other error is not a refusal and is raised, so a broken setup
+    surfaces instead of silently running uncompiled. Wrapping a function does not compile
+    anything yet, so this is cheap.
+    """
+    try:
+        torch.compile(lambda x: x)
+    except RuntimeError as e:
+        if str(e).startswith(_TORCH_COMPILE_REFUSAL):
+            return False
+        raise
+    return True
+
+
+def compile_if_supported(fn):
+    """
+    ``torch.compile(fn)``, or ``fn`` unchanged where this torch cannot compile at all.
+
+    ``torch.compile`` refuses outright when the running Python is newer than the torch
+    release supports -- torch 2.9 on Python 3.14 raises ``torch.compile is not supported
+    on Python 3.14+`` -- and it does so when called, not when the compiled function first
+    runs. Used as a decorator in a class body, that made ``import torch_harmonics`` fail.
+    Falling back to the plain function keeps the code working, eagerly.
+    """
+    return torch.compile(fn) if torch_compile_supported() else fn
 
 
 def check(cond: bool, message) -> None:

@@ -47,10 +47,13 @@ jobs:
         dist-tag: ${{ fromJSON(needs.plan.outputs.dist-tags) }}
         python: [cp311, cp312, cp313, cp314]
         exclude:
-          # PyTorch has no cp314 wheels before 2.9.
+          # PyTorch has no cp314 wheels before 2.9, and torch 2.9 cannot
+          # torch.compile on Python 3.14: its cp314 wheel installs, but runs
+          # uncompiled. Python 3.14 users get cu132 or cuda-latest instead.
           - {dist-tag: cu126, python: cp314}
           - {dist-tag: cu128, python: cp314}
           - {dist-tag: cu129, python: cp314}
+          - {dist-tag: cu130, python: cp314}
         # One row per variant, matched by dist-tag; its keys apply to every
         # Python version of that variant.
         include:
