@@ -352,7 +352,9 @@ jobs:
       uses: actions/upload-artifact@v7
       with:
         name: wheel-torch-${{ matrix.torch-version }}-${{ matrix.torch-cuda }}
-        path: wheelhouse/*.whl
+        path: |
+          wheelhouse/*.whl
+          wheelhouse/build-metadata.json
 
     - name: Repack wheels for PyPI (strip local version identifier)
       if: matrix.torch-version == '2.14.1' && matrix.torch-cuda == 'cu132'
