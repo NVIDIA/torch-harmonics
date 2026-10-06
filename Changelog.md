@@ -35,6 +35,7 @@
 * **Breaking**: fixed the `"bilinear-spherical"` resampling mode of `ResampleS2` and `DistributedResampleS2`, which applied spherical interpolation weights that are only valid for vectors to scalar sample values and could amplify its input without bound. It now interpolates along the shorter arc of the circle, which is identical to `"bilinear"` unless the field contains a phase wrap, so only wrapped fields change.
 * Fixed pole expansion for the same mode, which averaged angles arithmetically and so placed the pole in nearly the opposite direction for fields crossing the branch cut.
 * Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes, which capped the accuracy of everything derived from it at roughly 1e-7.
+* The serial tests in CI run as stages, like the distributed ones: the CPU wheel is built once, and the unit tests and the doctests run against it as separate jobs. Both suites now build that wheel with OpenMP, as the released wheels are built, so CI exercises the threaded CPU kernels instead of a serial build of them. The workflow is renamed from "Run local tests" to "Tests".
 
 ### v0.9.2
 
