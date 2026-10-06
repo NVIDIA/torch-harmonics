@@ -1,12 +1,15 @@
 name: Build and deploy documentation
 
-# Publishing happens only on a published release or a manual dispatch with
-# "deploy" checked (see the deploy job's `if:` guard). Pull requests targeting
-# main run the BUILD job only: they produce a downloadable `html-docs` artifact
-# for preview and never touch the published documentation.
+# Publishing happens only on a full release or a manual dispatch with "deploy"
+# checked (see the deploy job's `if:` guard). Pull requests targeting main run
+# the BUILD job only: they produce a downloadable `html-docs` artifact for
+# preview and never touch the published documentation.
 on:
   release:
-    types: [published]
+    # "released", not "published": GitHub fires "published" for pre-releases
+    # too, so a release candidate would replace the live docs. "released" fires
+    # only for a full release, including a pre-release later promoted to one.
+    types: [released]
   pull_request:
     branches: [main]
   workflow_dispatch:
