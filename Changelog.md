@@ -2,7 +2,7 @@
 
 ## Versioning
 
-### v0.9.3rc3
+### v0.9.3rc4
 
 * **Breaking**: the default `theta_cutoff` of `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2`, `NeighborhoodAttentionS2` and their distributed counterparts is derived from the grid's actual latitude spacing instead of from `nlat` alone, which under-covered the poles on non-equiangular grids. Equiangular grids are unaffected; models trained on other grids change unless `theta_cutoff` is passed explicitly.
 * **Breaking**: `DistributedDiscreteContinuousConvS2` gains `polar_mode`, defaulting to `"halo-exchange"`: each polar rank computes only the output rows it owns, so the K-expanded intermediate shrinks with the polar group. Results are unchanged. `polar_mode="reduce-scatter"` restores the old behaviour and is required when the support spans more than the neighbouring rank, which now raises.
@@ -23,6 +23,7 @@
 * Fixed `AccuracyS2` counting ignored samples as true negatives, which inflated the metric toward 1 for any masked target (`ignore_index` defaults to `-100`). Unmasked results are bit-identical.
 * Fixed `DiceLossS2` including ignored pixels in the class-zero denominator.
 * `CrossEntropyLossS2` and `FocalLossS2` no longer apply a redundant `log_softmax` before `cross_entropy`; results agree to within 2 ULP.
+* Fixed `import torch_harmonics` failing on Python 3.14 with PyTorch older than 2.10, which refuses `torch.compile` on that Python: `SpectralConvS2` and `DistributedSpectralConvS2` applied it at class definition. They now fall back to the eager contraction where `torch.compile` is unavailable.
 * Fixed single-longitude inputs producing non-finite values and gradients in `ResampleS2` and `DistributedResampleS2`.
 * Fixed Gaussian random-field sampling keeping stale dtype or device buffers after module conversions.
 * Fixed a DISCO backward launch failure for `nlon_in > 2048` with an integer scale factor of 3 or more.

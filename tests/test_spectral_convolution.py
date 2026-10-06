@@ -30,12 +30,14 @@
 #
 
 import unittest
+import unittest.mock
 
 import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, disable_tf32, set_seed
 
 from torch_harmonics.spectral_convolution import SpectralConvS2
+from torch_harmonics.utils import compile_if_supported
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -552,6 +554,29 @@ class TestSpectralConvS2(unittest.TestCase):
 
         self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
         self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+
+
+class TestCompileIfSupported(unittest.TestCase):
+    """compile_if_supported must not fail where torch.compile refuses to run at all."""
+
+    def test_falls_back_when_torch_compile_refuses(self):
+        # what torch 2.9 does on Python 3.14, raised when torch.compile is called
+        def refuse(fn, *args, **kwargs):
+            raise RuntimeError("torch.compile is not supported on Python 3.14+")
+
+        def fn(x):
+            return x + 1
+
+        with unittest.mock.patch.object(torch, "compile", refuse):
+            self.assertIs(compile_if_supported(fn), fn)
+
+    def test_compiles_where_supported(self):
+        def fn(x):
+            return x + 1
+
+        sentinel = object()
+        with unittest.mock.patch.object(torch, "compile", lambda f, *a, **k: sentinel):
+            self.assertIs(compile_if_supported(fn), sentinel)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.utils import compile_if_supported
 
 from .distributed_quadrature import DistributedQuadratureS2
 from .distributed_sht import DistributedInverseRealSHT, DistributedRealSHT
@@ -187,7 +188,7 @@ class DistributedSpectralConvS2(nn.Module):
             self.spectral_bias = nn.Parameter(torch.zeros(1, self.in_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64))
             self.quadrature = DistributedQuadratureS2(img_shape=in_shape, grid=grid_in, normalize=False)
 
-    @torch.compile
+    @compile_if_supported
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
         resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
         return resc

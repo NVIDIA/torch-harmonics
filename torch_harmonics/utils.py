@@ -142,6 +142,22 @@ def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:
     return _EnsureContiguous.apply(x)
 
 
+def compile_if_supported(fn):
+    """
+    ``torch.compile(fn)``, or ``fn`` unchanged where this torch cannot compile at all.
+
+    ``torch.compile`` refuses outright when the running Python is newer than the torch
+    release supports -- torch 2.9 on Python 3.14 raises ``torch.compile is not supported
+    on Python 3.14+`` -- and it does so when called, not when the compiled function first
+    runs. Used as a decorator in a class body, that made ``import torch_harmonics`` fail.
+    Falling back to the plain function keeps the code working, eagerly.
+    """
+    try:
+        return torch.compile(fn)
+    except RuntimeError:
+        return fn
+
+
 def check(cond: bool, message) -> None:
     """
     ``torch._check`` with a deferred message, without blocking full-graph compilation.
