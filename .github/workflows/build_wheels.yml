@@ -13,11 +13,12 @@ permissions:
 
 env:
   # The "a" suffixes are load-bearing, not cosmetic: setup.py gates the kpacked
-  # WGMMA (sm_90a) and tcgen05 (sm_100a) kernels on the literal strings 9.0a /
-  # 10.0a via _torch_cuda_arch_list_has(). Plain "9.0"/"10.0" builds, but
-  # silently compiles those kernels out.
+  # WGMMA (sm_90a) and tcgen05 (sm_100a/sm_103a) kernels on the literal strings
+  # 9.0a / 10.0a / 10.3a via _torch_cuda_arch_list_has(). Plain variants build,
+  # but silently compile those specialized kernels out. 10.7 is intentionally
+  # plain: torch-harmonics has no sm_107a-specific kernel path.
   # 10.0a and 12.0 are omitted for CUDA 12.6: sm_100/sm_120 only exist from 12.8.
-  CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0a+PTX", "12.8": "8.0;8.6;8.9;9.0a;10.0a;12.0+PTX", "12.9": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.0": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.2": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "none": ""}'
+  CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0a+PTX", "12.8": "8.0;8.6;8.9;9.0a;10.0a;12.0+PTX", "12.9": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.0": "8.0;8.6;8.9;9.0a;10.0a;10.3a;10.7;12.0+PTX", "13.2": "8.0;8.6;8.9;9.0a;10.0a;10.3a;10.7;12.0+PTX", "none": ""}'
 
 jobs:
   build-manylinux-wheels:
