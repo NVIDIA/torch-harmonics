@@ -2,7 +2,7 @@
 
 ## Versioning
 
-### v0.9.3rc1
+### v0.9.3rc2
 
 * **Breaking**: the default `theta_cutoff` of `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2`, `NeighborhoodAttentionS2` and their distributed counterparts is derived from the grid's actual latitude spacing instead of from `nlat` alone, which under-covered the poles on non-equiangular grids. Equiangular grids are unaffected; models trained on other grids change unless `theta_cutoff` is passed explicitly.
 * **Breaking**: `DistributedDiscreteContinuousConvS2` gains `polar_mode`, defaulting to `"halo-exchange"`: each polar rank computes only the output rows it owns, so the K-expanded intermediate shrinks with the polar group. Results are unchanged. `polar_mode="reduce-scatter"` restores the old behaviour and is required when the support spans more than the neighbouring rank, which now raises.
