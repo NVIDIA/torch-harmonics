@@ -586,8 +586,9 @@ class NeighborhoodAttentionS2(nn.Module):
     @property
     def dtype(self) -> torch.dtype:
         """
-        Dtype of the module's parameters, which the inputs share: the projections reject
-        any other.
+        Dtype of the module's parameters.
+
+        The inputs share it, since the projections reject any other.
         """
         return self.q_weights.dtype
 
