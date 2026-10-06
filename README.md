@@ -48,6 +48,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 [![tests](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml/badge.svg)](https://github.com/NVIDIA/torch-harmonics/actions/workflows/tests.yml)
 [![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NVIDIA/torch-harmonics/coverage-data/badge.json&cacheSeconds=3600)](https://github.com/NVIDIA/torch-harmonics/tree/coverage-data)
 [![pypi](https://img.shields.io/pypi/v/torch_harmonics)](https://pypi.org/project/torch_harmonics/)
+[![conda-forge](https://img.shields.io/conda/vn/conda-forge/torch-harmonics)](https://anaconda.org/conda-forge/torch-harmonics)
+[![downloads](https://static.pepy.tech/badge/torch-harmonics/month)](https://pepy.tech/projects/torch-harmonics)
+[![docs](https://img.shields.io/badge/docs-latest-blue)](https://nvidia.github.io/torch-harmonics/)
+[![license](https://img.shields.io/github/license/NVIDIA/torch-harmonics)](LICENSE.txt)
 [![arXiv](https://img.shields.io/badge/arXiv-2609.39737-b31b1b.svg)](https://arxiv.org/abs/2609.39737)
 
 ## Overview
@@ -88,6 +92,7 @@ Prebuilt Linux wheels with compiled CUDA extensions are available on [pypi.nvidi
 | 12.8 | `torch-harmonics-cu128` | 2.7.0 | `pip install torch-harmonics-cu128 --extra-index-url https://pypi.nvidia.com` |
 | 12.9 | `torch-harmonics-cu129` | 2.8.0 | `pip install torch-harmonics-cu129 --extra-index-url https://pypi.nvidia.com` |
 | 13.0 | `torch-harmonics-cu130` | 2.9.1 | `pip install torch-harmonics-cu130 --extra-index-url https://pypi.nvidia.com` |
+| 13.2 | `torch-harmonics-cu132` | 2.12.0 | `pip install torch-harmonics-cu132 --extra-index-url https://pypi.nvidia.com` |
 
 If you don't need a specific CUDA version, use one of the rolling aliases:
 

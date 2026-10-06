@@ -35,6 +35,8 @@
 * **Breaking**: fixed the `"bilinear-spherical"` resampling mode of `ResampleS2` and `DistributedResampleS2`, which applied spherical interpolation weights that are only valid for vectors to scalar sample values and could amplify its input without bound. It now interpolates along the shorter arc of the circle, which is identical to `"bilinear"` unless the field contains a phase wrap, so only wrapped fields change.
 * Fixed pole expansion for the same mode, which averaged angles arithmetically and so placed the pole in nearly the opposite direction for fields crossing the branch cut.
 * Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes, which capped the accuracy of everything derived from it at roughly 1e-7.
+* The serial tests in CI run as stages, like the distributed ones: the CPU wheel is built once, and the unit tests and the doctests run against it as separate jobs. Both suites now build that wheel with OpenMP, as the released wheels are built, so CI exercises the threaded CPU kernels instead of a serial build of them. The workflow is renamed from "Run local tests" to "Tests".
+* Wheels are built for Python 3.13 on every variant, and for Python 3.14 on the CUDA 13 and CPU variants (PyTorch has no cp314 wheels before 2.9). A new `torch-harmonics-cu132` package targets CUDA 13.2 and PyTorch 2.12. `torch-harmonics-cuda-latest` moves from CUDA 13.0 and PyTorch 2.11 to CUDA 13.2 and PyTorch 2.14, and the CPU wheel moves from PyTorch 2.11 to 2.14.
 
 ### v0.9.2
 

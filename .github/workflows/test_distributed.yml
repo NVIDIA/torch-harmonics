@@ -37,6 +37,10 @@ jobs:
         python-version: "3.11"
 
     - name: Build the wheel
+      env:
+        # as the released wheels are built (build_wheels.yml), so the tests exercise the
+        # threaded CPU kernels users run rather than a serial build of them
+        TORCH_HARMONICS_ENABLE_OPENMP: "1"
       run: |
         python3 -m pip install --upgrade pip setuptools wheel
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu

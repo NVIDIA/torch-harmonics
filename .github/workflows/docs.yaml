@@ -68,8 +68,8 @@ jobs:
       with:
         python-version: "3.11"
 
-    # Same install logic as tests.yml: CPU-only torch, then an editable
-    # build of the package. autodoc imports torch_harmonics, so the compiled
+    # CPU-only torch, then an editable build of the package (the test workflows
+    # build a wheel instead). autodoc imports torch_harmonics, so the compiled
     # C++ extensions must be built (CPU-only needs no CUDA toolkit).
     # setuptools-scm must be installed up front: the editable install below runs
     # with --no-build-isolation, so a missing build-backend dependency does not
