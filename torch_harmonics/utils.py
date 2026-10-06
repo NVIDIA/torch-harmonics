@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import functools
 import os
 import tempfile
 import urllib.request
@@ -142,6 +143,21 @@ def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:
     return _EnsureContiguous.apply(x)
 
 
+@functools.lru_cache(maxsize=None)
+def torch_compile_supported() -> bool:
+    """
+    Whether ``torch.compile`` can be used at all with this PyTorch and Python.
+
+    False where torch refuses it outright, e.g. torch 2.9 on Python 3.14. Wrapping a function
+    does not compile anything yet, so this is cheap.
+    """
+    try:
+        torch.compile(lambda x: x)
+    except RuntimeError:
+        return False
+    return True
+
+
 def compile_if_supported(fn):
     """
     ``torch.compile(fn)``, or ``fn`` unchanged where this torch cannot compile at all.
@@ -152,10 +168,7 @@ def compile_if_supported(fn):
     runs. Used as a decorator in a class body, that made ``import torch_harmonics`` fail.
     Falling back to the plain function keeps the code working, eagerly.
     """
-    try:
-        return torch.compile(fn)
-    except RuntimeError:
-        return fn
+    return torch.compile(fn) if torch_compile_supported() else fn
 
 
 def check(cond: bool, message) -> None:

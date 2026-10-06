@@ -34,10 +34,10 @@ import unittest.mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, set_seed
+from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
 
 from torch_harmonics.spectral_convolution import SpectralConvS2
-from torch_harmonics.utils import compile_if_supported
+from torch_harmonics.utils import compile_if_supported, torch_compile_supported
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -518,6 +518,7 @@ class TestSpectralConvS2(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
+    @requires_torch_compile
     def test_compile(self, nlat, nlon, in_channels, out_channels, num_groups, bias, verbose=False):
         """The layer compiles and matches eager, forward and backward."""
 
@@ -558,6 +559,14 @@ class TestSpectralConvS2(unittest.TestCase):
 
 class TestCompileIfSupported(unittest.TestCase):
     """compile_if_supported must not fail where torch.compile refuses to run at all."""
+
+    # torch_compile_supported caches its answer; each test patches torch.compile, so it
+    # must see a fresh check, and must not leave a patched answer behind.
+    def setUp(self):
+        torch_compile_supported.cache_clear()
+
+    def tearDown(self):
+        torch_compile_supported.cache_clear()
 
     def test_falls_back_when_torch_compile_refuses(self):
         # what torch 2.9 does on Python 3.14, raised when torch.compile is called
