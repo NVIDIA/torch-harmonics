@@ -35,6 +35,23 @@ import torch
 from torch_harmonics.utils import check
 
 
+def _kernel_device_types(op_name: str) -> frozenset:
+    """
+    The device types the compiled operator ``op_name`` has a kernel for.
+
+    Being built is not the same as being usable on a device: the extension registers CPU
+    and, when compiled with CUDA, CUDA kernels, and nothing for MPS or XPU. Callers test a
+    tensor's ``device.type`` against this set before calling the operator and fall back to
+    torch otherwise. It is computed once, at import, so the test is a set membership on a
+    constant that dynamo traces without a graph break.
+    """
+    try:
+        return frozenset(t for t, key in (("cpu", "CPU"), ("cuda", "CUDA")) if torch._C._dispatch_has_kernel_for_dispatch_key(op_name, key))
+    except RuntimeError:
+        # the extension is not built, so the operator does not exist
+        return frozenset()
+
+
 def _reciprocal_or_zero(alpha_sum: torch.Tensor) -> torch.Tensor:
     """
     ``1 / alpha_sum``, or zero where ``alpha_sum`` is zero.

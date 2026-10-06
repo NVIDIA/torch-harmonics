@@ -32,9 +32,11 @@
 import math
 import os
 import unittest
+import warnings
 from dataclasses import dataclass
 from time import perf_counter_ns
 from typing import ClassVar
+from unittest import mock
 
 import torch
 import torch.nn.functional as F
@@ -46,9 +48,10 @@ from testutils import build_psi_segments, compare_tensors, disable_tf32, expand_
 from torch.library import opcheck
 
 from torch_harmonics import AttentionS2, GridS2, HealpixGrid, NeighborhoodAttentionS2, as_grid
+from torch_harmonics.attention import backends as attention_backends
 from torch_harmonics.attention import cuda_kernels_is_available, optimized_kernels_is_available
 from torch_harmonics.attention._layout import to_nhwc
-from torch_harmonics.attention.backends import _point_weights
+from torch_harmonics.attention.backends import RaggedOptimizedBackend, RaggedReferenceBackend, RegularOptimizedBackend, RegularReferenceBackend, _point_weights
 from torch_harmonics.attention.kernels_torch.attention_ragged_torch import _neighborhood_s2_attention_ragged_torch
 from torch_harmonics.attention.kernels_torch.attention_regular_torch import (
     _neighborhood_s2_attention_regular_bwd_dk_torch,
@@ -1521,6 +1524,80 @@ class TestBackendState(unittest.TestCase):
         model.to(self.device)
         check_state()
 
+    @parameterized.expand([["regular"], ["ragged"]], skip_on_empty=True)
+    def test_optimized_backends_need_a_kernel_for_the_device(self, family):
+        """
+        Being built is not enough: the optimized backends serve only the device types the
+        build registered kernels for. MPS never has one, and CUDA has one only in a CUDA
+        build, so a layer moved there selects the reference rather than failing in the
+        dispatcher on its first forward. Asked of available() directly, so it needs no
+        such device to run.
+        """
+        grid = HealpixGrid(nside=4) if family == "ragged" else as_grid("equiangular", nlat=8, nlon=16)
+        model = NeighborhoodAttentionS2(grid_in=grid, grid_out=grid, in_channels=4, num_heads=2)
+        optimized, reference = (RaggedOptimizedBackend, RaggedReferenceBackend) if family == "ragged" else (RegularOptimizedBackend, RegularReferenceBackend)
+
+        self.assertFalse(optimized.available(model, torch.device("mps")))
+        self.assertEqual(optimized.available(model, torch.device("cuda")), optimized_kernels_is_available() and cuda_kernels_is_available())
+        self.assertEqual(optimized.available(model, torch.device("cpu")), optimized_kernels_is_available())
+        self.assertTrue(reference.available(model, torch.device("mps")))
+
+    @parameterized.expand([["regular"], ["ragged"]], skip_on_empty=True)
+    def test_falling_back_to_the_reference_warns(self, family):
+        """
+        Asking for the compiled kernels and getting the reference is reported, whether the
+        extension is missing or has no kernel for the device; asking for the reference is
+        not. A build without a kernel for this device is simulated by emptying the
+        backend's device set, so the test runs on any machine.
+        """
+        grid = HealpixGrid(nside=4) if family == "ragged" else as_grid("equiangular", nlat=8, nlon=16)
+        devices = "_RAGGED_DEVICES" if family == "ragged" else "_REGULAR_DEVICES"
+        make = lambda optimized_kernel: NeighborhoodAttentionS2(grid_in=grid, grid_out=grid, in_channels=4, num_heads=2, optimized_kernel=optimized_kernel).to(self.device)
+
+        with mock.patch.object(attention_backends, devices, frozenset()):
+            with self.assertWarnsRegex(UserWarning, "falls back to the torch reference"):
+                model = make(True)
+            self.assertTrue(model.backend.reference)
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("error", message=".*falls back to the torch reference")
+                make(False)
+
+    @parameterized.expand([["regular"], ["ragged"]], skip_on_empty=True)
+    def test_float64_takes_the_reference(self, family):
+        """
+        The compiled kernels compute in float32 whatever the storage type, so a float64
+        layer is handed to the torch reference, the one path that computes in float64, and
+        says so. Casting back to float32 returns it to the kernels: the layer's dtype, not
+        only its state's, decides the backend.
+        """
+        grid = HealpixGrid(nside=4) if family == "ragged" else as_grid("equiangular", nlat=8, nlon=16)
+        model = NeighborhoodAttentionS2(grid_in=grid, grid_out=grid, in_channels=4, num_heads=2).to(self.device)
+        reference = NeighborhoodAttentionS2(grid_in=grid, grid_out=grid, in_channels=4, num_heads=2, optimized_kernel=False).to(self.device)
+        reference.load_state_dict(model.state_dict())
+        optimized = model.backend.name
+
+        with self.assertWarnsRegex(UserWarning, "falls back to the torch reference.*float64"):
+            model.double()
+        self.assertTrue(model.backend.reference)
+
+        x = torch.randn(2, 4, *grid.shape, device=self.device, dtype=torch.float64, requires_grad=True)
+        out = model(x)
+        self.assertEqual(out.dtype, torch.float64)
+        self.assertTrue(torch.equal(out, reference.double()(x)))
+
+        # computed in float64, not float32 stored as float64: against the dense oracle in
+        # float64 it agrees to float64 roundoff, where float32 compute misses by ~1e-7
+        mask = _brute_force_neighborhood(grid, grid, model.theta_cutoff).to(self.device)
+        flat = x.detach().reshape(2, 4, -1)
+        expected = _dense_masked_attention(model, flat, flat, flat, mask).reshape(out.shape)
+        self.assertTrue(compare_tensors("float64 output", out, expected, atol=1e-12, rtol=1e-12))
+        out.sum().backward()
+        self.assertEqual(x.grad.dtype, torch.float64)
+
+        model.float()
+        self.assertEqual(model.backend.name, optimized)
+
     @parameterized.expand(
         [
             ["regular", True],
@@ -1532,19 +1609,24 @@ class TestBackendState(unittest.TestCase):
     )
     def test_a_dtype_cast_keeps_the_state_float32(self, family, optimized_kernel):
         """
-        .half() / .double() cast every floating buffer, but the backend's quadrature weights
-        are float32 by contract -- the kernels read them as float. The cast must be undone,
-        or a 16-bit buffer reaches a kernel that reinterprets it as 32-bit.
+        .half() / .double() cast every floating buffer, but the backend fixes the dtype of
+        its quadrature weights: float32, which the kernels read as float, and float64 only
+        for a float64 layer, which takes the reference. A cast must not decide it, or a
+        16-bit buffer reaches a kernel that reinterprets it as 32-bit.
         """
         grid = HealpixGrid(nside=4) if family == "ragged" else as_grid("equiangular", nlat=8, nlon=16)
         model = NeighborhoodAttentionS2(grid_in=grid, grid_out=grid, in_channels=4, num_heads=2, optimized_kernel=optimized_kernel).to(self.device)
 
-        for cast in (torch.nn.Module.half, torch.nn.Module.double, torch.nn.Module.float):
-            cast(model)
-            self.assertEqual({name for name, _ in model.named_buffers()}, TestBackendState.EXPECTED[model.backend.name])
-            for name in ("ring_weights", "point_weights"):
-                if hasattr(model, name):
-                    self.assertEqual(getattr(model, name).dtype, torch.float32, f"{name} after {cast.__name__}")
+        with warnings.catch_warnings():
+            # .double() falls back to the reference and says so; that is tested elsewhere
+            warnings.filterwarnings("ignore", message=".*falls back to the torch reference")
+            for cast in (torch.nn.Module.half, torch.nn.Module.double, torch.nn.Module.float):
+                cast(model)
+                self.assertEqual({name for name, _ in model.named_buffers()}, TestBackendState.EXPECTED[model.backend.name])
+                expected = torch.float64 if cast is torch.nn.Module.double else torch.float32
+                for name in ("ring_weights", "point_weights"):
+                    if hasattr(model, name):
+                        self.assertEqual(getattr(model, name).dtype, expected, f"{name} after {cast.__name__}")
 
     def test_a_half_model_computes_what_the_float_model_does(self):
         """
@@ -1782,7 +1864,8 @@ def _dense_masked_attention(model, query, key, value, mask):
     scale = model.scale if model.scale is not None else 1.0 / math.sqrt(q.shape[-1])
     logits = scale * (q @ k.transpose(-1, -2))
 
-    log_weights = torch.log(_point_weights(model, logits.device).to(logits.dtype))
+    # computed in the logits' dtype, not rounded through float32, so a float64 oracle is float64 throughout
+    log_weights = torch.log(_point_weights(model, logits.device, logits.dtype))
     logits = logits + log_weights.reshape(1, 1, 1, -1)
     logits = logits.masked_fill(~mask.reshape(1, 1, *mask.shape), float("-inf"))
 
@@ -2158,9 +2241,8 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
             # Format: [in_shape, out_shape, batch, channels, heads, use_qknorm, dtype, atol, rtol]
             #
             # Precisions match the regular cases above: float32 throughout, with fp16/bf16
-            # through autocast. float64 is deliberately absent -- the regular suite has no
-            # fp64 case either, and while the CUDA dispatch macro nominally instantiates
-            # double, nothing exercises it.
+            # through autocast. float64 is absent because a float64 layer never reaches the
+            # kernels: it takes the torch reference (test_float64_takes_the_reference).
             [(6, 12), (6, 12), 2, 4, 1, False, torch.float32, 1e-5, 1e-3],
             [(6, 12), (6, 12), 2, 4, 2, False, torch.float32, 1e-5, 1e-3],
             [(6, 12), (6, 12), 2, 8, 4, True, torch.float32, 1e-5, 1e-3],

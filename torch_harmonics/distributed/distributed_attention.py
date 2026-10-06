@@ -36,12 +36,13 @@ import torch.distributed as dist
 from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics.attention import attention_kernels
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim, _reciprocal_or_zero
+from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim, _kernel_device_types, _reciprocal_or_zero
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.quadrature import effective_theta_cutoff
+from torch_harmonics.utils import check
 
 from .primitives import compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -904,6 +905,40 @@ def _require_halo_covers(layer: "DistributedNeighborhoodAttentionS2", hi_global:
         )
 
 
+# the device types the ring kernels exist for: CUDA, in a CUDA build, and nothing else
+_RING_GATHER_DEVICES = _kernel_device_types("attention_kernels::forward_ring_step")
+_RING_UPSAMPLE_DEVICES = _kernel_device_types("attention_kernels::forward_ring_step_upsample")
+
+
+def _check_ring_inputs(devices: frozenset, key: torch.Tensor) -> None:
+    """
+    Refuse, with a message that says why, what the ring kernels cannot do, instead of
+    leaving the op dispatcher to report a missing kernel or the kernels to round float64
+    to float32. The serial layer hands both cases to its torch reference; this layer has
+    none, so it refuses.
+
+    The dtype is checked first, so that it is reported on any device. Both tests read
+    tensor metadata that is static under dynamo, so on a supported input they fold to a
+    constant and cost no graph break. The messages close over plain strings only, never a
+    tensor (see torch_harmonics.utils.check).
+    """
+    check(
+        key.dtype != torch.float64,
+        lambda: (
+            "DistributedNeighborhoodAttentionS2 does not support float64: the ring kernels compute in float32, and there is no "
+            "reference implementation to fall back to. Use float32, or float16/bfloat16 through autocast."
+        ),
+    )
+    device_type = key.device.type
+    check(
+        device_type in devices,
+        lambda: (
+            f"DistributedNeighborhoodAttentionS2 has no {device_type} implementation: the ring kernels run on CUDA only, "
+            f"and this build has them for {', '.join(sorted(devices)) or 'no device'}. Move the layer and its inputs to a CUDA device."
+        ),
+    )
+
+
 class RingGatherBackend(AttentionBackendS2):
     """
     The ring kernels in the gather direction: self-attention and downsampling.
@@ -922,9 +957,9 @@ class RingGatherBackend(AttentionBackendS2):
 
     name = "ring-gather"
 
-    # No device test, like RaggedOptimizedBackend: the ring ops exist only for CUDA, and
-    # a layer built on CPU is normally moved there before it runs, so construction must
-    # not refuse. Called on CPU, the op dispatcher raises.
+    # No device test: the ring ops exist only for CUDA, but a layer built on CPU is
+    # normally moved there before it runs, so construction must not refuse. There is no
+    # reference to fall back to either; __call__ refuses a device without the kernels.
     @classmethod
     def available(cls, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> bool:
         return not layer.upsample
@@ -949,6 +984,7 @@ class RingGatherBackend(AttentionBackendS2):
         return {"ring_weights": _ring_weights(layer, device), "psi_seg": seg.contiguous().to(device), "psi_seg_off": seg_off.contiguous().to(device)}
 
     def __call__(self, layer, key, value, query_scaled):
+        _check_ring_inputs(_RING_GATHER_DEVICES, key)
         key, value, query_scaled = _cast_and_halo(layer, key, value, query_scaled)
 
         out, _, _ = _RingNeighborhoodAttentionFn.apply(
@@ -1040,6 +1076,7 @@ class RingUpsampleBackend(AttentionBackendS2):
         return {"ring_weights": _ring_weights(layer, device), "psi_seg": seg.contiguous().to(device), "psi_seg_off": seg_off.contiguous().to(device)}
 
     def __call__(self, layer, key, value, query_scaled):
+        _check_ring_inputs(_RING_UPSAMPLE_DEVICES, key)
         key, value, query_scaled = _cast_and_halo(layer, key, value, query_scaled)
 
         out, _, _ = _RingNeighborhoodAttentionUpsampleFn.apply(
@@ -1097,7 +1134,12 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
 
     _backends = (RingGatherBackend, RingUpsampleBackend)
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'in_channels, in_shape, out_shape, grid_in="equiangular", grid_out="equiangular", num_heads=1, scale=None, '
+        "use_qknorm=False, bias=True, theta_cutoff=None, k_channels=None, out_channels=None, optimized_kernel=True",
+        grid_in="in_shape",
+        grid_out="out_shape",
+    )
     def __init__(
         self,
         grid_in: RegularGridS2,

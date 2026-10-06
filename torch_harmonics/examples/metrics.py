@@ -152,7 +152,10 @@ class BaseMetricS2(nn.Module):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, grid="equiangular", weight=None, ignore_index=-100, mode="micro"',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__()
 
@@ -222,7 +225,10 @@ class IntersectionOverUnionS2(BaseMetricS2):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, grid="equiangular", weight=None, ignore_index=-100, mode="micro"',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__(grid, weight, ignore_index, mode)
 
@@ -267,7 +273,10 @@ class AccuracyS2(BaseMetricS2):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, grid="equiangular", weight=None, ignore_index=-100, mode="micro"',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__(grid, weight, ignore_index, mode)
 

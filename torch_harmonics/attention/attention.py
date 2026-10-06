@@ -30,6 +30,7 @@
 #
 
 import math
+import warnings
 from typing import Optional, Union
 
 import torch
@@ -106,7 +107,12 @@ class AttentionS2(nn.Module):
     :cite:`Bonev2025`
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'in_channels, num_heads, in_shape, out_shape, grid_in="equiangular", grid_out="equiangular", scale=None, '
+        "use_qknorm=False, bias=True, k_channels=None, out_channels=None, drop_rate=0.0",
+        grid_in="in_shape",
+        grid_out="out_shape",
+    )
     def __init__(
         self,
         grid_in: GridS2,
@@ -405,7 +411,12 @@ class NeighborhoodAttentionS2(nn.Module):
     #: the selection, the device handling and the forward pass unchanged.
     _backends = BACKENDS
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'in_channels, in_shape, out_shape, grid_in="equiangular", grid_out="equiangular", num_heads=1, scale=None, '
+        "use_qknorm=False, bias=True, theta_cutoff=None, k_channels=None, out_channels=None, optimized_kernel=True",
+        grid_in="in_shape",
+        grid_out="out_shape",
+    )
     def __init__(
         self,
         grid_in: GridS2,
@@ -471,6 +482,9 @@ class NeighborhoodAttentionS2(nn.Module):
         self.num_heads = num_heads
         self.k_channels = in_channels if k_channels is None else k_channels
         self.out_channels = in_channels if out_channels is None else out_channels
+        # what was asked for, kept apart from what the build allows, so that landing on a
+        # reference backend despite asking for the kernels can be reported
+        self._optimized_kernel_requested = bool(optimized_kernel)
         self.optimized_kernel = optimized_kernel and optimized_kernels_is_available()
 
         # The coarser of the two grids sets the default support, judged by point count on
@@ -569,6 +583,14 @@ class NeighborhoodAttentionS2(nn.Module):
         """
         return self.q_weights.device
 
+    @property
+    def dtype(self) -> torch.dtype:
+        """
+        Dtype of the module's parameters, which the inputs share: the projections reject
+        any other.
+        """
+        return self.q_weights.dtype
+
     def _neighborhood_arcs(self):
         """The neighbourhood in arc form. Cached by the precompute, so backends share it."""
         # One call for both families; the only difference is whether the longitude axis
@@ -611,6 +633,18 @@ class NeighborhoodAttentionS2(nn.Module):
         self._backend_state = tuple(state)
         self.backend = backend
 
+        if backend.reference and self._optimized_kernel_requested:
+            if not optimized_kernels_is_available():
+                reason = "torch_harmonics was built without the compiled attention kernels"
+            elif self.dtype == torch.float64:
+                reason = "the compiled attention kernels compute in float32, and the layer is float64"
+            else:
+                reason = f"this build of the compiled attention kernels has no {device.type} implementation"
+            warnings.warn(
+                f"{type(self).__name__} on {device} falls back to the torch reference implementation ({backend.name}), because {reason}. "
+                "It is considerably slower. Pass optimized_kernel=False to select the reference explicitly and silence this warning."
+            )
+
     def _apply(self, fn, recurse: bool = True):
         """
         Reselect the backend when the module changes device, and restore its state when a
@@ -620,21 +654,26 @@ class NeighborhoodAttentionS2(nn.Module):
         ``.double()`` never call ``to``, so it is the only hook that sees every move.
 
         A dtype change casts every floating buffer, backend state included, but that state
-        has a fixed dtype: the quadrature weights are float32 whatever the activations are,
-        and the kernels read them as such. So a cast of the state is undone by preparing it
-        again, just as a device move is -- which is also what keeps ``.half()`` from
-        handing the kernels a 16-bit buffer they would read as ``float``. The test is on
-        what actually changed, the device or the state's dtypes, not on the call.
+        has a dtype its backend fixes: the quadrature weights are float32 for the kernels,
+        which read them as such, and for the references float32 too unless the layer is
+        float64. A dtype change can also change the backend, since a float64 layer takes
+        the reference. So a dtype change is answered by selecting and preparing again, just
+        as a device move is -- which is also what keeps ``.half()`` from handing the
+        kernels a 16-bit buffer they would read as ``float``. The test is on what actually
+        changed, the device, the layer's dtype or the state's dtypes, not on the call.
 
         The state of the outgoing backend is moved or cast by ``super()._apply`` and then
         thrown away -- a few MB, once per move, against not having to know the target
         device or dtype before anything has been touched.
         """
-        device_before = self.device
+        device_before, dtype_before = self.device, self.dtype
         dtypes_before = {name: getattr(self, name).dtype for name in self._backend_state}
         out = super()._apply(fn, recurse)
         state_cast = any(getattr(self, name).dtype != dtype for name, dtype in dtypes_before.items())
-        if self.device != device_before or state_cast:
+        # the layer's own dtype decides the backend too (float64 takes the reference), and
+        # can change without casting the state: a reference backend's state may already
+        # be float32 when .float() brings the layer back from float64
+        if self.device != device_before or self.dtype != dtype_before or state_cast:
             self._select_backend()
         return out
 

@@ -662,11 +662,11 @@ namespace attention_kernels
                     bdimx, DIV_UP(nchans_out, bdimx), batch_size, params, _kxp, _vxp, _qyp, _row_idx, _seg, _seg_off,
                     _quad_weights, _y_acc, _alpha_sum, _qdotk_max, stream);
             }
-        } else {
+        } else if constexpr (is_16bit_v<scalar_t>) {
             const bool use_vec = vec_fills_block && is_aligned<8>(_kxp) && is_aligned<8>(_vxp) && is_aligned<8>(_qyp);
 
             if (use_vec) {
-                using vec_t = std::conditional_t<std::is_same<scalar_t, at::Half>::value, half4, bf164>;
+                using vec_t = typename packed4_16bit<scalar_t>::type;
                 constexpr int MAX_VEC = MAX_LOCAL_ARR_LEN / VEC_SIZE;
                 constexpr int MIN_VEC = MAX_VEC / 2 + 1;
                 params.nchan_in = nchans_in / VEC_SIZE;
@@ -680,6 +680,12 @@ namespace attention_kernels
                     bdimx, DIV_UP(nchans_out, bdimx), batch_size, params, _kxp, _vxp, _qyp, _row_idx, _seg, _seg_off,
                     _quad_weights, _y_acc, _alpha_sum, _qdotk_max, stream);
             }
+        } else {
+            // float64, which the dispatch instantiates but no layer sends here: the scalar
+            // kernel, so that no vector path ever reinterprets a float64 buffer.
+            fwd_ring_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
+                bdimx, DIV_UP(nchans_out, bdimx), batch_size, params, _kxp, _vxp, _qyp, _row_idx, _seg, _seg_off,
+                _quad_weights, _y_acc, _alpha_sum, _qdotk_max, stream);
         }
 
         return;

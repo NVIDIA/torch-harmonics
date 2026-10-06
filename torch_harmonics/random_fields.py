@@ -87,7 +87,10 @@ class GaussianRandomFieldS2(torch.nn.Module):
     torch.Size([4, 128, 256])
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, alpha=2.0, tau=3.0, sigma=None, radius=1.0, grid="equiangular", dtype=torch.float32',
+        grid=("nlat", None),
+    )
     def __init__(self, grid: RegularGridS2, alpha=2.0, tau=3.0, sigma=None, radius=1.0, dtype=torch.float32):
         super().__init__()
 

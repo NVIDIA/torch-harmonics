@@ -226,13 +226,14 @@ class TestQuadratureS2Constructor(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # a shape is neither a resolution nor a grid name, so it falls through to the
-            # descriptor guards rather than to the legacy-signature one
-            [(32, 64), "not a shape (32, 64)"],
-            # a grid name or a resolution in the descriptor slot is the pre-v1.0.0 call,
-            # which is recognised before binding and answered with the replacement
+            # a shape is the pre-v1.0.0 call, QuadratureS2(img_shape, grid=...), answered
+            # with the replacement built from it
+            [(32, 64), "Write QuadratureS2(as_grid('equiangular', nlat=32, nlon=64)) instead"],
+            # so is a bare resolution, though it does not say what the other one was
+            [32, "no longer takes (img_shape, grid=...)"],
+            # a grid name alone was never a valid old call either; the descriptor guard
+            # answers it, naming the replacement all the same
             ["legendre-gauss", "as_grid('legendre-gauss'"],
-            [32, "no longer takes (nlat, nlon, grid=...)"],
         ]
     )
     def test_old_style_arguments_explain_themselves(self, bad_grid, expected_fragment):

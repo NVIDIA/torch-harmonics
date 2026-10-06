@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import ast
 import difflib
 import functools
 import inspect
@@ -1323,35 +1324,94 @@ def as_grid(spec: Union[PointSetS2, str, Type[PointSetS2]], **params: Any) -> Po
     return cls(**params)
 
 
-def _rejects_legacy_signature(init):
+#: how a descriptor parameter is recovered from a legacy call; see _rejects_legacy_signature
+_GridSpec = Union[str, Tuple[str, Optional[str]]]
+
+
+def _rejects_legacy_signature(legacy: str, **grids: _GridSpec):
     r"""
     Turn a pre-v1.0.0 constructor call into an actionable error.
 
-    Layers used to take the resolution and the grid name as separate arguments,
-    ``Layer(nlat, nlon, grid="equiangular")``; they now take a descriptor that carries
-    both. The guards in this module already catch an old call whose arguments happen to
-    land on the new parameters, but the *idiomatic* old call does not get that far:
-    ``grid`` named the grid string then and names the descriptor now, so Python rejects
-    the binding with ``got multiple values for argument 'grid'`` before any body runs.
-    That message says nothing about what to do instead.
+    Layers used to take the resolution and the grid name as separate arguments; they now
+    take a descriptor that carries both. The old call either fails to bind -- ``grid``
+    named the grid string then and names the descriptor now, so Python reports ``got
+    multiple values for argument 'grid'``, or ``unexpected keyword argument 'nlat'`` for
+    a keyword call -- or binds with a resolution or a name where a descriptor belongs.
+    Neither says what to do instead.
 
-    This wrapper inspects the call before binding and raises the migration text, with
-    the actual arguments substituted so the replacement can be copied. It only rejects;
-    a legacy call is never translated and run, so nothing silently changes meaning.
+    The old signature differs from layer to layer, so each one declares its own, and the
+    guard binds the call against both: nothing is inferred from argument types, which
+    would mistake a channel count for a resolution. A call that does not fit the new
+    signature but fits the old one, carrying a resolution or a grid name, is answered
+    with the replacement, assembled from the old arguments by name so it can be copied.
+    It only rejects; a legacy call is never translated and run, so nothing silently
+    changes meaning. A call that fits neither keeps Python's own error.
+
+    Parameters
+    ----------
+    legacy : str
+        The pre-v1.0.0 parameter list as it was written, without ``self``. Parsed, not
+        evaluated: a default that is not a literal only marks the parameter optional.
+    **grids
+        For each descriptor parameter of the new signature, the old parameters it
+        replaces: the name of a shape tuple (``grid_in="in_shape"``), or an
+        ``(nlat, nlon)`` pair of names (``grid=("nlat", "nlon")``), where ``None`` for
+        nlon means the old layer derived it as ``2 * nlat``. The grid *name* came from
+        the old parameter of the same name, which every old signature had.
 
     Applied to ``__init__`` of the layers whose signature changed. Uses
     :func:`functools.wraps`, so ``inspect.signature`` and the documentation still report
     the real, descriptor-taking signature.
     """
+    legacy_sig = _parse_signature(legacy)
+    for name, spec in grids.items():
+        named = (spec,) if isinstance(spec, str) else tuple(n for n in spec if n is not None)
+        for old in (name,) + named:
+            if old not in legacy_sig.parameters:
+                raise ValueError(f"legacy signature ({legacy}) has no parameter '{old}' to recover '{name}' from")
 
-    @functools.wraps(init)
-    def wrapper(self, *args, **kwargs):
-        _reject_legacy_grid_call(type(self), init, args, kwargs)
-        return init(self, *args, **kwargs)
+    def decorate(init):
+        new_sig = inspect.signature(init)
+        missing = [name for name in grids if name not in new_sig.parameters]
+        if missing:
+            raise ValueError(f"{init.__qualname__} takes no descriptor parameter {missing}")
 
-    # marker so a test can assert every grid-taking constructor carries the guard
-    wrapper._rejects_legacy_signature = True
-    return wrapper
+        @functools.wraps(init)
+        def wrapper(self, *args, **kwargs):
+            _reject_legacy_grid_call(type(self), new_sig, legacy_sig, grids, args, kwargs)
+            return init(self, *args, **kwargs)
+
+        # markers so a test can assert every grid-taking constructor carries the guard,
+        # and build an old call from what it declares
+        wrapper._rejects_legacy_signature = True
+        wrapper._legacy_signature = legacy_sig
+        wrapper._legacy_grids = dict(grids)
+        return wrapper
+
+    return decorate
+
+
+class _NonLiteralDefault:
+    """Stands in for a legacy default that is not a literal: it only marks the parameter optional."""
+
+    def __repr__(self) -> str:
+        return "..."
+
+
+def _parse_signature(params: str) -> inspect.Signature:
+    """``inspect.Signature`` of a parameter list given as source, without evaluating it."""
+    args = ast.parse(f"def _({params}): pass").body[0].args
+    if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs:
+        raise ValueError(f"legacy signatures are plain positional-or-keyword parameter lists, got ({params})")
+
+    def default(node):
+        try:
+            return ast.literal_eval(node)
+        except ValueError:
+            return _NonLiteralDefault()
+
+    defaults = [inspect.Parameter.empty] * (len(args.args) - len(args.defaults)) + [default(d) for d in args.defaults]
+    return inspect.Signature([inspect.Parameter(a.arg, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=d) for a, d in zip(args.args, defaults)])
 
 
 def _is_resolution(value: Any) -> bool:
@@ -1359,37 +1419,94 @@ def _is_resolution(value: Any) -> bool:
     return isinstance(value, numbers.Integral) and not isinstance(value, bool)
 
 
-def _reject_legacy_grid_call(cls: Type, init: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> None:
-    """Raise if ``args``/``kwargs`` look like the pre-v1.0.0 signature. See above."""
-    names_in_order = [p for p in inspect.signature(init).parameters if p != "self"]
-    grid_params_of = [p for p in names_in_order if p in ("grid", "grid_in", "grid_out")]
-    if not grid_params_of:
+def _is_shape(value: Any) -> bool:
+    """An ``(nlat, nlon)`` shape the old signature would have taken."""
+    return isinstance(value, (tuple, list)) and len(value) == 2 and all(_is_resolution(v) for v in value)
+
+
+def _resolution_of(spec: _GridSpec, old: Dict[str, Any]) -> Optional[Tuple[Any, Any]]:
+    """The ``(nlat, nlon)`` an old call gave a grid, or None if it is not one."""
+    if isinstance(spec, str):
+        return tuple(old[spec]) if _is_shape(old[spec]) else None
+    nlat_name, nlon_name = spec
+    nlat = old[nlat_name]
+    nlon = 2 * nlat if nlon_name is None and _is_resolution(nlat) else old.get(nlon_name)
+    return (nlat, nlon) if _is_resolution(nlat) and _is_resolution(nlon) else None
+
+
+def _reject_legacy_grid_call(
+    cls: Type, new_sig: inspect.Signature, legacy_sig: inspect.Signature, grids: Dict[str, _GridSpec], args: Tuple[Any, ...], kwargs: Dict[str, Any]
+) -> None:
+    """Raise if ``args``/``kwargs`` are a pre-v1.0.0 call. See ``_rejects_legacy_signature``."""
+
+    # the supported form: binds, and every grid slot that was filled holds something that
+    # is not a resolution, a shape or a grid name (the descriptor guards judge the rest)
+    try:
+        bound = new_sig.bind(None, *args, **kwargs).arguments
+        if not any(_is_resolution(v) or _is_shape(v) or isinstance(v, str) for v in (bound.get(g) for g in grids)):
+            return
+    except TypeError:
+        pass
+
+    try:
+        old_bound = legacy_sig.bind(*args, **kwargs)
+    except TypeError:
+        return
+    passed = set(old_bound.arguments)
+    old_bound.apply_defaults()
+    old = old_bound.arguments
+
+    # the old call carried a resolution or a grid name: something only it could mean
+    carries_resolution = any(_is_resolution(old[n]) or _is_shape(old[n]) for spec in grids.values() for n in ((spec,) if isinstance(spec, str) else spec) if n is not None)
+    if not carries_resolution and not any(isinstance(old[g], str) and g in passed for g in grids):
         return
 
-    # look only at what actually lands in a descriptor slot: the grids are not always
-    # the leading parameters (PdeDataset takes dt and nsteps first, and dt is an int)
-    in_grid_slot = [args[names_in_order.index(p)] for p in grid_params_of if names_in_order.index(p) < len(args)]
-    in_grid_slot += [kwargs[p] for p in grid_params_of if p in kwargs]
+    def descriptor(name: str) -> str:
+        grid_name = repr(old[name]) if isinstance(old[name], str) else "<grid name>"
+        resolution = _resolution_of(grids[name], old)
+        nlat, nlon = resolution if resolution is not None else ("...", "...")
+        return f"as_grid({grid_name}, nlat={nlat}, nlon={nlon})"
 
-    # a resolution where a descriptor belongs, or the grid *name* the old signature took
-    if not any(_is_resolution(v) or isinstance(v, str) for v in in_grid_slot):
-        return
+    # the replacement: the new parameters in order, descriptors for the grids and the old
+    # arguments carried over by name; positional while nothing is skipped and the caller
+    # had not named it, keyword after
+    consumed = set(grids)
+    for spec in grids.values():
+        consumed.update((spec,) if isinstance(spec, str) else (n for n in spec if n is not None))
+    replacement, positional = [], True
+    for name, param in list(new_sig.parameters.items())[1:]:
+        if name in grids:
+            value = descriptor(name)
+        elif name in passed and name not in consumed:
+            value = repr(old[name])
+            if len(value) > 40:
+                value = f"<{name}>"
+        else:
+            positional = False
+            continue
+        positional = positional and param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD and (name in grids or name not in kwargs)
+        replacement.append(value if positional else f"{name}={value}")
 
-    # recover the old arguments where we can, so the suggestion is copy-pasteable
-    resolutions = [a for a in args if _is_resolution(a)]
-    names = [v for v in in_grid_slot if isinstance(v, str)]
+    # the old signature as the caller knew it: what it required or what held a grid,
+    # with runs of the other optional parameters elided
+    shown, elided = [], False
+    for name, param in legacy_sig.parameters.items():
+        if name in grids:
+            shown.append(f"{name}=...")
+        elif param.default is inspect.Parameter.empty or name in consumed:
+            shown.append(name)
+        else:
+            if not elided:
+                shown.append("...")
+            elided = True
+            continue
+        elided = False
+    if shown and shown[-1] == "...":
+        shown.pop()
 
-    def descriptor(i: int) -> str:
-        name = repr(names[i]) if i < len(names) else (repr(names[0]) if names else "<grid name>")
-        if len(resolutions) >= 2 * (i + 1):
-            return f"as_grid({name}, nlat={resolutions[2 * i]}, nlon={resolutions[2 * i + 1]})"
-        return f"as_grid({name}, nlat=..., nlon=...)"
-
-    replacement = ", ".join(descriptor(i) for i in range(len(grid_params_of)))
-    old = "(nlat, nlon, grid=...)" if len(grid_params_of) == 1 else "(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=..., grid_out=...)"
     raise TypeError(
-        f"{cls.__name__} no longer takes {old}; since v1.0.0 it takes a grid descriptor, which carries the "
-        f"resolution with it. Write {cls.__name__}({replacement}, ...) instead. A descriptor also knows its own "
-        f"parameters, so a grid family that is not described by (nlat, nlon) -- HEALPix, for instance -- fits the "
+        f"{cls.__name__} no longer takes ({', '.join(shown)}); since v1.0.0 it takes a grid descriptor, which carries "
+        f"the resolution with it. Write {cls.__name__}({', '.join(replacement)}) instead. A descriptor also knows its "
+        f"own parameters, so a grid family that is not described by (nlat, nlon) -- HEALPix, for instance -- fits the "
         f"same call."
     )

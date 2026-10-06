@@ -206,6 +206,22 @@ namespace attention_kernels
     template <> struct vec_traits<bf164> {
         using compute_t = float4;
     };
+    // The 4-wide storage type of a 16-bit scalar type. Only fp16 and bf16 have one, and any
+    // other type is a compile error: the dispatch macros also instantiate double, which a
+    // type picked by elimination would read as packed bf16.
+    template <typename STORAGE_T> struct packed4_16bit {
+        static_assert(sizeof(STORAGE_T) == 0,
+                      "packed4_16bit: only c10::Half and c10::BFloat16 have a 4-wide 16-bit storage type");
+    };
+    template <> struct packed4_16bit<c10::Half> {
+        using type = half4;
+    };
+    template <> struct packed4_16bit<c10::BFloat16> {
+        using type = bf164;
+    };
+    template <typename STORAGE_T>
+    constexpr bool is_16bit_v
+        = std::is_same<STORAGE_T, c10::Half>::value || std::is_same<STORAGE_T, c10::BFloat16>::value;
 
     // scalar load/store: STORAGE_T in {float, c10::Half, c10::BFloat16}; compute_t == float.
     // (The vectorised fp16 paths below deliberately DO use a half intrinsic:

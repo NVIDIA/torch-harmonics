@@ -263,11 +263,13 @@ def _neighborhood_s2_attention_ragged_torch(
     vx = _to_channels_first(vw, nh)
     qy = _to_channels_first(qw, nh)
 
-    # promote for the softmax, and return in the dtype register_fake commits to
+    # promote for the softmax -- 16-bit to float32, never float64 down to it, since this
+    # is the path float64 layers take -- and return in the dtype register_fake commits to
     inp_dtype = kw.dtype
-    kx = kx.to(torch.float32)
-    vx = vx.to(torch.float32)
-    qy = qy.to(torch.float32)
+    compute_dtype = torch.promote_types(inp_dtype, torch.float32)
+    kx = kx.to(compute_dtype)
+    vx = vx.to(compute_dtype)
+    qy = qy.to(compute_dtype)
 
     output = _neighborhood_s2_attention_ragged_fwd_torch(kx, vx, qy, point_weights, col_idx, row_off, npoints_out)
 
@@ -301,10 +303,12 @@ def _neighborhood_s2_attention_ragged_bwd(ctx, grad_output):
 
     kw_needs_grad, vw_needs_grad, qw_needs_grad = ctx.needs_input_grad[:3]
 
-    kx = _to_channels_first(kw, nh).to(torch.float32)
-    vx = _to_channels_first(vw, nh).to(torch.float32)
-    qy = _to_channels_first(qw, nh).to(torch.float32)
-    dy = _to_channels_first(grad_output, nh).to(torch.float32)
+    # promoted as in the forward
+    compute_dtype = torch.promote_types(kw.dtype, torch.float32)
+    kx = _to_channels_first(kw, nh).to(compute_dtype)
+    vx = _to_channels_first(vw, nh).to(compute_dtype)
+    qy = _to_channels_first(qw, nh).to(compute_dtype)
+    dy = _to_channels_first(grad_output, nh).to(compute_dtype)
 
     dkw = dvw = dqw = None
 

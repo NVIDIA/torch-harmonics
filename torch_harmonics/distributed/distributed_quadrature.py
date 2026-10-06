@@ -67,7 +67,10 @@ class DistributedQuadratureS2(torch.nn.Module):
 
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'img_shape, grid="equiangular", normalize=False',
+        grid="img_shape",
+    )
     def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
         super().__init__()
 

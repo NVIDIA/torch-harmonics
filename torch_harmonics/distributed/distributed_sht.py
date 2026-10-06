@@ -114,7 +114,10 @@ class DistributedRealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -314,7 +317,10 @@ class DistributedInverseRealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -476,7 +482,10 @@ class DistributedRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
@@ -664,7 +673,10 @@ class DistributedInverseRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()

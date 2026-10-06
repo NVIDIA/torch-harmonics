@@ -673,7 +673,7 @@ namespace attention_kernels
                     bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in,
                     nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _seg, _seg_off, _quad_weights, _yp, stream);
             }
-        } else {
+        } else if constexpr (is_16bit_v<scalar_t>) {
             // fp16/bf16 vectorized, 4-wide, and only when it fills the block.
             //
             // bdimx comes from the raw channel count above, so at nchans == 64 it is 32.
@@ -696,7 +696,7 @@ namespace attention_kernels
                 && (nchans_out / VEC_SIZE) >= bdimx;
 
             if (use_vec) {
-                using vec_t = std::conditional_t<std::is_same<scalar_t, at::Half>::value, half4, bf164>;
+                using vec_t = typename packed4_16bit<scalar_t>::type;
                 constexpr int MAX_VEC = MAX_LOCAL_ARR_LEN / VEC_SIZE;
                 constexpr int MIN_VEC = MAX_VEC / 2 + 1;
                 fwd_dispatch_bdimx<MAX_VEC, MIN_VEC, vec_t>(
@@ -709,6 +709,12 @@ namespace attention_kernels
                     bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in,
                     nlat_out, nlon_out, _kxp, _vxp, _qyp, _row_idx, _seg, _seg_off, _quad_weights, _yp, stream);
             }
+        } else {
+            // float64, which the dispatch instantiates but no layer sends here: the scalar
+            // kernel, so that no vector path ever reinterprets a float64 buffer.
+            fwd_dispatch_bdimx<MAX_LOCAL_ARR_LEN, MIN_LOC_ARR_LEN, scalar_t>(
+                bdimx, DIV_UP(nchans_out, bdimx), batch_size, nheads, nchans_in, nchans_out, nlat_in, nlon_in, nlat_out,
+                nlon_out, _kxp, _vxp, _qyp, _row_idx, _seg, _seg_off, _quad_weights, _yp, stream);
         }
 
         return;

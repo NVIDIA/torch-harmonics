@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Dict
 
 import torch
 
+from torch_harmonics.attention._attention_utils import _kernel_device_types
 from torch_harmonics.attention.kernels_torch.attention_ragged_torch import _neighborhood_s2_attention_ragged_torch
 from torch_harmonics.attention.kernels_torch.attention_regular_torch import _neighborhood_s2_attention_regular_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_ragged_optimized, _neighborhood_s2_attention_regular_optimized
@@ -68,6 +69,10 @@ from torch_harmonics.neighborhood import precompute_neighborhood_csr_s2
 
 if TYPE_CHECKING:  # pragma: no cover
     from torch_harmonics.attention.attention import NeighborhoodAttentionS2
+
+# the device types each compiled forward has a kernel for: CPU, and CUDA when built with it
+_RAGGED_DEVICES = _kernel_device_types("attention_kernels::forward_ragged")
+_REGULAR_DEVICES = _kernel_device_types("attention_kernels::forward_regular")
 
 
 class AttentionBackendS2:
@@ -104,6 +109,10 @@ class AttentionBackendS2:
 
     name = "?"
 
+    #: a pure-torch reference: the layer warns when it lands here although the compiled
+    #: kernels were asked for
+    reference = False
+
     @classmethod
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
         raise NotImplementedError
@@ -115,19 +124,28 @@ class AttentionBackendS2:
         raise NotImplementedError
 
 
-def _ring_weights(layer: "NeighborhoodAttentionS2", device: torch.device) -> torch.Tensor:
+def _ring_weights(layer: "NeighborhoodAttentionS2", device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     """
     The input grid's quadrature weights, one per ring.
 
     The descriptor computes in the dtype it is asked for, which is what keeps these
-    matching an already-trained model -- see GridS2.ring_weights.
+    matching an already-trained model -- see GridS2.ring_weights. The kernels read them
+    as float32; the references ask for ``_reference_weights_dtype``.
     """
-    return layer.grid_in.ring_weights(torch.float32).to(device)
+    return layer.grid_in.ring_weights(dtype).to(device)
 
 
-def _point_weights(layer: "NeighborhoodAttentionS2", device: torch.device) -> torch.Tensor:
+def _point_weights(layer: "NeighborhoodAttentionS2", device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     """The input grid's quadrature weights, one per point; see ``_ring_weights``."""
-    return layer.grid_in.point_weights(torch.float32).to(device)
+    return layer.grid_in.point_weights(dtype).to(device)
+
+
+def _reference_weights_dtype(layer: "NeighborhoodAttentionS2") -> torch.dtype:
+    """
+    float64 for a float64 layer, float32 otherwise. The references compute a float64
+    layer in float64, and weights rounded to float32 would cap it at float32 accuracy.
+    """
+    return torch.float64 if layer.dtype == torch.float64 else torch.float32
 
 
 class RaggedOptimizedBackend(AttentionBackendS2):
@@ -144,11 +162,14 @@ class RaggedOptimizedBackend(AttentionBackendS2):
 
     @classmethod
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
-        # No device test: the CPU and CUDA ragged kernels read the same arcs and are
-        # registered against the same operator, so the dispatcher picks between them
-        # and one backend serves both, as RegularOptimizedBackend does for the
-        # product-grid kernels.
-        return layer.ragged and layer.optimized_kernel
+        # The CPU and CUDA ragged kernels read the same arcs and are registered against
+        # the same operator, so the dispatcher picks between them and one backend serves
+        # both, as RegularOptimizedBackend does for the product-grid kernels. The device
+        # test is only whether this build has a kernel for the device at all: MPS, XPU,
+        # or CUDA under a CPU-only build fall through to the reference. So does a float64
+        # layer: the kernels compute in float32, and the reference is the only path that
+        # honours float64.
+        return layer.ragged and layer.optimized_kernel and device.type in _RAGGED_DEVICES and layer.dtype != torch.float64
 
     def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
         arcs = layer._neighborhood_arcs()
@@ -188,6 +209,7 @@ class RaggedReferenceBackend(AttentionBackendS2):
     """
 
     name = "ragged-reference"
+    reference = True
 
     @classmethod
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
@@ -195,7 +217,7 @@ class RaggedReferenceBackend(AttentionBackendS2):
 
     def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
         col_idx, roff_idx = precompute_neighborhood_csr_s2(layer.grid_in, layer.grid_out, layer.theta_cutoff)
-        return {"point_weights": _point_weights(layer, device), "psi_col_idx": col_idx.to(device), "psi_roff_idx": roff_idx.to(device)}
+        return {"point_weights": _point_weights(layer, device, _reference_weights_dtype(layer)), "psi_col_idx": col_idx.to(device), "psi_roff_idx": roff_idx.to(device)}
 
     def __call__(self, layer, key, value, query_scaled):
         return _neighborhood_s2_attention_ragged_torch(
@@ -224,7 +246,7 @@ class RegularOptimizedBackend(_RegularBackend):
 
     @classmethod
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
-        return not layer.ragged and layer.optimized_kernel
+        return not layer.ragged and layer.optimized_kernel and device.type in _REGULAR_DEVICES and layer.dtype != torch.float64
 
     def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
         arcs = layer._neighborhood_arcs()
@@ -242,6 +264,7 @@ class RegularReferenceBackend(_RegularBackend):
     """The product-grid torch reference: the fallback when the kernels were not built."""
 
     name = "regular-reference"
+    reference = True
 
     @classmethod
     def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
@@ -251,7 +274,7 @@ class RegularReferenceBackend(_RegularBackend):
         arcs = layer._neighborhood_arcs()
         col_idx, roff_idx = arcs.to_csr()
         return {
-            "ring_weights": _ring_weights(layer, device),
+            "ring_weights": _ring_weights(layer, device, _reference_weights_dtype(layer)),
             "psi_col_idx": col_idx.contiguous().to(device),
             "psi_roff_idx": roff_idx.to(torch.int64).contiguous().to(device),
         }

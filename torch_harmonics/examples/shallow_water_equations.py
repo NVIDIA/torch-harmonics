@@ -73,7 +73,10 @@ class ShallowWaterSolver(nn.Module):
         Height amplitude in meters, by default 120.
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=6371220.0, omega=7.292e-05, gravity=9.80616, havg=10000.0, hamp=120.0',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid, dt, lmax=None, mmax=None, radius=6.37122e6, omega=7.292e-5, gravity=9.80616, havg=10.0e3, hamp=120.0):
         super().__init__()
 

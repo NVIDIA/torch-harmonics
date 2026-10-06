@@ -170,6 +170,43 @@ def _grid_taking_constructors():
     return found
 
 
+def _legacy_call(legacy: inspect.Signature, grids):
+    """
+    Arguments for a pre-v1.0.0 call of the declared ``legacy`` signature, and the
+    ``(nlat, nlon)`` each descriptor should get from them.
+
+    Resolutions differ per grid, so a suggestion that swapped two of them is caught.
+    Every other required argument gets a placeholder of a plausible type: an int, or a
+    tuple for a kernel shape. Nothing is constructed, so the values only have to bind.
+    """
+    args, expected = {}, {}
+    for i, (g, spec) in enumerate(grids.items()):
+        nlat, nlon = 64 // (i + 1), 128 // (i + 1)
+        if isinstance(spec, str):
+            args[spec] = (nlat, nlon)
+        else:
+            args[spec[0]] = nlat
+            if spec[1] is None:
+                nlon = 2 * nlat
+            else:
+                args[spec[1]] = nlon
+        expected[g] = (nlat, nlon)
+    for name, param in legacy.parameters.items():
+        if param.default is inspect.Parameter.empty and name not in args:
+            args[name] = (3,) if name == "kernel_shape" else 2
+    return args, expected
+
+
+class _BindOnly:
+    """Stands in for a class in a suggested call: binds the arguments to its signature instead of constructing."""
+
+    def __init__(self, cls):
+        self.signature = inspect.signature(cls)
+
+    def __call__(self, *args, **kwargs):
+        return self.signature.bind(*args, **kwargs)
+
+
 class TestThetaCutoffContract(unittest.TestCase):
     """
     ``theta_cutoff`` defaults to :func:`compute_theta_cutoff`, which takes one
@@ -811,34 +848,103 @@ class TestGridDescriptor(unittest.TestCase):
         """
         Discovered rather than listed, so a layer added later cannot miss the guard.
 
-        The old call named the grid string ``grid``, which is now the descriptor, so
-        Python rejects the binding before any body runs -- with ``got multiple values
-        for argument 'grid'``, which says nothing about what to do. Every constructor
-        that takes a descriptor checks the call first and raises the migration text.
+        Each constructor declares its pre-v1.0.0 signature, and the old call is built from
+        that declaration -- required arguments positionally, the grid names by keyword as
+        the idiomatic old call had them, and once more entirely by keyword, which Python
+        would otherwise answer with a bare ``unexpected keyword argument``. The suggested
+        replacement must then be a call the new signature accepts, with each grid at the
+        resolution the old call gave it: checked by binding, not by reading the text.
         """
         guarded = _grid_taking_constructors()
         self.assertGreater(len(guarded), 20, msg="discovery found implausibly few constructors")
 
         for cls, grid_param_names in guarded:
             with self.subTest(cls=cls.__name__):
+                init = cls.__init__
                 self.assertTrue(
-                    getattr(cls.__init__, "_rejects_legacy_signature", False),
+                    getattr(init, "_rejects_legacy_signature", False),
                     msg=f"{cls.__name__} takes {', '.join(grid_param_names)} but carries no legacy-signature guard",
                 )
+                legacy, grids = init._legacy_signature, init._legacy_grids
+                self.assertEqual(set(grids), set(grid_param_names), msg="every descriptor parameter must say what it replaces")
 
-                # build the pre-v1.0.0 call for however many grids this layer takes
-                resolutions, names = [], {}
-                for i, p in enumerate(grid_param_names):
-                    resolutions += [64 // (i + 1), 128 // (i + 1)]
-                    names[p] = "equiangular"
-                with self.assertRaises(TypeError) as caught:
-                    cls(*resolutions, **names)
+                old_args, expected = _legacy_call(legacy, grids)
+                positional = [old_args[n] for n, p in legacy.parameters.items() if p.default is inspect.Parameter.empty]
+                by_name = {g: "equiangular" for g in grids}
+                by_name.update({n: v for n, v in old_args.items() if legacy.parameters[n].default is not inspect.Parameter.empty})
 
-                message = str(caught.exception)
-                self.assertIn(cls.__name__, message)
-                self.assertIn("as_grid(", message)
-                self.assertIn("nlat=64", message)
-                self.assertNotIn("multiple values", message)
+                for label, args, kwargs in (("positional", positional, by_name), ("keywords", [], {**old_args, **by_name})):
+                    with self.subTest(cls=cls.__name__, call=label):
+                        with self.assertRaises(TypeError) as caught:
+                            cls(*args, **kwargs)
+                        message = str(caught.exception)
+                        self.assertIn(f"{cls.__name__} no longer takes (", message)
+
+                        suggested = message.split("Write ", 1)[1].split(" instead.", 1)[0]
+                        call = eval(suggested, {cls.__name__: _BindOnly(cls), "as_grid": as_grid})
+                        for g, (nlat, nlon) in expected.items():
+                            self.assertEqual((call.arguments[g].nlat, call.arguments[g].nlon), (nlat, nlon), msg=f"{g} in {suggested}")
+
+    @parameterized.expand(
+        [
+            # channel counts are not resolutions: the shapes come from the tuples
+            [
+                "conv, the idiomatic old call",
+                lambda: th.DiscreteContinuousConvS2(32, 64, (16, 32), (8, 16), (3,), grid_in="equiangular", grid_out="legendre-gauss"),
+                "(in_channels, out_channels, in_shape, out_shape, kernel_shape, ..., grid_in=..., grid_out=...)",
+                "DiscreteContinuousConvS2(as_grid('equiangular', nlat=16, nlon=32), as_grid('legendre-gauss', nlat=8, nlon=16), 32, 64, (3,))",
+            ],
+            [
+                "attention, keywords kept as keywords",
+                lambda: th.NeighborhoodAttentionS2(8, (16, 32), (8, 16), num_heads=2),
+                "(in_channels, in_shape, out_shape, grid_in=..., grid_out=...)",
+                "NeighborhoodAttentionS2(as_grid('equiangular', nlat=16, nlon=32), as_grid('equiangular', nlat=8, nlon=16), 8, num_heads=2)",
+            ],
+            # an old call by keyword only, which Python alone answers with "unexpected keyword argument 'nlat'"
+            [
+                "SHT, keywords only",
+                lambda: th.RealSHT(nlat=16, nlon=32, lmax=8),
+                "(nlat, nlon, ..., grid=...)",
+                "RealSHT(as_grid('equiangular', nlat=16, nlon=32), lmax=8)",
+            ],
+            [
+                "conv, keywords only",
+                lambda: th.DiscreteContinuousConvS2(in_channels=4, out_channels=4, in_shape=(16, 32), out_shape=(16, 32), kernel_shape=(3,)),
+                "(in_channels, out_channels, in_shape, out_shape, kernel_shape, ..., grid_in=..., grid_out=...)",
+                "DiscreteContinuousConvS2(as_grid('equiangular', nlat=16, nlon=32), as_grid('equiangular', nlat=16, nlon=32), in_channels=4, out_channels=4, kernel_shape=(3,))",
+            ],
+            [
+                "resample, four resolutions",
+                lambda: th.ResampleS2(16, 32, 8, 16, grid_out="legendre-gauss"),
+                "(nlat_in, nlon_in, nlat_out, nlon_out, grid_in=..., grid_out=...)",
+                "ResampleS2(as_grid('equiangular', nlat=16, nlon=32), as_grid('legendre-gauss', nlat=8, nlon=16))",
+            ],
+            [
+                "random field, nlon derived from nlat",
+                lambda: th.random_fields.GaussianRandomFieldS2(32, alpha=3.0),
+                "(nlat, ..., grid=...)",
+                "GaussianRandomFieldS2(as_grid('equiangular', nlat=32, nlon=64), alpha=3.0)",
+            ],
+        ]
+    )
+    def test_the_replacement_is_built_from_the_old_call(self, _, old_call, old_signature, replacement):
+        """
+        The guard reads the old arguments by name against the layer's own old signature:
+        the error quotes that signature and suggests the exact call to write instead.
+        """
+        with self.assertRaises(TypeError) as caught:
+            old_call()
+        message = str(caught.exception)
+        self.assertIn(f"no longer takes {old_signature};", message)
+        self.assertIn(f"Write {replacement} instead.", message)
+
+    def test_a_call_that_fits_neither_signature_keeps_pythons_error(self):
+        """A mistake in a new-style call is not a legacy call, and is not answered as one."""
+        g = as_grid("equiangular", nlat=16, nlon=32)
+        with self.assertRaisesRegex(TypeError, "unexpected keyword argument 'lmaxx'"):
+            th.RealSHT(g, lmaxx=4)
+        with self.assertRaisesRegex(TypeError, "unexpected keyword argument 'kernel_size'"):
+            th.DiscreteContinuousConvS2(g, g, 4, 4, kernel_size=3)
 
     def test_rejecting_the_old_call_leaves_the_signature_introspectable(self):
         """The guard wraps __init__, so autodoc and help() must still see the real one."""

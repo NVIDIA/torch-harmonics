@@ -298,7 +298,13 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     :cite:`Ocampo2023`
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type="piecewise linear", basis_norm_mode="nodal", '
+        'groups=1, grid_in="equiangular", grid_out="equiangular", bias=True, theta_cutoff=None, optimized_kernel=True, '
+        'fused=False, polar_mode="halo-exchange"',
+        grid_in="in_shape",
+        grid_out="out_shape",
+    )
     def __init__(
         self,
         grid_in: RegularGridS2,
@@ -630,7 +636,12 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     :cite:`Ocampo2023`
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type="piecewise linear", basis_norm_mode="nodal", '
+        'groups=1, grid_in="equiangular", grid_out="equiangular", bias=True, theta_cutoff=None, optimized_kernel=True',
+        grid_in="in_shape",
+        grid_out="out_shape",
+    )
     def __init__(
         self,
         grid_in: RegularGridS2,

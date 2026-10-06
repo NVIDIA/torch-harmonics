@@ -443,13 +443,15 @@ def _neighborhood_s2_attention_regular_torch(
     B, H, W, _ = qw.shape
     qw = to_nchw(qw).reshape(B * nh, -1, H, W)
 
-    # Promote to fp32 internally for softmax numerics; cast back to the input
-    # dtype on return so the op is faithful to its declared output dtype
-    # (see register_fake below, which commits to kw.dtype).
+    # Promote to at least fp32 internally for softmax numerics -- never float64 down
+    # to it, since this is the path float64 layers take; cast back to the input dtype
+    # on return so the op is faithful to its declared output dtype (see register_fake
+    # below, which commits to kw.dtype).
     inp_dtype = kw.dtype
-    kw = kw.to(torch.float32)
-    vw = vw.to(torch.float32)
-    qw = qw.to(torch.float32)
+    compute_dtype = torch.promote_types(inp_dtype, torch.float32)
+    kw = kw.to(compute_dtype)
+    vw = vw.to(compute_dtype)
+    qw = qw.to(compute_dtype)
 
     # direction selection: gather (self / downsample) iff nlon_in is an integer
     # multiple of nlon_out; scatter (upsample) iff nlon_out is an integer multiple
@@ -526,16 +528,16 @@ def _neighborhood_s2_attention_regular_bwd_torch(ctx, grad_output):
     qw = _to_cf(qw)
     grad_output = _to_cf(grad_output)
 
-    # Promote to fp32 internally for softmax numerics; cast each grad back to
-    # its corresponding input's dtype on return. Mirrors the optimized bwd
-    # pattern in attention_optimized.py.
+    # Promote to at least fp32 internally for softmax numerics, as in the forward;
+    # cast each grad back to its corresponding input's dtype on return.
     kw_dtype = kw.dtype
     vw_dtype = vw.dtype
     qw_dtype = qw.dtype
-    kw = kw.to(torch.float32)
-    vw = vw.to(torch.float32)
-    qw = qw.to(torch.float32)
-    grad_output = grad_output.to(torch.float32)
+    compute_dtype = torch.promote_types(kw_dtype, torch.float32)
+    kw = kw.to(compute_dtype)
+    vw = vw.to(compute_dtype)
+    qw = qw.to(compute_dtype)
+    grad_output = grad_output.to(compute_dtype)
 
     # direction selection — same convention as the forward op.
     if nlon_in % nlon_out == 0:

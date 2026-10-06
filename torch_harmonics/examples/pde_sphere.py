@@ -64,7 +64,10 @@ class SphereSolver(nn.Module):
         Coefficient for the PDE, by default 0.001
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat, nlon, dt, lmax=None, mmax=None, grid="equiangular", radius=1.0, coeff=0.001',
+        grid=("nlat", "nlon"),
+    )
     def __init__(self, grid, dt, lmax=None, mmax=None, radius=1.0, coeff=0.001):
         super().__init__()
 

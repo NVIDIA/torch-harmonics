@@ -49,6 +49,7 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+from torch_harmonics.distributed.distributed_attention import _RING_GATHER_DEVICES, _RING_UPSAMPLE_DEVICES
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
 # shapes, whose polar rows have the longest neighbourhoods).
@@ -81,16 +82,32 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
     """
     Compare serial NeighborhoodAttentionS2 against DistributedNeighborhoodAttentionS2.
 
-    CPU-only runs are skipped: distributed attention requires CUDA (NCCL + custom kernels).
+    The ring kernels exist for CUDA only. Nothing here is skipped for want of them: on
+    another device the comparisons assert that the layer refuses to run, and the tests
+    that never reach a kernel -- backend state, shape checks -- run as they are.
     """
 
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
         disable_tf32()
-        if not torch.cuda.is_available():
-            raise unittest.SkipTest("Distributed neighborhood attention requires CUDA")
-        disable_tf32()
+
+    def _refuses_device(self, attn_dist):
+        """
+        On a device without the ring kernels, assert that the layer refuses to run and
+        says why, rather than failing in the op dispatcher, and report that there is
+        nothing to compare. On a device with them, report that there is.
+        """
+        devices = _RING_UPSAMPLE_DEVICES if attn_dist.upsample else _RING_GATHER_DEVICES
+        if self.device.type in devices:
+            return False
+
+        C = attn_dist.in_channels
+        q = torch.randn(1, C, attn_dist.nlat_out_local, attn_dist.nlon_out_local, device=self.device)
+        k = torch.randn(1, C, attn_dist.nlat_in_local, attn_dist.nlon_in_local, device=self.device)
+        with self.assertRaisesRegex(RuntimeError, "ring kernels run on CUDA only"):
+            attn_dist(q, k, k)
+        return True
 
     def _split_helper(self, tensor):
         return split_tensor_hw(
@@ -302,6 +319,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         # build serial and distributed modules with identical weights
         attn_serial = th.NeighborhoodAttentionS2(**attn_args).to(self.device)
         attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args).to(self.device)
+        if self._refuses_device(attn_dist):
+            return
 
         with torch.no_grad():
             attn_dist.k_weights.copy_(attn_serial.k_weights)
@@ -441,6 +460,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn_serial = th.NeighborhoodAttentionS2(**attn_args).to(self.device)
         attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args).to(self.device)
+        if self._refuses_device(attn_dist):
+            return
 
         with torch.no_grad():
             attn_dist.k_weights.copy_(attn_serial.k_weights)
@@ -573,6 +594,22 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         check_state()
         self.assertEqual(attn.psi_seg.device.type, self.device.type)
 
+    def test_float64_is_refused(self):
+        """
+        The ring kernels compute in float32 and the layer has no reference to hand float64
+        to, so it refuses it, on any device and before anything else is checked.
+        """
+        attn = thd.DistributedNeighborhoodAttentionS2(
+            grid_in=th.as_grid("equiangular", nlat=32, nlon=64),
+            grid_out=th.as_grid("equiangular", nlat=32, nlon=64),
+            in_channels=8,
+            num_heads=1,
+        ).to(self.device, torch.float64)
+
+        x = torch.randn(1, 8, attn.nlat_in_local, attn.nlon_in_local, device=self.device, dtype=torch.float64)
+        with self.assertRaisesRegex(RuntimeError, "does not support float64"):
+            attn(x)
+
     def test_wrong_shape_assertions(self):
         """Verify that forward raises RuntimeError on spatial-shape mismatches."""
         B, C = 2, 16
@@ -593,15 +630,17 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # 1. Self-attention on an up/downsampling module: a single tensor cannot
         #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).
-        with self.assertRaises(RuntimeError):
+        # the regex keeps a missing ring kernel (NotImplementedError is a RuntimeError)
+        # from passing for a shape check
+        with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local)  # key defaults to query, but key must have in_shape
 
         # 2. q_shape == k_shape != v_shape: key carries out_shape instead of in_shape.
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local, q_local, k_local)
 
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local, k_local, q_local)
 
 

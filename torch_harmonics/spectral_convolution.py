@@ -140,7 +140,11 @@ class SpectralConvS2(nn.Module):
     truncations.
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'in_shape, out_shape, in_channels, out_channels, num_groups=1, grid_in="equiangular", grid_out="equiangular", bias=False',
+        grid_in="in_shape",
+        grid_out="out_shape",
+    )
     def __init__(
         self,
         grid_in: RegularGridS2,

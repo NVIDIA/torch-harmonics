@@ -72,7 +72,11 @@ class PdeDataset(torch.utils.data.Dataset):
         Target tensor
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'dt, nsteps, dims=(384, 768), grid="equiangular", pde="shallow water equations", initial_condition="random", '
+        'num_examples=32, device=torch.device("cpu"), normalize=True, stream=None',
+        grid="dims",
+    )
     def __init__(
         self,
         dt,

@@ -176,7 +176,11 @@ class ResampleS2(nn.Module):
     torch.Size([1, 128, 256])
     """
 
-    @_rejects_legacy_signature
+    @_rejects_legacy_signature(
+        'nlat_in, nlon_in, nlat_out, nlon_out, grid_in="equiangular", grid_out="equiangular", mode="bilinear"',
+        grid_in=("nlat_in", "nlon_in"),
+        grid_out=("nlat_out", "nlon_out"),
+    )
     def __init__(
         self,
         grid_in: RegularGridS2,
