@@ -143,18 +143,27 @@ def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:
     return _EnsureContiguous.apply(x)
 
 
+# How torch.compile words its refusal on an unsupported Python, in torch 2.6 to 2.10 at least.
+_TORCH_COMPILE_REFUSAL = "torch.compile is not supported on Python"
+
+
 @functools.lru_cache(maxsize=None)
 def torch_compile_supported() -> bool:
     """
     Whether ``torch.compile`` can be used at all with this PyTorch and Python.
 
-    False where torch refuses it outright, e.g. torch 2.9 on Python 3.14. Wrapping a function
-    does not compile anything yet, so this is cheap.
+    False where torch refuses it outright -- torch 2.9 on Python 3.14, torch 2.10 on 3.15, a
+    free-threaded build -- which it does with a RuntimeError starting with the prefix below in
+    every supported version. Any other error is not a refusal and is raised, so a broken setup
+    surfaces instead of silently running uncompiled. Wrapping a function does not compile
+    anything yet, so this is cheap.
     """
     try:
         torch.compile(lambda x: x)
-    except RuntimeError:
-        return False
+    except RuntimeError as e:
+        if str(e).startswith(_TORCH_COMPILE_REFUSAL):
+            return False
+        raise
     return True
 
 

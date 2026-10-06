@@ -29,6 +29,10 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import subprocess
+import sys
+import tempfile
+import textwrap
 import unittest
 import unittest.mock
 
@@ -578,6 +582,39 @@ class TestCompileIfSupported(unittest.TestCase):
 
         with unittest.mock.patch.object(torch, "compile", refuse):
             self.assertIs(compile_if_supported(fn), fn)
+
+    def test_other_errors_are_raised(self):
+        # anything but the refusal is a real problem, not a reason to run uncompiled
+        def broken(fn, *args, **kwargs):
+            raise RuntimeError("inductor misconfigured")
+
+        with unittest.mock.patch.object(torch, "compile", broken):
+            with self.assertRaisesRegex(RuntimeError, "inductor misconfigured"):
+                compile_if_supported(lambda x: x)
+
+    def test_import_with_torch_compile_refused(self):
+        # The failure this guards against happened at import, when the class bodies applied
+        # the decorator, so import both layers in a fresh interpreter in which torch.compile
+        # already refuses. Run outside the repository, so the installed package is imported.
+        code = textwrap.dedent(
+            """
+            import torch
+
+            def refuse(*args, **kwargs):
+                raise RuntimeError("torch.compile is not supported on Python 3.14+")
+
+            torch.compile = refuse
+
+            from torch_harmonics.spectral_convolution import SpectralConvS2
+            from torch_harmonics.distributed.distributed_spectral_convolution import DistributedSpectralConvS2
+
+            for cls in (SpectralConvS2, DistributedSpectralConvS2):
+                fn = cls.__dict__["_contract_lwise"]
+                assert not hasattr(fn, "_torchdynamo_orig_callable"), f"{cls.__name__} was compiled"
+            """
+        )
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=tempfile.gettempdir())
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_compiles_where_supported(self):
         def fn(x):
