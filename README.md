@@ -92,6 +92,7 @@ Prebuilt Linux wheels with compiled CUDA extensions are available on [pypi.nvidi
 | 12.8 | `torch-harmonics-cu128` | 2.7.0 | `pip install torch-harmonics-cu128 --extra-index-url https://pypi.nvidia.com` |
 | 12.9 | `torch-harmonics-cu129` | 2.8.0 | `pip install torch-harmonics-cu129 --extra-index-url https://pypi.nvidia.com` |
 | 13.0 | `torch-harmonics-cu130` | 2.9.1 | `pip install torch-harmonics-cu130 --extra-index-url https://pypi.nvidia.com` |
+| 13.2 | `torch-harmonics-cu132` | 2.12.0 | `pip install torch-harmonics-cu132 --extra-index-url https://pypi.nvidia.com` |
 
 If you don't need a specific CUDA version, use one of the rolling aliases:
 

@@ -35,6 +35,10 @@ jobs:
         python-version: "3.11"
 
     - name: Build the wheel
+      env:
+        # as the released wheels are built (build_wheels.yml), so the tests exercise the
+        # threaded CPU kernels users run rather than a serial build of them
+        TORCH_HARMONICS_ENABLE_OPENMP: "1"
       run: |
         python3 -m pip install --upgrade pip setuptools wheel
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
@@ -72,16 +76,16 @@ jobs:
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
         python3 -m pip install "$(ls dist/*.whl)[dev]"
 
+    # after the install: the step asks the installed torch how it uses the CPU
+    - name: Runner info
+      uses: ./.github/actions/runner-info
+
     # earth2grid, so the HEALPix tests check pixel centres and ordering against an independent
     # implementation instead of skipping. Not on PyPI: installed from the commit pinned in
     # test-tools.txt, the same pin the Dockerfiles use. --no-deps keeps pip from replacing the
     # CPU torch to satisfy earth2grid's exact torch pin, so its other runtime dependency comes
     # first, with what its build needs: it compiles against the installed torch, without build
     # isolation. On a runner without the CUDA toolkit it builds only its CPU extension.
-    # after the install: the step asks the installed torch how it uses the CPU
-    - name: Runner info
-      uses: ./.github/actions/runner-info
-
     - name: Install earth2grid
       run: |
         python3 -m pip install setuptools wheel packaging einops

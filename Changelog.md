@@ -74,6 +74,8 @@
 * Fixed the caching decorator hiding the docstrings and signatures of cached routines.
 * Fixed `trapezoidal_weights` returning float32 weights alongside float64 nodes.
 * Fixed `AccuracyS2` counting ignored area as correctly classified; `IntersectionOverUnionS2` has no true-negative term and is unaffected.
+* CI runs the serial tests as stages against one CPU wheel, built with OpenMP as the released wheels are, so the threaded CPU kernels are what is tested; the workflow is renamed "Tests".
+* Wheels are built for Python 3.13 on every variant and for Python 3.14 on the CUDA 13 and CPU variants. A new `torch-harmonics-cu132` targets CUDA 13.2 and PyTorch 2.12; `torch-harmonics-cuda-latest` moves to CUDA 13.2 and PyTorch 2.14, and the CPU wheel to PyTorch 2.14.
 
 ### v0.9.2
 

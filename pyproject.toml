@@ -34,6 +34,8 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 
@@ -126,8 +128,8 @@ ignore = [
 known-first-party = ["torch_harmonics"]
 
 [tool.cibuildwheel]
-# Build for Python 3.11, 3.12
-build = ["cp311-*", "cp312-*"]
+# Build for Python 3.11, 3.12, 3.13, 3.14
+build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
 build-frontend = "pip; args: --no-build-isolation"
 
 # Use manylinux for Linux wheels
