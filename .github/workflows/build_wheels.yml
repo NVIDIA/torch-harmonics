@@ -16,7 +16,8 @@ env:
   # WGMMA (sm_90a) and tcgen05 (sm_100a/sm_103a) kernels on the literal strings
   # 9.0a / 10.0a / 10.3a via _torch_cuda_arch_list_has(). Plain variants build,
   # but silently compile those specialized kernels out.
-  # 10.0a and 12.0 are omitted for CUDA 12.6: sm_100/sm_120 only exist from 12.8.
+  # 10.0a and 12.0 are omitted for CUDA 12.6: sm_100/sm_120 only exist from 12.8;
+  # 10.3a (sm_103a) only from 12.9.
   CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0a+PTX", "12.8": "8.0;8.6;8.9;9.0a;10.0a;12.0+PTX", "12.9": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.0": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.2": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "none": ""}'
 
 jobs:
@@ -68,13 +69,18 @@ jobs:
           # build-cuda: forces the CUDA extension on. Auto-detection cannot work
           # here because it requires torch.cuda.is_available(), and the build
           # runners have no GPU.
-          - torch-version: '2.6.0'
+          # The CUDA 12 variants all build against PyTorch 2.8, the oldest one
+          # supported: one per CUDA toolkit torch 2.8 ships for, so each matches
+          # the torch build users have -- plain `pip install torch==2.8.0` is the
+          # cu128 one. PyTorch 2.6 and 2.7 are not supported: their NCCL crashed
+          # or stalled the distributed tests on H100 and B200.
+          - torch-version: '2.8.0'
             torch-cuda: 'cu126'
             cuda-version: '12.6'
             dist-tag: 'cu126'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:e403d8c2bbb43e6d84704efcfa4c8c148bbe08edc2e69dac4c99546ed6c46cc7'
-          - torch-version: '2.7.0'
+          - torch-version: '2.8.0'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
             dist-tag: 'cu128'

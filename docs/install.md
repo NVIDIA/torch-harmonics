@@ -5,7 +5,7 @@
 Prebuilt Linux wheels with compiled CUDA extensions are published on
 [pypi.nvidia.com](https://pypi.nvidia.com), one per CUDA toolkit version. The
 packages are named `torch-harmonics-cu<CUDA>` — for example
-`torch-harmonics-cu126` for CUDA 12.6. Check
+`torch-harmonics-cu129` for CUDA 12.9. Check
 [pypi.nvidia.com](https://pypi.nvidia.com) for the packages currently available
 and the PyTorch release each one targets, then install the one matching your
 CUDA toolkit:
@@ -29,6 +29,15 @@ pip install torch-harmonics-cpu-latest --extra-index-url https://pypi.nvidia.com
 Run `nvidia-smi` to check the CUDA version supported by your driver.
 ```
 
+```{note}
+**Older PyTorch or CUDA** (PyTorch before 2.8, CUDA before 12.6) have no
+prebuilt wheels. Use the [Docker container](#docker), which brings a matching
+PyTorch and CUDA, or [build from source](#building-from-source) against your
+installed PyTorch, adding `--no-deps` so that pip does not replace it with a
+newer one: `pip install --no-build-isolation --no-deps .`. These combinations
+are not tested.
+```
+
 ## PyPI (CPU only)
 
 The vanilla [`torch-harmonics`](https://pypi.org/project/torch_harmonics/)
@@ -38,6 +47,8 @@ release. For GPU support, use the NVIDIA packages above.
 ```bash
 pip install torch-harmonics
 ```
+
+(building-from-source)=
 
 ## Building from source
 
@@ -105,6 +116,8 @@ For example, to build with host-optimized CPU kernels and OpenMP support:
 TORCH_HARMONICS_NATIVE_CPU_ARCH=1 TORCH_HARMONICS_ENABLE_OPENMP=1 \
     pip install --no-build-isolation -e .
 ```
+
+(docker)=
 
 ## Docker
 

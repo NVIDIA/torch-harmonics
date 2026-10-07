@@ -2,11 +2,12 @@
 
 ## Versioning
 
-### v0.9.3rc4
+### v0.9.3rc5
 
 * **Breaking**: the default `theta_cutoff` of `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2`, `NeighborhoodAttentionS2` and their distributed counterparts is derived from the grid's actual latitude spacing instead of from `nlat` alone, which under-covered the poles on non-equiangular grids. Equiangular grids are unaffected; models trained on other grids change unless `theta_cutoff` is passed explicitly.
 * **Breaking**: `DistributedDiscreteContinuousConvS2` gains `polar_mode`, defaulting to `"halo-exchange"`: each polar rank computes only the output rows it owns, so the K-expanded intermediate shrinks with the polar group. Results are unchanged. `polar_mode="reduce-scatter"` restores the old behaviour and is required when the support spans more than the neighbouring rank, which now raises.
 * **Breaking**: the distributed SHTs contract over latitudes (forward) or degrees (inverse) as a distributed matmul plus reduce-scatter instead of gathering that axis first. The Legendre coefficients are partitioned over the whole process grid, cutting their per-rank memory by the polar group size, and two of the four all-to-alls per transform are gone. Results now differ from the serial transform by a few float32 ULP of the summands, so comparisons need an absolute tolerance scaled to the tensor's dynamic range.
+* **Breaking**: the minimum PyTorch is 2.8; 2.6 and 2.7 are no longer supported. Their NCCL (2.21, 2.26) crashed or stalled the distributed tests on H100 and B200, which PyTorch 2.8 and later pass. All CUDA 12 packages -- `torch-harmonics-cu126`, `-cu128` and `-cu129` -- are now built against PyTorch 2.8, each for the matching CUDA build of it (`pip install torch==2.8.0` installs the CUDA 12.8 one).
 * **Breaking**: fixed the `"bilinear-spherical"` mode of `ResampleS2` and `DistributedResampleS2`, which applied vector interpolation weights to scalar values and could amplify the input without bound. It now interpolates along the shorter arc, identical to `"bilinear"` unless the field contains a phase wrap. Pole expansion for this mode, which averaged angles arithmetically, is fixed as well.
 * Wheels: Python 3.13 on every variant and Python 3.14 on the CUDA 13.2 and CPU variants (not on CUDA 13.0, whose PyTorch 2.9 cannot `torch.compile` on Python 3.14). New `torch-harmonics-cu132` package (CUDA 13.2, PyTorch 2.12). `torch-harmonics-cuda-latest` moves to CUDA 13.2 and PyTorch 2.14, and the CPU wheel to PyTorch 2.14.
 * Added `torch.compile(fullgraph=True)` support to the serial and distributed layers, and fixed SHT compilation failing in inductor with `KeyError: 'complex64'`.
