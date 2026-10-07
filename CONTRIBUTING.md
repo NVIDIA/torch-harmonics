@@ -57,7 +57,7 @@ done with the help of AI tools. What we ask is that a person stands behind every
 **Requirements**
 
 - Python 3.11+
-- PyTorch 2.8+ (install before building; extensions compile against your local `torch`)
+- PyTorch 2.9+ (install before building; extensions compile against your local `torch`)
 - NumPy 1.22.4+
 - A C++17 compiler; CUDA toolkit optional but recommended for GPU kernel work
 

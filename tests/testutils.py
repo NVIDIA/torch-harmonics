@@ -35,7 +35,6 @@ import unittest
 
 import torch
 import torch.distributed as dist
-from packaging import version
 
 import torch_harmonics.distributed as thd
 from torch_harmonics.utils import torch_compile_supported
@@ -85,16 +84,11 @@ def set_seed(seed=333):
 
 
 def disable_tf32():
-    # the api for this was changed lately in pytorch
     if torch.cuda.is_available():
-        if version.parse(torch.__version__) >= version.parse("2.9.0"):
-            torch.backends.cuda.matmul.fp32_precision = "ieee"
-            torch.backends.cudnn.fp32_precision = "ieee"
-            torch.backends.cudnn.conv.fp32_precision = "ieee"
-            torch.backends.cudnn.rnn.fp32_precision = "ieee"
-        else:
-            torch.backends.cuda.matmul.allow_tf32 = False
-            torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.fp32_precision = "ieee"
+        torch.backends.cudnn.fp32_precision = "ieee"
+        torch.backends.cudnn.conv.fp32_precision = "ieee"
+        torch.backends.cudnn.rnn.fp32_precision = "ieee"
     return
 
 

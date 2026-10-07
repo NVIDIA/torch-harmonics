@@ -40,7 +40,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "torch>=2.8.0",
+    "torch>=2.9.0",
     "numpy>=1.22.4",
 ]
 
