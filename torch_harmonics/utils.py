@@ -143,7 +143,7 @@ def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:
     return _EnsureContiguous.apply(x)
 
 
-# How torch.compile words its refusal on an unsupported Python, in torch 2.6 to 2.10 at least.
+# How torch.compile words its refusal on an unsupported Python, in torch 2.7 to 2.10 at least.
 _TORCH_COMPILE_REFUSAL = "torch.compile is not supported on Python"
 
 

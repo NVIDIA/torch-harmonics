@@ -5,7 +5,7 @@
 Prebuilt Linux wheels with compiled CUDA extensions are published on
 [pypi.nvidia.com](https://pypi.nvidia.com), one per CUDA toolkit version. The
 packages are named `torch-harmonics-cu<CUDA>` — for example
-`torch-harmonics-cu126` for CUDA 12.6. Check
+`torch-harmonics-cu128` for CUDA 12.8. Check
 [pypi.nvidia.com](https://pypi.nvidia.com) for the packages currently available
 and the PyTorch release each one targets, then install the one matching your
 CUDA toolkit:
