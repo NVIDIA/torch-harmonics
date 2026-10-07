@@ -48,6 +48,8 @@ release. For GPU support, use the NVIDIA packages above.
 pip install torch-harmonics
 ```
 
+(building-from-source)=
+
 ## Building from source
 
 If your OS, PyTorch, or CUDA toolkit version is not covered by the available
@@ -114,6 +116,8 @@ For example, to build with host-optimized CPU kernels and OpenMP support:
 TORCH_HARMONICS_NATIVE_CPU_ARCH=1 TORCH_HARMONICS_ENABLE_OPENMP=1 \
     pip install --no-build-isolation -e .
 ```
+
+(docker)=
 
 ## Docker
 
