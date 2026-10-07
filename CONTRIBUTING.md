@@ -57,7 +57,7 @@ done with the help of AI tools. What we ask is that a person stands behind every
 **Requirements**
 
 - Python 3.11+
-- PyTorch 2.7+ (install before building; extensions compile against your local `torch`)
+- PyTorch 2.8+ (install before building; extensions compile against your local `torch`)
 - NumPy 1.22.4+
 - A C++17 compiler; CUDA toolkit optional but recommended for GPU kernel work
 
@@ -151,7 +151,7 @@ Custom CUDA extensions require compute capability **≥ 8.0**.
 
 Most users install prebuilt wheels:
 
-- **NVIDIA PyPI** (CUDA): `torch-harmonics-cu128`, `cu129`, etc., or
+- **NVIDIA PyPI** (CUDA): `torch-harmonics-cu129`, `cu130`, etc., or
   `torch-harmonics-cuda-latest` / `torch-harmonics-cpu-latest`. See
   [README.md](README.md#installation).
 - **PyPI** (`torch-harmonics`): CPU-only wheel for the latest supported PyTorch release.
@@ -168,7 +168,7 @@ python3 -m build --wheel --no-isolation
 
 Wheels follow the PyTorch ecosystem pattern
 `torch_harmonics-{version}+{cuda}-{python}-{abi}-{platform}.whl`, e.g.
-`torch_harmonics-0.9.1+cu128-cp311-cp311-linux_x86_64.whl`.
+`torch_harmonics-0.9.1+cu129-cp311-cp311-linux_x86_64.whl`.
 
 Sanity-check an install:
 

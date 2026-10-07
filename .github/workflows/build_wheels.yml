@@ -16,7 +16,7 @@ env:
   # WGMMA (sm_90a) and tcgen05 (sm_100a/sm_103a) kernels on the literal strings
   # 9.0a / 10.0a / 10.3a via _torch_cuda_arch_list_has(). Plain variants build,
   # but silently compile those specialized kernels out.
-  CUDA_ARCH_MAP: '{"12.8": "8.0;8.6;8.9;9.0a;10.0a;12.0+PTX", "12.9": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.0": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.2": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "none": ""}'
+  CUDA_ARCH_MAP: '{"12.9": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.0": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.2": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "none": ""}'
 
 jobs:
   # The variants, listed once: the build matrix crosses them with the Python
@@ -28,7 +28,7 @@ jobs:
       dist-tags: ${{ steps.plan.outputs.dist-tags }}
     steps:
     - id: plan
-      run: echo 'dist-tags=["cu128", "cu129", "cu130", "cu132", "cuda-latest", "cpu"]' >> "$GITHUB_OUTPUT"
+      run: echo 'dist-tags=["cu129", "cu130", "cu132", "cuda-latest", "cpu"]' >> "$GITHUB_OUTPUT"
 
   # One job per variant and Python version. A variant's wheels used to be built
   # one after another in a single job, which with four Python versions and the
@@ -49,7 +49,6 @@ jobs:
           # PyTorch has no cp314 wheels before 2.9, and torch 2.9 cannot
           # torch.compile on Python 3.14: its cp314 wheel installs, but runs
           # uncompiled. Python 3.14 users get cu132 or cuda-latest instead.
-          - {dist-tag: cu128, python: cp314}
           - {dist-tag: cu129, python: cp314}
           - {dist-tag: cu130, python: cp314}
         # One row per variant, matched by dist-tag; its keys apply to every
@@ -66,12 +65,6 @@ jobs:
           # build-cuda: forces the CUDA extension on. Auto-detection cannot work
           # here because it requires torch.cuda.is_available(), and the build
           # runners have no GPU.
-          - torch-version: '2.7.0'
-            torch-cuda: 'cu128'
-            cuda-version: '12.8'
-            dist-tag: 'cu128'
-            build-cuda: '1'
-            builder-image: 'pytorch/manylinux2_28-builder@sha256:404e7cddd7a2d4d7368c5a22416aaa10630d448aa97195a7864efbd9b05fa1c0'
           - torch-version: '2.8.0'
             torch-cuda: 'cu129'
             cuda-version: '12.9'
