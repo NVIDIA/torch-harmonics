@@ -38,12 +38,20 @@ import torch.distributed as dist
 from packaging import version
 
 import torch_harmonics.distributed as thd
-from torch_harmonics.utils import torch_compile_supported
+from torch_harmonics.utils import TORCH_COMPILE_INDUCTOR_STRIDE_BUG, torch_compile_supported
 
 # For tests that call torch.compile themselves: torch refuses it outright on some
 # PyTorch/Python combinations (torch 2.9 on Python 3.14), which is not a failure of the code
 # under test. Goes directly on the test function, below @parameterized.expand.
 requires_torch_compile = unittest.skipUnless(torch_compile_supported(), "torch.compile is unavailable with this PyTorch and Python")
+
+# For the tests that compile the scalar SHTs or SpectralConvS2 with inductor: before
+# PyTorch 2.9 an inductor bug fails them with assert_size_stride, which these layers warn
+# about (see torch_harmonics.utils.TORCH_COMPILE_INDUCTOR_STRIDE_BUG).
+requires_torch_compile_inductor_fix = unittest.skipUnless(
+    torch_compile_supported() and not TORCH_COMPILE_INDUCTOR_STRIDE_BUG,
+    f"torch.compile of the SHT layers needs PyTorch 2.9 (inductor assert_size_stride bug), this is {torch.__version__}",
+)
 
 
 def _is_sm90():

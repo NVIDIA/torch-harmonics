@@ -31,14 +31,19 @@
 
 import math
 import unittest
+import unittest.mock
+import warnings
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
+from testutils import compare_tensors, disable_tf32, requires_torch_compile, requires_torch_compile_inductor_fix, set_seed
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
+import torch_harmonics.sht as th_sht
+import torch_harmonics.utils as thu
 from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.utils import torch_compile_supported
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -740,7 +745,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    @requires_torch_compile
+    @requires_torch_compile_inductor_fix
     def test_compile(self, nlat, nlon, batch_size, grid, verbose=False):
         """The scalar round trip compiles into a single graph and matches eager.
 
@@ -1122,6 +1127,48 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
 
         self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
         self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+
+
+class TestCompileVersionWarning(unittest.TestCase):
+    """The SHT and spectral layers warn when compiled on a PyTorch whose inductor mispredicts their strides.
+
+    Traced with backend="aot_eager", so no code is generated: the point is the warning and
+    that it costs no graph break -- fullgraph=True must still compile where the bug is fixed,
+    and where it is not, the warning must appear without breaking the graph either.
+    """
+
+    def setUp(self):
+        if not torch_compile_supported():
+            raise unittest.SkipTest("torch.compile is unavailable with this PyTorch and Python")
+        torch._dynamo.reset()
+        thu._compile_warning_issued = False
+
+    def tearDown(self):
+        torch._dynamo.reset()
+        thu._compile_warning_issued = False
+
+    def _compile_sht(self, affected):
+        sht = th.RealSHT(16, 32)
+        x = torch.randn(2, 16, 32)
+        # what an affected PyTorch gets at import: the flag set, and the warning marked
+        # assume_constant_result so that dynamo runs it while tracing
+        warn = torch._dynamo.assume_constant_result(thu._warn_compile_inductor_stride_bug) if affected else thu._warn_compile_inductor_stride_bug
+        with (
+            unittest.mock.patch.object(th_sht, "TORCH_COMPILE_INDUCTOR_STRIDE_BUG", affected),
+            unittest.mock.patch.object(th_sht, "warn_compile_inductor_stride_bug", warn),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            out = torch.compile(sht, backend="aot_eager", fullgraph=True)(x)
+            sht(x)  # eager: never warns
+        self.assertTrue(torch.allclose(out, sht(x)))
+        return [w for w in caught if "needs PyTorch 2.9" in str(w.message)]
+
+    def test_warns_once_without_graph_break_where_affected(self):
+        self.assertEqual(len(self._compile_sht(affected=True)), 1)
+
+    def test_silent_where_fixed(self):
+        self.assertEqual(self._compile_sht(affected=False), [])
 
 
 if __name__ == "__main__":

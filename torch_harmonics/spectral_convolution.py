@@ -38,7 +38,7 @@ import torch.nn as nn
 from torch_harmonics import InverseRealSHT, RealSHT
 from torch_harmonics.quadrature import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
-from torch_harmonics.utils import compile_if_supported
+from torch_harmonics.utils import TORCH_COMPILE_INDUCTOR_STRIDE_BUG, compile_if_supported, warn_compile_inductor_stride_bug
 
 
 class SpectralConvS2(nn.Module):
@@ -215,6 +215,9 @@ class SpectralConvS2(nn.Module):
         torch.Tensor
             Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
         """
+        if TORCH_COMPILE_INDUCTOR_STRIDE_BUG and torch.compiler.is_compiling():
+            warn_compile_inductor_stride_bug()
+
         dtype = x.dtype
 
         with torch.amp.autocast(device_type=x.device.type, enabled=False):

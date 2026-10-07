@@ -33,6 +33,7 @@ import functools
 import os
 import tempfile
 import urllib.request
+import warnings
 from typing import Optional
 
 import numpy as np
@@ -178,6 +179,44 @@ def compile_if_supported(fn):
     Falling back to the plain function keeps the code working, eagerly.
     """
     return torch.compile(fn) if torch_compile_supported() else fn
+
+
+# Before PyTorch 2.9, inductor mispredicts the strides of an intermediate in the scalar SHTs
+# (and so in SpectralConvS2): its generated code asserts contiguous strides where eager
+# produces a permuted einsum output, and fails with "AssertionError: expected size ...,
+# stride ... at dim=..." from assert_size_stride. It is an inductor bug, fixed in 2.9, which
+# no layout change on our side has reliably avoided -- so torch.compile of these layers needs
+# PyTorch 2.9, and on older versions they warn when they are compiled.
+TORCH_COMPILE_INDUCTOR_STRIDE_BUG = torch.__version__ < "2.9"
+
+_compile_warning_issued = False
+
+
+def _warn_compile_inductor_stride_bug() -> bool:
+    global _compile_warning_issued
+    if not _compile_warning_issued:
+        _compile_warning_issued = True
+        warnings.warn(
+            f"torch.compile of the torch-harmonics SHT and spectral convolution layers needs PyTorch 2.9 or "
+            f"newer; with PyTorch {torch.__version__}, an inductor bug makes the compiled code fail with "
+            f"'AssertionError: expected size ..., stride ...' (assert_size_stride). Upgrade PyTorch, or run "
+            f"these layers uncompiled.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return True
+
+
+# Warn, once, that torch.compile of the SHT and spectral layers needs PyTorch 2.9. Called from
+# their forward under `TORCH_COMPILE_INDUCTOR_STRIDE_BUG and torch.compiler.is_compiling()`.
+# Where the bug does not exist that condition is a constant False which dynamo folds away, so
+# compilation is untouched, fullgraph=True included. Where it does, the function is marked
+# assume_constant_result: dynamo runs it in Python while tracing and takes its result as a
+# constant, so the warning appears without a graph break -- and before the compiled graph
+# runs into the bug, which a warning deferred until after the graph would never reach.
+warn_compile_inductor_stride_bug = (
+    torch._dynamo.assume_constant_result(_warn_compile_inductor_stride_bug) if TORCH_COMPILE_INDUCTOR_STRIDE_BUG else _warn_compile_inductor_stride_bug
+)
 
 
 def check(cond: bool, message) -> None:

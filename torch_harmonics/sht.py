@@ -36,7 +36,7 @@ from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.truncation import truncate_sht
-from torch_harmonics.utils import check
+from torch_harmonics.utils import TORCH_COMPILE_INDUCTOR_STRIDE_BUG, check, warn_compile_inductor_stride_bug
 
 
 class RealSHT(nn.Module):
@@ -159,6 +159,9 @@ class RealSHT(nn.Module):
         torch.Tensor
             Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
         """
+
+        if TORCH_COMPILE_INDUCTOR_STRIDE_BUG and torch.compiler.is_compiling():
+            warn_compile_inductor_stride_bug()
 
         check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
         check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
@@ -302,6 +305,9 @@ class InverseRealSHT(nn.Module):
         torch.Tensor
             Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
         """
+
+        if TORCH_COMPILE_INDUCTOR_STRIDE_BUG and torch.compiler.is_compiling():
+            warn_compile_inductor_stride_bug()
 
         check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
         check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")

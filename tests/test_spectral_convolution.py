@@ -38,7 +38,7 @@ import unittest.mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
+from testutils import compare_tensors, disable_tf32, requires_torch_compile_inductor_fix, set_seed
 
 from torch_harmonics.spectral_convolution import SpectralConvS2
 from torch_harmonics.utils import compile_if_supported, torch_compile_supported
@@ -522,7 +522,7 @@ class TestSpectralConvS2(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    @requires_torch_compile
+    @requires_torch_compile_inductor_fix
     def test_compile(self, nlat, nlon, in_channels, out_channels, num_groups, bias, verbose=False):
         """The layer compiles and matches eager, forward and backward."""
 
