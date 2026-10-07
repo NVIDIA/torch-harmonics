@@ -29,6 +29,15 @@ pip install torch-harmonics-cpu-latest --extra-index-url https://pypi.nvidia.com
 Run `nvidia-smi` to check the CUDA version supported by your driver.
 ```
 
+```{note}
+**Older PyTorch or CUDA** (PyTorch before 2.8, CUDA before 12.6) have no
+prebuilt wheels. Use the [Docker container](#docker), which brings a matching
+PyTorch and CUDA, or [build from source](#building-from-source) against your
+installed PyTorch, adding `--no-deps` so that pip does not replace it with a
+newer one: `pip install --no-build-isolation --no-deps .`. These combinations
+are not tested.
+```
+
 ## PyPI (CPU only)
 
 The vanilla [`torch-harmonics`](https://pypi.org/project/torch_harmonics/)

@@ -151,7 +151,7 @@ Custom CUDA extensions require compute capability **≥ 8.0**.
 
 Most users install prebuilt wheels:
 
-- **NVIDIA PyPI** (CUDA): `torch-harmonics-cu129`, `cu130`, etc., or
+- **NVIDIA PyPI** (CUDA): `torch-harmonics-cu126`, `cu128`, `cu129`, etc., or
   `torch-harmonics-cuda-latest` / `torch-harmonics-cpu-latest`. See
   [README.md](README.md#installation).
 - **PyPI** (`torch-harmonics`): CPU-only wheel for the latest supported PyTorch release.
