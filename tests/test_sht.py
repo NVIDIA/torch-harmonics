@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import contextlib
 import math
 import unittest
 import unittest.mock
@@ -41,6 +42,7 @@ from torch.autograd import gradcheck
 
 import torch_harmonics as th
 import torch_harmonics.sht as th_sht
+import torch_harmonics.spectral_convolution as th_spectral
 import torch_harmonics.utils as thu
 from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.utils import torch_compile_supported
@@ -1134,8 +1136,12 @@ class TestCompileVersionWarning(unittest.TestCase):
 
     Traced with backend="aot_eager", so no code is generated: the point is the warning and
     that it costs no graph break -- fullgraph=True must still compile where the bug is fixed,
-    and where it is not, the warning must appear without breaking the graph either.
+    and where it is not, the warning must appear without breaking the graph either. The
+    affected and fixed PyTorch are simulated by patching the flag and the warning in the
+    modules that call it, so both paths run on any PyTorch.
     """
+
+    MODULES = (th_sht, th_spectral)
 
     def setUp(self):
         if not torch_compile_supported():
@@ -1147,28 +1153,82 @@ class TestCompileVersionWarning(unittest.TestCase):
         torch._dynamo.reset()
         thu._compile_warning_issued = False
 
-    def _compile_sht(self, affected):
-        sht = th.RealSHT(16, 32)
-        x = torch.randn(2, 16, 32)
-        # what an affected PyTorch gets at import: the flag set, and the warning marked
-        # assume_constant_result so that dynamo runs it while tracing
-        warn = torch._dynamo.assume_constant_result(thu._warn_compile_inductor_stride_bug) if affected else thu._warn_compile_inductor_stride_bug
-        with (
-            unittest.mock.patch.object(th_sht, "TORCH_COMPILE_INDUCTOR_STRIDE_BUG", affected),
-            unittest.mock.patch.object(th_sht, "warn_compile_inductor_stride_bug", warn),
-            warnings.catch_warnings(record=True) as caught,
-        ):
+    @staticmethod
+    def _layer(name):
+        """A small instance of the layer and an input for it."""
+        x = torch.randn(2, 2, 16, 32)
+        if name == "RealSHT":
+            return th.RealSHT(16, 32), x
+        if name == "InverseRealSHT":
+            return th.InverseRealSHT(16, 32), th.RealSHT(16, 32)(x)
+        return th.SpectralConvS2(in_shape=(16, 32), out_shape=(16, 32), in_channels=2, out_channels=2), x
+
+    @contextlib.contextmanager
+    def _torch(self, affected, warn=None):
+        """Simulate a PyTorch with (affected=True) or without the inductor bug.
+
+        warn replaces the warning in each calling module, keyed by the module; by default
+        it is the real warning. Where affected it is marked assume_constant_result, as
+        torch_harmonics.utils does at import, so that dynamo runs it while tracing.
+        """
+        with contextlib.ExitStack() as stack:
+            for mod in self.MODULES:
+                fn = warn(mod) if warn else thu._warn_compile_inductor_stride_bug
+                if affected:
+                    fn = torch._dynamo.assume_constant_result(fn)
+                stack.enter_context(unittest.mock.patch.object(mod, "TORCH_COMPILE_INDUCTOR_STRIDE_BUG", affected))
+                stack.enter_context(unittest.mock.patch.object(mod, "warn_compile_inductor_stride_bug", fn))
+            caught = stack.enter_context(warnings.catch_warnings(record=True))
             warnings.simplefilter("always")
-            out = torch.compile(sht, backend="aot_eager", fullgraph=True)(x)
-            sht(x)  # eager: never warns
-        self.assertTrue(torch.allclose(out, sht(x)))
+            yield caught
+
+    @staticmethod
+    def _ours(caught):
         return [w for w in caught if "needs PyTorch 2.9" in str(w.message)]
 
-    def test_warns_once_without_graph_break_where_affected(self):
-        self.assertEqual(len(self._compile_sht(affected=True)), 1)
+    def _compile_and_check(self, layer, x):
+        """Compile with fullgraph=True (a graph break raises) and compare with eager."""
+        out = torch.compile(layer, backend="aot_eager", fullgraph=True)(x)
+        self.assertTrue(torch.allclose(out, layer(x)))
+
+    def test_eager_never_warns(self):
+        # before any compiled call, so the warn-once flag cannot hide a warning
+        with self._torch(affected=True) as caught:
+            for name in ("RealSHT", "InverseRealSHT", "SpectralConvS2"):
+                layer, x = self._layer(name)
+                layer(x)
+        self.assertEqual(self._ours(caught), [])
+        self.assertFalse(thu._compile_warning_issued, "eager mode called the warning")
+
+    @parameterized.expand([("RealSHT", th_sht), ("InverseRealSHT", th_sht), ("SpectralConvS2", th_spectral)], skip_on_empty=True)
+    def test_layer_warns_without_graph_break_where_affected(self, name, module):
+        # record the calls per module, rather than the warning, which is issued once for
+        # all: SpectralConvS2 also calls it through its SHTs, and that must not stand in
+        # for its own call
+        calls = []
+
+        def warn(mod):
+            return lambda: calls.append(mod.__name__) or True
+
+        layer, x = self._layer(name)
+        with self._torch(affected=True, warn=warn):
+            self._compile_and_check(layer, x)
+        self.assertIn(module.__name__, calls)
+
+    def test_warns_once_where_affected(self):
+        # independent traces of all three layers, without resetting the warn-once flag
+        with self._torch(affected=True) as caught:
+            for name in ("RealSHT", "InverseRealSHT", "SpectralConvS2"):
+                torch._dynamo.reset()
+                self._compile_and_check(*self._layer(name))
+        self.assertEqual(len(self._ours(caught)), 1)
 
     def test_silent_where_fixed(self):
-        self.assertEqual(self._compile_sht(affected=False), [])
+        with self._torch(affected=False) as caught:
+            for name in ("RealSHT", "InverseRealSHT", "SpectralConvS2"):
+                self._compile_and_check(*self._layer(name))
+        self.assertEqual(self._ours(caught), [])
+        self.assertFalse(thu._compile_warning_issued)
 
 
 if __name__ == "__main__":
