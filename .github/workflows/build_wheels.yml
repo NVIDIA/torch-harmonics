@@ -48,9 +48,9 @@ jobs:
         dist-tag: ${{ fromJSON(needs.plan.outputs.dist-tags) }}
         python: [cp311, cp312, cp313, cp314]
         exclude:
-          # PyTorch has no cp314 wheels before 2.9, and torch 2.9 cannot
-          # torch.compile on Python 3.14: its cp314 wheel installs, but runs
-          # uncompiled. Python 3.14 users get cu132 or cuda-latest instead.
+          # torch 2.9 cannot torch.compile on Python 3.14: its cp314 wheel
+          # installs, but runs uncompiled. Python 3.14 users get cu132 or
+          # cuda-latest instead.
           - {dist-tag: cu126, python: cp314}
           - {dist-tag: cu128, python: cp314}
           - {dist-tag: cu129, python: cp314}
@@ -69,24 +69,26 @@ jobs:
           # build-cuda: forces the CUDA extension on. Auto-detection cannot work
           # here because it requires torch.cuda.is_available(), and the build
           # runners have no GPU.
-          # The CUDA 12 variants all build against PyTorch 2.8, the oldest one
-          # supported: one per CUDA toolkit torch 2.8 ships for, so each matches
-          # the torch build users have -- plain `pip install torch==2.8.0` is the
-          # cu128 one. PyTorch 2.6 and 2.7 are not supported: their NCCL crashed
-          # or stalled the distributed tests on H100 and B200.
-          - torch-version: '2.8.0'
+          # The CUDA 12 and 13.0 variants all build against PyTorch 2.9, the
+          # oldest one supported: one per CUDA toolkit torch 2.9 ships for, so
+          # each matches the torch build users have -- plain `pip install
+          # torch==2.9.1` is the cu128 one. PyTorch 2.6 and 2.7 are not supported
+          # (their NCCL crashed or stalled the distributed tests on H100 and
+          # B200), nor is 2.8 (its inductor mispredicts strides in the SHTs, so
+          # torch.compile of them fails with assert_size_stride).
+          - torch-version: '2.9.1'
             torch-cuda: 'cu126'
             cuda-version: '12.6'
             dist-tag: 'cu126'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:e403d8c2bbb43e6d84704efcfa4c8c148bbe08edc2e69dac4c99546ed6c46cc7'
-          - torch-version: '2.8.0'
+          - torch-version: '2.9.1'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
             dist-tag: 'cu128'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:404e7cddd7a2d4d7368c5a22416aaa10630d448aa97195a7864efbd9b05fa1c0'
-          - torch-version: '2.8.0'
+          - torch-version: '2.9.1'
             torch-cuda: 'cu129'
             cuda-version: '12.9'
             dist-tag: 'cu129'

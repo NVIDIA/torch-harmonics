@@ -88,9 +88,9 @@ Prebuilt Linux wheels with compiled CUDA extensions are available on [pypi.nvidi
 
 | CUDA | Package | Supported PyTorch | Install command |
 |------|---------|-------------------|-----------------|
-| 12.6 | `torch-harmonics-cu126` | 2.8.0 | `pip install torch-harmonics-cu126 --extra-index-url https://pypi.nvidia.com` |
-| 12.8 | `torch-harmonics-cu128` | 2.8.0 | `pip install torch-harmonics-cu128 --extra-index-url https://pypi.nvidia.com` |
-| 12.9 | `torch-harmonics-cu129` | 2.8.0 | `pip install torch-harmonics-cu129 --extra-index-url https://pypi.nvidia.com` |
+| 12.6 | `torch-harmonics-cu126` | 2.9.1 | `pip install torch-harmonics-cu126 --extra-index-url https://pypi.nvidia.com` |
+| 12.8 | `torch-harmonics-cu128` | 2.9.1 | `pip install torch-harmonics-cu128 --extra-index-url https://pypi.nvidia.com` |
+| 12.9 | `torch-harmonics-cu129` | 2.9.1 | `pip install torch-harmonics-cu129 --extra-index-url https://pypi.nvidia.com` |
 | 13.0 | `torch-harmonics-cu130` | 2.9.1 | `pip install torch-harmonics-cu130 --extra-index-url https://pypi.nvidia.com` |
 | 13.2 | `torch-harmonics-cu132` | 2.12.0 | `pip install torch-harmonics-cu132 --extra-index-url https://pypi.nvidia.com` |
 
@@ -106,7 +106,7 @@ pip install torch-harmonics-cpu-latest --extra-index-url https://pypi.nvidia.com
 
 > **Tip:** Run `nvidia-smi` to check your driver's CUDA version.
 
-**Older PyTorch or CUDA** (PyTorch before 2.8, CUDA before 12.6) have no prebuilt wheels. Use the [Docker container](#building-from-source), which brings a matching PyTorch and CUDA, or build torch-harmonics from source against your installed PyTorch, adding `--no-deps` so that pip does not replace it with a newer one (`pip install --no-build-isolation --no-deps .`). These combinations are not tested.
+**Older PyTorch or CUDA** (PyTorch before 2.9, CUDA before 12.6) have no prebuilt wheels. Use the [Docker container](#building-from-source), which brings a matching PyTorch and CUDA, or build torch-harmonics from source against your installed PyTorch, adding `--no-deps` so that pip does not replace it with a newer one (`pip install --no-build-isolation --no-deps .`). These combinations are not tested.
 
 ### PyPI
 

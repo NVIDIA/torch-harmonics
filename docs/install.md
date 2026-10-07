@@ -30,7 +30,7 @@ Run `nvidia-smi` to check the CUDA version supported by your driver.
 ```
 
 ```{note}
-**Older PyTorch or CUDA** (PyTorch before 2.8, CUDA before 12.6) have no
+**Older PyTorch or CUDA** (PyTorch before 2.9, CUDA before 12.6) have no
 prebuilt wheels. Use the [Docker container](#docker), which brings a matching
 PyTorch and CUDA, or [build from source](#building-from-source) against your
 installed PyTorch, adding `--no-deps` so that pip does not replace it with a
