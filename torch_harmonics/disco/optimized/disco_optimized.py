@@ -414,6 +414,41 @@ def _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack
     return out.to(itype)
 
 
+class _FirstOrderOnly(torch.autograd.Function):
+    """
+    Passes the gradients of a first-order node through, and raises if they are differentiated.
+
+    The backward of :class:`_DiscoConvFn` calls the raw kernels and reads the K-expanded
+    intermediate saved without its graph, so its result is not differentiable. Left alone,
+    ``create_graph=True`` would hand back gradients whose graph silently misses those paths.
+    ``anchor`` requires grad so the outputs do too even when no gradient did (a linear loss),
+    and the error fires there as well rather than as "does not require grad".
+    """
+
+    @staticmethod
+    def forward(ctx, name, anchor, *grads):
+        ctx.name = name
+        return tuple(None if g is None else g.clone() for g in grads)
+
+    @staticmethod
+    def backward(ctx, *_):
+        raise RuntimeError(
+            f"{ctx.name}: double backward (differentiating a gradient taken with create_graph=True) is not "
+            "supported by the optimized DISCO kernels. Use optimized_kernel=False for the torch reference, "
+            "which supports it."
+        )
+
+
+def _first_order_only(name, *grads):
+    """Guard the gradients returned by a first-order backward; a no-op unless it runs with create_graph=True."""
+    # eager only: under torch.compile the backward is traced into the graph, and the compiled
+    # backward rejects create_graph=True by itself
+    if not torch.is_grad_enabled() or torch.compiler.is_compiling():
+        return grads
+    anchor = torch.empty(0, requires_grad=True)
+    return _FirstOrderOnly.apply(name, anchor, *grads)
+
+
 class _DiscoKpackedFn(torch.autograd.Function):
     """
     Kpacked forward contraction, arc scatter backward.
@@ -433,14 +468,11 @@ class _DiscoKpackedFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        row_ker, row_lat, seg_off, seg, val_off, vals = ctx.saved_tensors
         grad_input = None
         if ctx.needs_input_grad[0]:
-            gtype = grad_output.dtype
-            vals = vals.to(_compute_dtype(gtype))
-            grad_input = disco_kernels.backward_regular.default(
-                grad_output.contiguous(), row_ker, row_lat, seg_off, seg, val_off, vals, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in
-            ).to(gtype)
+            # the transpose contraction op rather than the raw scatter kernel: the op has
+            # autograd, so this backward is itself differentiable (double backward works)
+            grad_input = _disco_s2_transpose_contraction_regular_optimized(grad_output, *ctx.saved_tensors, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
         # inp, pack_idx, pack_val, pack_offset, the six arc arrays, kernel_size, nlat_out, nlon_out
         return (grad_input,) + (None,) * 12
 
@@ -548,6 +580,8 @@ class _DiscoConvFn(torch.autograd.Function):
                 x_expanded = saved
             x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
+
+        grad_inp, grad_weight = _first_order_only("DISCO convolution", grad_inp, grad_weight)
 
         # inp, weight, then the six arc arrays, the three kpacked ones, split_ker,
         # kernel_size, nlat_out, nlon_out, groups, groupsize, recompute, split_row_offsets

@@ -1024,34 +1024,33 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         inp = torch.randn(batch_size, in_channels, *in_shape, device=self.device)
 
-        if fused and not transpose:
-            # The fused path is an autograd.Function around the raw kernels rather than an
-            # op of its own, so check that it traces as a whole -- forward and backward, in
-            # one graph -- and agrees with eager. aot_eager exercises the fake kernels and
-            # the joint graph without needing a codegen toolchain.
+        if not transpose:
+            # The convolution, fused or not, is an autograd.Function around the raw kernels
+            # rather than an op of its own, so check that it traces as a whole -- forward and
+            # backward, in one graph -- and agrees with eager. aot_eager exercises the fake
+            # kernels and the joint graph without needing a codegen toolchain.
             compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
             inp_eager = inp.clone().requires_grad_(True)
             inp_compiled = inp.clone().requires_grad_(True)
             out_eager = conv(inp_eager)
             out_compiled = compiled(inp_compiled)
-            self.assertTrue(compare_tensors("fused output", out_compiled, out_eager, atol=1e-5, rtol=1e-5, verbose=verbose))
+            self.assertTrue(compare_tensors("output", out_compiled, out_eager, atol=1e-5, rtol=1e-5, verbose=verbose))
             grad = torch.randn_like(out_eager)
             out_eager.backward(grad)
+            weight_grad_eager = conv.weight.grad.clone()
+            conv.weight.grad = None
             out_compiled.backward(grad)
-            self.assertTrue(compare_tensors("fused input grad", inp_compiled.grad, inp_eager.grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+            self.assertTrue(compare_tensors("input grad", inp_compiled.grad, inp_eager.grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+            self.assertTrue(compare_tensors("weight grad", conv.weight.grad, weight_grad_eager, atol=1e-5, rtol=1e-5, verbose=verbose))
 
             # and the op it contracts with satisfies the op contract
             test_inputs = (inp, *_arc_state(conv), conv.kernel_size, conv.nlat_out, conv.nlon_out)
             opcheck(torch.ops.disco_kernels._disco_s2_contraction_regular_optimized, test_inputs)
         else:
-            if transpose:
-                # the scatter op reads (B, C, K, H, W): one plane per basis function per channel
-                inp = torch.randn(batch_size, in_channels, conv.kernel_size, *in_shape, device=self.device)
+            # the scatter op reads (B, C, K, H, W): one plane per basis function per channel
+            inp = torch.randn(batch_size, in_channels, conv.kernel_size, *in_shape, device=self.device)
             test_inputs = (inp, *_arc_state(conv), conv.kernel_size, conv.nlat_out, conv.nlon_out)
-            if not transpose:
-                opcheck(torch.ops.disco_kernels._disco_s2_contraction_regular_optimized, test_inputs)
-            else:
-                opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_regular_optimized, test_inputs)
+            opcheck(torch.ops.disco_kernels._disco_s2_transpose_contraction_regular_optimized, test_inputs)
 
     @parameterized.expand(
         [
@@ -1119,6 +1118,53 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         for name in conv._backend_state:
             buf = getattr(conv, name)
             self.assertIsNone(buf.grad, f"buffer {name} should not accumulate a gradient (requires_grad={buf.requires_grad})")
+
+    @parameterized.expand(
+        [
+            # (in_channels, out_channels, transpose, fused, optimized_kernel)
+            # the convolution's optimized node is first-order only: it must raise, on the
+            # weight-first (4->4) and the spatial-first (8->2) input gradient alike
+            [4, 4, False, False, True],
+            [8, 2, False, False, True],
+            [4, 4, False, True, True],
+            [8, 2, False, True, True],
+            # the reference supports double backward, fused or not, and so does the optimized
+            # transpose, which is built from the two differentiable contraction ops
+            [4, 4, False, False, False],
+            [8, 2, False, True, False],
+            [4, 4, True, False, True],
+            [4, 4, True, False, False],
+        ],
+        skip_on_empty=True,
+    )
+    def test_double_backward(self, in_channels, out_channels, transpose, fused, optimized_kernel, verbose=False):
+        """Double backward is either correct (gradgradcheck) or raises a clear error, never silently incomplete."""
+        if optimized_kernel and not optimized_kernels_is_available():
+            raise unittest.SkipTest("skipping test because optimized kernels are not available")
+        if optimized_kernel and (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        set_seed(333)
+
+        grid = as_grid("equiangular", nlat=8, nlon=16)
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        fused_kwarg = {} if transpose else {"fused": fused}
+        conv = Conv(grid, grid, in_channels, out_channels, (3), basis_type="piecewise linear", bias=False, optimized_kernel=optimized_kernel, **fused_kwarg)
+        conv = conv.to(device=self.device, dtype=torch.float64)
+
+        inp = torch.randn(1, in_channels, 8, 16, device=self.device, dtype=torch.float64, requires_grad=True)
+        weight = conv.weight.detach().clone().requires_grad_(True)
+
+        def fn(x, w):
+            return torch.func.functional_call(conv, {"weight": w}, (x,))
+
+        if optimized_kernel and not transpose:
+            # a nonlinear loss, so the weight gradient keeps a graph to the input through grad_output
+            gw = torch.autograd.grad((fn(inp, weight) ** 2).sum(), weight, create_graph=True)[0]
+            with self.assertRaisesRegex(RuntimeError, "double backward"):
+                torch.autograd.grad((gw**2).sum(), inp)
+        else:
+            self.assertTrue(torch.autograd.gradgradcheck(fn, (inp, weight)))
 
 
 # A supported device is not sufficient: the kpacked buffers are only built when
@@ -1234,6 +1280,28 @@ class TestKpackedPath(unittest.TestCase):
 
         self.assertTrue(compare_tensors("inp grad", inp.grad.float(), inp_ref.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
         self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_opt.weight.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
+
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    def test_kpacked_contraction_double_backward(self):
+        """The kpacked contraction's backward is the transpose op, so it is differentiable: its derivative is the arc contraction."""
+        from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_kpacked, _disco_s2_contraction_regular_optimized
+
+        set_seed(7)
+        conv = self._make_conv(1, 8, (16, 32))
+        self.assertEqual(conv.backend.name, "kpacked")
+        arcs = _arc_state(conv)
+        kpacked = (conv.psi_kpacked_idx, conv.psi_kpacked_vals, conv.psi_kpacked_offset)
+
+        inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device, requires_grad=True)
+        out = _disco_s2_contraction_kpacked(inp, kpacked, arcs, conv.kernel_size, conv.nlat_out, conv.nlon_out)
+        grad = torch.randn_like(out, requires_grad=True)
+        grad_inp = torch.autograd.grad(out, inp, grad, create_graph=True)[0]
+
+        # grad_inp = J^T grad is linear in grad, so differentiating <grad_inp, u> by grad gives J u
+        u = torch.randn_like(inp)
+        ggrad = torch.autograd.grad((grad_inp * u).sum(), grad)[0]
+        ref = _disco_s2_contraction_regular_optimized(u, *arcs, conv.kernel_size, conv.nlat_out, conv.nlon_out)
+        self.assertTrue(compare_tensors("double backward", ggrad.float(), ref.float(), atol=1e-2, rtol=1e-2))
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
     def test_kpacked_fused_matches_unfused(self):
