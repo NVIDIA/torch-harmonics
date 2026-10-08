@@ -565,10 +565,6 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
 class _CopyToPolarRegion(torch.autograd.Function):
 
     @staticmethod
-    def symbolic(graph, input_):
-        return input_
-
-    @staticmethod
     @_custom_fwd(device_type="cuda")
     def forward(input_):
         return input_
@@ -590,10 +586,6 @@ class _CopyToPolarRegion(torch.autograd.Function):
 class _CopyToAzimuthRegion(torch.autograd.Function):
 
     @staticmethod
-    def symbolic(graph, input_):
-        return input_
-
-    @staticmethod
     @_custom_fwd(device_type="cuda")
     def forward(input_):
         return input_
@@ -613,10 +605,6 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
 
 
 class _ScatterToPolarRegion(torch.autograd.Function):
-
-    @staticmethod
-    def symbolic(graph, input_, dim_):
-        return _split(input_, dim_, group=polar_group())
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
@@ -646,10 +634,6 @@ class _ScatterToPolarRegion(torch.autograd.Function):
 class _GatherFromPolarRegion(torch.autograd.Function):
 
     @staticmethod
-    def symbolic(graph, input_, dim_, shapes_):
-        return _gather(input_, dim_, shapes_, polar_group())
-
-    @staticmethod
     @_custom_fwd(device_type="cuda")
     def forward(input_, dim_, shapes_):
         if is_distributed_polar():
@@ -675,13 +659,6 @@ class _GatherFromPolarRegion(torch.autograd.Function):
 class _ReduceFromPolarRegion(torch.autograd.Function):
 
     @staticmethod
-    def symbolic(graph, input_):
-        if is_distributed_polar():
-            return _reduce(input_, group=polar_group())
-        else:
-            return input_
-
-    @staticmethod
     @_custom_fwd(device_type="cuda")
     def forward(input_):
         if is_distributed_polar():
@@ -703,13 +680,6 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
 class _ReduceFromAzimuthRegion(torch.autograd.Function):
 
     @staticmethod
-    def symbolic(graph, input_):
-        if is_distributed_azimuth():
-            return _reduce(input_, group=azimuth_group())
-        else:
-            return input_
-
-    @staticmethod
     @_custom_fwd(device_type="cuda")
     def forward(input_):
         if is_distributed_azimuth():
@@ -729,13 +699,6 @@ class _ReduceFromAzimuthRegion(torch.autograd.Function):
 
 
 class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
-
-    @staticmethod
-    def symbolic(graph, input_, dim_):
-        if is_distributed_polar():
-            return _reduce_scatter(input_, dim_, group=polar_group())
-        else:
-            return input_
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
@@ -767,13 +730,6 @@ class _ReduceFromScatterToAzimuthRegion(torch.autograd.Function):
     across azimuth ranks and scatters along ``dim_``; backward is all_gather."""
 
     @staticmethod
-    def symbolic(graph, input_, dim_):
-        if is_distributed_azimuth():
-            return _reduce_scatter(input_, dim_, group=azimuth_group())
-        else:
-            return input_
-
-    @staticmethod
     @_custom_fwd(device_type="cuda")
     def forward(input_, dim_):
         if is_distributed_azimuth():
@@ -799,13 +755,6 @@ class _ReduceFromScatterToAzimuthRegion(torch.autograd.Function):
 
 
 class _GatherFromCopyToPolarRegion(torch.autograd.Function):
-
-    @staticmethod
-    def symbolic(graph, input_, dim_, shapes_):
-        if is_distributed_polar():
-            return _gather(input_, dim_, shapes_, polar_group())
-        else:
-            return input_
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
