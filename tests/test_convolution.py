@@ -645,7 +645,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
-            [8, 32, 32, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 5e-2],
+            # 32 channels make the weight grad large (|w.grad| ~ 70, where one bf16 step is 0.5), so
+            # cancellation leaves near-zero entries ~2^-8 * 70 off in both paths: atol covers two roundings
+            # (0.3 failed by <1% on B200 and passed on H100/GB200, depending on accumulation order)
+            [8, 32, 32, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 6e-1, 5e-2],
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],

@@ -41,7 +41,7 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import set_seed
+from testutils import requires_torch_compile, set_seed
 
 from torch_harmonics.attention import optimized_kernels_is_available
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
@@ -174,6 +174,7 @@ class TestAttentionLayout(unittest.TestCase):
         self.assertTrue(torch.equal(x.grad, grad.permute(0, 3, 1, 2).contiguous()))
 
     @parameterized.expand(_shapes)
+    @requires_torch_compile
     def test_compile(self, B, C, H, W):
         """Both directions compile in a single graph and match eager bitwise."""
 

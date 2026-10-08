@@ -16,17 +16,47 @@ env:
   # WGMMA (sm_90a) and tcgen05 (sm_100a/sm_103a) kernels on the literal strings
   # 9.0a / 10.0a / 10.3a via _torch_cuda_arch_list_has(). Plain variants build,
   # but silently compile those specialized kernels out.
-  # 10.0a and 12.0 are omitted for CUDA 12.6: sm_100/sm_120 only exist from 12.8.
+  # 10.0a and 12.0 are omitted for CUDA 12.6: sm_100/sm_120 only exist from 12.8;
+  # 10.3a (sm_103a) only from 12.9.
   CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0a+PTX", "12.8": "8.0;8.6;8.9;9.0a;10.0a;12.0+PTX", "12.9": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.0": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.2": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "none": ""}'
 
 jobs:
+  # The variants, listed once: the build matrix crosses them with the Python
+  # versions, and the merge job below needs one entry per variant. Each must
+  # have its row in the build matrix's include list.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      dist-tags: ${{ steps.plan.outputs.dist-tags }}
+    steps:
+    - id: plan
+      run: echo 'dist-tags=["cu126", "cu128", "cu129", "cu130", "cu132", "cuda-latest", "cpu"]' >> "$GITHUB_OUTPUT"
+
+  # One job per variant and Python version. A variant's wheels used to be built
+  # one after another in a single job, which with four Python versions and the
+  # full CUDA arch list approached the 6-hour limit of a hosted runner. Each job
+  # uploads a part artifact; merge-wheels assembles them per variant.
   build-manylinux-wheels:
+    name: build ${{ matrix.dist-tag }} ${{ matrix.python }}
+    needs: plan
     runs-on: ubuntu-latest
     strategy:
-      # One CUDA variant failing should not hide the state of the other six:
-      # they build independently and a release needs all of them.
+      # One build failing should not hide the state of the others: they build
+      # independently and a release needs all of them.
       fail-fast: false
       matrix:
+        dist-tag: ${{ fromJSON(needs.plan.outputs.dist-tags) }}
+        python: [cp311, cp312, cp313, cp314]
+        exclude:
+          # torch 2.9 cannot torch.compile on Python 3.14: its cp314 wheel
+          # installs, but runs uncompiled. Python 3.14 users get cu132 or
+          # cuda-latest instead.
+          - {dist-tag: cu126, python: cp314}
+          - {dist-tag: cu128, python: cp314}
+          - {dist-tag: cu129, python: cp314}
+          - {dist-tag: cu130, python: cp314}
+        # One row per variant, matched by dist-tag; its keys apply to every
+        # Python version of that variant.
         include:
           # One build per CUDA version, using the oldest torch that supports it.
           # This gives the widest torch runtime compatibility for each CUDA variant.
@@ -39,39 +69,41 @@ jobs:
           # build-cuda: forces the CUDA extension on. Auto-detection cannot work
           # here because it requires torch.cuda.is_available(), and the build
           # runners have no GPU.
-          - torch-version: '2.6.0'
+          # The CUDA 12 and 13.0 variants all build against PyTorch 2.9, the
+          # oldest one supported: one per CUDA toolkit torch 2.9 ships for, so
+          # each matches the torch build users have -- plain `pip install
+          # torch==2.9.1` is the cu128 one. PyTorch 2.6 and 2.7 are not supported
+          # (their NCCL crashed or stalled the distributed tests on H100 and
+          # B200), nor is 2.8 (its inductor mispredicts strides in the SHTs, so
+          # torch.compile of them fails with assert_size_stride).
+          - torch-version: '2.9.1'
             torch-cuda: 'cu126'
             cuda-version: '12.6'
             dist-tag: 'cu126'
-            python-builds: 'cp311-* cp312-* cp313-*'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:e403d8c2bbb43e6d84704efcfa4c8c148bbe08edc2e69dac4c99546ed6c46cc7'
-          - torch-version: '2.7.0'
+          - torch-version: '2.9.1'
             torch-cuda: 'cu128'
             cuda-version: '12.8'
             dist-tag: 'cu128'
-            python-builds: 'cp311-* cp312-* cp313-*'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:404e7cddd7a2d4d7368c5a22416aaa10630d448aa97195a7864efbd9b05fa1c0'
-          - torch-version: '2.8.0'
+          - torch-version: '2.9.1'
             torch-cuda: 'cu129'
             cuda-version: '12.9'
             dist-tag: 'cu129'
-            python-builds: 'cp311-* cp312-* cp313-*'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:d26cd7a9489b53310296e86042de630ac947e25a71dd24b547b86ca9a0a3fc79'
           - torch-version: '2.9.1'
             torch-cuda: 'cu130'
             cuda-version: '13.0'
             dist-tag: 'cu130'
-            python-builds: 'cp311-* cp312-* cp313-* cp314-*'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:83d73c3fd2782b23de8a1873820236273d8a6db911aea15c017766c9a40e723c'
           - torch-version: '2.12.0'
             torch-cuda: 'cu132'
             cuda-version: '13.2'
             dist-tag: 'cu132'
-            python-builds: 'cp311-* cp312-* cp313-* cp314-*'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:92e9a8cf7caa9d460570aa94dc8ea6a2406dfb5626ac04323a617821dab9403b'
           - torch-version: '2.14.1'
@@ -79,7 +111,6 @@ jobs:
             cuda-version: '13.2'
             # newest torch on newest CUDA is published as the -cuda-latest package
             dist-tag: 'cuda-latest'
-            python-builds: 'cp311-* cp312-* cp313-* cp314-*'
             build-cuda: '1'
             builder-image: 'pytorch/manylinux2_28-builder@sha256:92e9a8cf7caa9d460570aa94dc8ea6a2406dfb5626ac04323a617821dab9403b'
           # CPU-only build based on latest PyTorch. This row needs no nvcc, so it
@@ -96,7 +127,6 @@ jobs:
             torch-cuda: 'cpu'
             cuda-version: 'none'
             dist-tag: 'cpu'
-            python-builds: 'cp311-* cp312-* cp313-* cp314-*'
             build-cuda: '0'
             builder-image: 'quay.io/pypa/manylinux_2_28_x86_64@sha256:53390351aeb4688114b02c36a23b3e6ce1166ee9b7afc5df1a4f776354fc764c'
 
@@ -218,7 +248,7 @@ jobs:
           set -e
           pip install torch==${{ matrix.torch-version }} --index-url https://download.pytorch.org/whl/${{ matrix.torch-cuda }}
           pip install numpy
-        CIBW_BUILD: ${{ matrix.python-builds }}
+        CIBW_BUILD: ${{ matrix.python }}-*
         TORCH_CUDA_VERSION: ${{ matrix.cuda-version }}
         TORCH_CUDA_ARCH_LIST: ${{ env.TORCH_CUDA_ARCH_LIST }}
         # Every row pins its build image by digest: the CUDA rows to PyTorch's
@@ -229,7 +259,7 @@ jobs:
         # TORCH_CUDA_ARCH_LIST must be listed here explicitly: variables set on
         # the runner do not reach the build container, which is why the arch
         # list previously had no effect. Quoted because it contains ';'.
-        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_BUILD_CUDA_EXTENSION=${{ matrix.build-cuda }} TORCH_CUDA_ARCH_LIST='${{ env.TORCH_CUDA_ARCH_LIST }}' TORCH_HARMONICS_ENABLE_OPENMP=1 TORCHINDUCTOR_COMPILE_THREADS=1"
+        CIBW_ENVIRONMENT: "SETUPTOOLS_SCM_PRETEND_VERSION=${{ env.BASE_VERSION }}+torch${{ matrix.torch-version }}.${{ matrix.torch-cuda }} TORCH_CUDA_VERSION=${{ matrix.cuda-version }} TORCH_HARMONICS_BUILD_CUDA_EXTENSION=${{ matrix.build-cuda }} TORCH_CUDA_ARCH_LIST='${{ env.TORCH_CUDA_ARCH_LIST }}' TORCH_HARMONICS_ENABLE_OPENMP=1 TORCHINDUCTOR_COMPILE_THREADS=1 MAX_JOBS=2"
         CIBW_REPAIR_WHEEL_COMMAND_LINUX: |
           set -e
           TORCH_LIB=$(python -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'lib'))")
@@ -259,7 +289,20 @@ jobs:
             rm -rf /tmp/strip_tmp
           done
 
+      # MAX_JOBS=2 (in CIBW_ENVIRONMENT above): torch's extension build otherwise
+      # starts one nvcc per core, each compiling every arch in the list. On the
+      # CUDA 13 rows, with the sm_100a/sm_103a tcgen05 kernels, that ran a
+      # 16 GB hosted runner out of memory: the build was killed and the runner
+      # reported "received a shutdown signal" (v0.9.3rc1, rc2). The memory log
+      # shows how close a build comes, should it happen again.
       run: |
+        ( while sleep 30; do
+            free -m | awk -v t="$(date -u +%H:%M:%S)" '/^Mem:/ { printf "[mem %s] used %d of %d MB, %d MB available\n", t, $3, $2, $7 }'
+          done ) &
+        # A background process outlives its step on a runner; stop the sampler
+        # when this step ends, whether cibuildwheel succeeded or failed.
+        mem_sampler=$!
+        trap 'kill "$mem_sampler" 2>/dev/null || true' EXIT
         cibuildwheel --platform linux
 
     - name: Inspect built wheels and .so files
@@ -341,24 +384,30 @@ jobs:
             "cuda_arch_list": "${{ env.TORCH_CUDA_ARCH_LIST }}",
             "build_cuda": "${{ matrix.build-cuda }}" == "1",
             "run_id": "${{ github.run_id }}",
+            # The variant's artifact, which merge-wheels assembles from the
+            # per-Python parts. Named after torch-cuda, as it always was.
+            "artifact": "wheel-torch-${{ matrix.torch-version }}-${{ matrix.torch-cuda }}",
         }
         with open("wheelhouse/build-metadata.json", "w") as f:
             json.dump(meta, f, indent=2)
         print(json.dumps(meta, indent=2))
         PY
 
-    # build-metadata.json must travel in the same artifact as the wheels: the
-    # deployment scripts read the package name and torch pin from it.
-    - name: Upload wheel artifacts
+    # A part: this Python version's wheel. merge-wheels combines the parts into
+    # the variant's wheel-torch-* artifact, together with build-metadata.json,
+    # which the deployment scripts read the package name and torch pin from.
+    - name: Upload wheel part
       uses: actions/upload-artifact@v7
       with:
-        name: wheel-torch-${{ matrix.torch-version }}-${{ matrix.torch-cuda }}
+        name: part-${{ matrix.dist-tag }}-${{ matrix.python }}
         path: |
           wheelhouse/*.whl
           wheelhouse/build-metadata.json
 
+    # Every job checks its wheel in the form it is published -- local version
+    # stripped -- with twine, auditwheel and a look at the .so files. Cheap,
+    # and a broken wheel in any variant is caught here rather than at release.
     - name: Repack wheels for PyPI (strip local version identifier)
-      if: matrix.torch-version == '2.14.1' && matrix.torch-cuda == 'cu132'
       run: |
         pip install -r .github/requirements/build-tools.txt
         mkdir -p pypi-wheelhouse
@@ -379,7 +428,7 @@ jobs:
         done
 
     - name: Inspect repacked wheels and .so files
-      if: always() && (matrix.torch-version == '2.14.1' && matrix.torch-cuda == 'cu132')
+      if: always()
       run: |
         pip install -r .github/requirements/build-tools.txt
 
@@ -408,6 +457,13 @@ jobs:
           rm -rf "$tmpdir"
         done
 
+    # One end-to-end install of a repacked wheel, with the torch it pins and
+    # nothing else. The runner's Python is 3.11, so the cp311 wheel; every wheel
+    # is already import-tested in its own interpreter by cibuildwheel's
+    # test-command, so doing this per job would only add a CUDA torch download.
+    - name: Install and import the repacked wheel
+      if: always() && matrix.dist-tag == 'cuda-latest' && matrix.python == 'cp311'
+      run: |
         echo "=== Install + import test ==="
         python -m venv /tmp/test_venv
         # Install the torch build matching this wheel's CUDA variant, not the CPU
@@ -447,3 +503,41 @@ jobs:
           fi
         done
         [ "$FAILED" -eq 0 ] || exit 1
+
+  # One artifact per variant, as before the build was split by Python version:
+  # wheel-torch-<torch>-<cuda> with all its wheels and build-metadata.json. The
+  # deployment scripts consume exactly that. Runs only when every build job
+  # succeeded, so a variant is never assembled with a Python version missing;
+  # re-running the failed jobs re-runs this too.
+  merge-wheels:
+    name: merge ${{ matrix.dist-tag }}
+    needs: [plan, build-manylinux-wheels]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dist-tag: ${{ fromJSON(needs.plan.outputs.dist-tags) }}
+    steps:
+    # The artifact's name comes from the build, via build-metadata.json, so
+    # torch versions are not repeated here.
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: part-${{ matrix.dist-tag }}-*
+        path: parts
+        merge-multiple: true
+
+    - name: Name the variant's artifact
+      id: name
+      run: |
+        set -e
+        ls -l parts
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import json
+        print("artifact=" + json.load(open("parts/build-metadata.json"))["artifact"])
+        PY
+
+    - uses: actions/upload-artifact/merge@v7
+      with:
+        name: ${{ steps.name.outputs.artifact }}
+        pattern: part-${{ matrix.dist-tag }}-*
+        delete-merged: true

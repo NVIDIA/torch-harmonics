@@ -49,13 +49,14 @@
 * The SHTs warn on a `"trapezoidal"` grid, which does not round-trip, instead of raising.
 * Fixed the caching decorator hiding the docstrings and signatures of cached routines.
 
-### v0.9.3rc1
+### v0.9.3
 
 * **Breaking**: the default `theta_cutoff` of `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2`, `NeighborhoodAttentionS2` and their distributed counterparts is derived from the grid's actual latitude spacing instead of from `nlat` alone, which under-covered the poles on non-equiangular grids. Equiangular grids are unaffected; models trained on other grids change unless `theta_cutoff` is passed explicitly.
 * **Breaking**: `DistributedDiscreteContinuousConvS2` gains `polar_mode`, defaulting to `"halo-exchange"`: each polar rank computes only the output rows it owns, so the K-expanded intermediate shrinks with the polar group. Results are unchanged. `polar_mode="reduce-scatter"` restores the old behaviour and is required when the support spans more than the neighbouring rank, which now raises.
 * **Breaking**: the distributed SHTs contract over latitudes (forward) or degrees (inverse) as a distributed matmul plus reduce-scatter instead of gathering that axis first. The Legendre coefficients are partitioned over the whole process grid, cutting their per-rank memory by the polar group size, and two of the four all-to-alls per transform are gone. Results now differ from the serial transform by a few float32 ULP of the summands, so comparisons need an absolute tolerance scaled to the tensor's dynamic range.
+* **Breaking**: the minimum PyTorch is 2.9; 2.6, 2.7 and 2.8 are no longer supported. The NCCL of 2.6 and 2.7 (2.21, 2.26) crashed or stalled the distributed tests on H100 and B200, and before 2.9 inductor mispredicts strides in the SHTs, so `torch.compile` of `RealSHT`, `InverseRealSHT` and `SpectralConvS2` fails with `assert_size_stride`. All CUDA 12 packages -- `torch-harmonics-cu126`, `-cu128` and `-cu129` -- are now built against PyTorch 2.9.1, like `-cu130`, each for the matching CUDA build of it (`pip install torch==2.9.1` installs the CUDA 12.8 one).
 * **Breaking**: fixed the `"bilinear-spherical"` mode of `ResampleS2` and `DistributedResampleS2`, which applied vector interpolation weights to scalar values and could amplify the input without bound. It now interpolates along the shorter arc, identical to `"bilinear"` unless the field contains a phase wrap. Pole expansion for this mode, which averaged angles arithmetically, is fixed as well.
-* Wheels: Python 3.13 on every variant and Python 3.14 on the CUDA 13 and CPU variants. New `torch-harmonics-cu132` package (CUDA 13.2, PyTorch 2.12). `torch-harmonics-cuda-latest` moves to CUDA 13.2 and PyTorch 2.14, and the CPU wheel to PyTorch 2.14.
+* Wheels: Python 3.13 on every variant and Python 3.14 on the CUDA 13.2 and CPU variants (not on CUDA 12.x or 13.0, whose PyTorch 2.9 cannot `torch.compile` on Python 3.14). New `torch-harmonics-cu132` package (CUDA 13.2, PyTorch 2.12). `torch-harmonics-cuda-latest` moves to CUDA 13.2 and PyTorch 2.14, and the CPU wheel to PyTorch 2.14.
 * Added `torch.compile(fullgraph=True)` support to the serial and distributed layers, and fixed SHT compilation failing in inductor with `KeyError: 'complex64'`.
 * Added `polar_halo_reduce`, the adjoint of `polar_halo_exchange`, and exported `compute_polar_halo_radius`.
 * Improved DISCO CUDA kernel performance: kpacked forward up to 1.28x, backward up to 2.1x on H100 and GB200.
@@ -70,6 +71,7 @@
 * Fixed `AccuracyS2` counting ignored samples as true negatives, which inflated the metric toward 1 for any masked target (`ignore_index` defaults to `-100`). Unmasked results are bit-identical.
 * Fixed `DiceLossS2` including ignored pixels in the class-zero denominator.
 * `CrossEntropyLossS2` and `FocalLossS2` no longer apply a redundant `log_softmax` before `cross_entropy`; results agree to within 2 ULP.
+* Fixed `import torch_harmonics` failing on Python 3.14 with PyTorch older than 2.10, which refuses `torch.compile` on that Python: `SpectralConvS2` and `DistributedSpectralConvS2` applied it at class definition. They now fall back to the eager contraction where `torch.compile` is unavailable.
 * Fixed single-longitude inputs producing non-finite values and gradients in `ResampleS2` and `DistributedResampleS2`.
 * Fixed Gaussian random-field sampling keeping stale dtype or device buffers after module conversions.
 * Fixed a DISCO backward launch failure for `nlon_in > 2048` with an integer scale factor of 3 or more.
@@ -78,7 +80,7 @@
 * Fixed a stride mismatch in attention's channel-layout conversions against the registered fake kernel.
 * Removed a redundant autocast decorator from the distributed autograd Functions that blocked full-graph compilation.
 * Added tests for the loss and metric modules under `torch_harmonics/examples`.
-* CI: the serial tests run as build, unit-test and doctest stages against a wheel built with OpenMP, as the released wheels are. The workflow is renamed from "Run local tests" to "Tests".
+* CI: the serial tests run as build, unit-test and doctest stages against a wheel built with OpenMP, as the released wheels are. The workflow is renamed from "Run local tests" to "Tests". The documentation deploys automatically only on full releases, not on pre-releases. The release wheels are built in one job per variant and Python version, merged per variant afterwards, so no job approaches the 6-hour limit of a hosted runner, with at most two parallel compiles per job, which keeps the CUDA 13 builds within the runner's memory.
 
 ### v0.9.2
 

@@ -35,7 +35,7 @@ import warnings
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, set_seed
+from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
@@ -732,6 +732,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
+    @requires_torch_compile
     def test_compile(self, nlat, nlon, batch_size, grid, verbose=False):
         """The scalar round trip compiles into a single graph and matches eager.
 
@@ -1078,6 +1079,7 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
+    @requires_torch_compile
     def test_compile(self, nlat, nlon, batch_size, grid, verbose=False):
         """The vector round trip compiles into a single graph and matches eager.
 

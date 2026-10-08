@@ -37,6 +37,7 @@ import torch.nn as nn
 
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.utils import compile_if_supported
 
 from .distributed_quadrature import DistributedQuadratureS2
 from .distributed_sht import DistributedInverseRealSHT, DistributedRealSHT
@@ -192,7 +193,7 @@ class DistributedSpectralConvS2(nn.Module):
     def extra_repr(self):
         return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, num_groups={self.num_groups}"
 
-    @torch.compile
+    @compile_if_supported
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
         resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
         return resc
