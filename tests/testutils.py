@@ -354,8 +354,11 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
         # integer tensors do not support
         allclose = torch.all(tensor1 == tensor2)
         if not allclose and verbose:
-            diff = torch.abs(tensor1 - tensor2)
-            print(f"Element values with max difference on {msg}: {tensor1.flatten()[diff.argmax()]} and {tensor2.flatten()[diff.argmax()]}")
+            # the first mismatch rather than the largest: bools cannot be subtracted, and
+            # unsigned differences wrap around
+            mismatch = (tensor1 != tensor2).flatten()
+            first = int(mismatch.nonzero()[0])
+            print(f"{int(mismatch.sum())} mismatching elements on {msg}, first at flat index {first}: {tensor1.flatten()[first]} and {tensor2.flatten()[first]}")
     else:
         diff = torch.abs(tensor1 - tensor2)
         abs_diff = torch.mean(diff, dim=0)
