@@ -38,6 +38,7 @@ from time import perf_counter_ns
 from typing import ClassVar
 from unittest import mock
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from parameterized import parameterized, parameterized_class
@@ -1491,6 +1492,106 @@ class TestKeyBias(unittest.TestCase):
 
 
 @parameterized_class(("device"), _devices)
+class TestScale(unittest.TestCase):
+    """
+    The logit scale: ``1/sqrt(channels per head)`` unless given, a positive number, or a
+    0-dimensional tensor, which the layer trains when it is an ``nn.Parameter``.
+    """
+
+    def setUp(self):
+        disable_tf32()
+        set_seed(333)
+
+    _grids = [
+        # Format: [name, layer, grid_in, grid_out]
+        ["neighborhood regular", NeighborhoodAttentionS2, as_grid("equiangular", nlat=8, nlon=16), as_grid("equiangular", nlat=8, nlon=16)],
+        ["neighborhood ragged", NeighborhoodAttentionS2, HealpixGrid(nside=2), as_grid("equiangular", nlat=8, nlon=16)],
+        ["global regular", AttentionS2, as_grid("legendre-gauss", nlat=8, nlon=16), as_grid("equiangular", nlat=6, nlon=12)],
+        ["global ragged", AttentionS2, HealpixGrid(nside=2), HealpixGrid(nside=2)],
+    ]
+
+    @staticmethod
+    def _build(layer, grid_in, grid_out, **kwargs):
+        return layer(grid_in=grid_in, grid_out=grid_out, in_channels=8, num_heads=2, **kwargs)
+
+    @parameterized.expand(_grids, skip_on_empty=True)
+    def test_the_default_is_one_over_root_head_channels(self, name, layer, grid_in, grid_out):
+        model = self._build(layer, grid_in, grid_out)
+        self.assertIsInstance(model.scale, float, name)
+        self.assertEqual(model.scale, 1.0 / math.sqrt(4), name)
+
+    @parameterized.expand(
+        [[f"{name}, {kind}", layer, grid_in, grid_out, kind] for name, layer, grid_in, grid_out in _grids for kind in ("number", "tensor", "parameter")],
+        skip_on_empty=True,
+    )
+    def test_a_custom_scale_matches_the_oracle(self, name, layer, grid_in, grid_out, kind, atol=1e-5, rtol=1e-4):
+        scale = {"number": 0.3, "tensor": torch.tensor(0.3), "parameter": torch.nn.Parameter(torch.tensor(0.3))}[kind]
+        model = self._build(layer, grid_in, grid_out, scale=scale).to(self.device)
+        # a parameter is registered, so the optimizer sees it and .to() moves it
+        self.assertEqual("scale" in dict(model.named_parameters()), kind == "parameter", name)
+
+        if layer is NeighborhoodAttentionS2:
+            mask = _brute_force_neighborhood(grid_in, grid_out, model.theta_cutoff).to(self.device)
+        else:
+            mask = torch.ones(grid_out.npoints, grid_in.npoints, dtype=torch.bool, device=self.device)
+
+        def as_grid_shape(tensor, grid):
+            return tensor if not grid.is_regular else tensor.unflatten(-1, grid.shape)
+
+        flat = {
+            "q": torch.randn(2, 8, grid_out.npoints, device=self.device, requires_grad=True),
+            "k": torch.randn(2, 8, grid_in.npoints, device=self.device, requires_grad=True),
+            "v": torch.randn(2, 8, grid_in.npoints, device=self.device, requires_grad=True),
+        }
+        flat_ref = {key: t.detach().clone().requires_grad_() for key, t in flat.items()}
+
+        out = model(as_grid_shape(flat["q"], grid_out), as_grid_shape(flat["k"], grid_in), as_grid_shape(flat["v"], grid_in)).flatten(2)
+        out_ref = _dense_masked_attention(model, flat_ref["q"], flat_ref["k"], flat_ref["v"], mask)
+        self.assertTrue(compare_tensors(f"{name} output", out, out_ref, atol=atol, rtol=rtol))
+
+        # one backward per graph, so the scale's gradients from the two do not accumulate
+        grad = torch.randn_like(out_ref)
+        trained = [model.scale] if kind == "parameter" else []
+        grads = torch.autograd.grad(out, list(flat.values()) + trained, grad_outputs=grad)
+        grads_ref = torch.autograd.grad(out_ref, list(flat_ref.values()) + trained, grad_outputs=grad)
+        for key, got, expected in zip(list(flat) + ["scale"], grads, grads_ref):
+            self.assertTrue(compare_tensors(f"{name} grad {key}", got, expected, atol=atol, rtol=rtol))
+        if trained:
+            self.assertGreater(float(grads[-1].abs()), 0.0, f"{name}: the scale received no gradient")
+
+        # the scale is used at all: the same weights at the default scale compute something else
+        default = self._build(layer, grid_in, grid_out).to(self.device)
+        default.load_state_dict(model.state_dict(), strict=kind != "parameter")
+        with torch.no_grad():
+            out_default = default(as_grid_shape(flat["q"], grid_out), as_grid_shape(flat["k"], grid_in), as_grid_shape(flat["v"], grid_in)).flatten(2)
+        self.assertGreater(float((out_default - out.detach()).abs().max()), 1e-2, f"{name}: the scale did not change the output")
+
+    @parameterized.expand(
+        [
+            # Format: [name, scale, error]
+            ["a vector", torch.tensor([0.5, 0.5]), ValueError],
+            ["a bool", True, TypeError],
+            ["a string", "0.5", TypeError],
+            ["zero", 0.0, ValueError],
+            ["a negative number", -0.5, ValueError],
+            ["infinity", math.inf, ValueError],
+            ["nan", math.nan, ValueError],
+        ],
+        skip_on_empty=True,
+    )
+    def test_it_rejects(self, name, scale, error):
+        for layer in (NeighborhoodAttentionS2, AttentionS2):
+            with self.subTest(layer=layer.__name__), self.assertRaises(error):
+                self._build(layer, as_grid("equiangular", nlat=8, nlon=16), as_grid("equiangular", nlat=8, nlon=16), scale=scale)
+
+    def test_it_accepts_any_real_number(self):
+        for scale in (1, 0.5, np.float32(0.25), np.float64(0.125)):
+            model = self._build(AttentionS2, as_grid("equiangular", nlat=8, nlon=16), as_grid("equiangular", nlat=8, nlon=16), scale=scale)
+            self.assertIsInstance(model.scale, float)
+            self.assertEqual(model.scale, float(scale))
+
+
+@parameterized_class(("device"), _devices)
 class TestEmptyNeighborhood(unittest.TestCase):
     """
     A cutoff below the input spacing leaves output points between input points with no
@@ -1923,9 +2024,7 @@ def _dense_masked_attention(model, query, key, value, mask):
     if model.k_norm_weights is not None:
         k = F.rms_norm(k, normalized_shape=model.k_norm_weights.shape, weight=1 + model.k_norm_weights)
 
-    # AttentionS2 leaves scale as None for SDPA's default, 1/sqrt(channels per head)
-    scale = model.scale if model.scale is not None else 1.0 / math.sqrt(q.shape[-1])
-    logits = scale * (q @ k.transpose(-1, -2))
+    logits = model.scale * (q @ k.transpose(-1, -2))
 
     # computed in the logits' dtype, not rounded through float32, so a float64 oracle is float64 throughout
     log_weights = torch.log(_point_weights(model, logits.device, logits.dtype))

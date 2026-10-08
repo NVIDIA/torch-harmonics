@@ -30,6 +30,7 @@
 #
 
 import math
+import numbers
 import warnings
 from typing import Optional, Union
 
@@ -44,6 +45,29 @@ from torch_harmonics.attention.backends import BACKENDS
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
 from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
 from torch_harmonics.truncation import truncate_support
+
+
+def _resolve_scale(scale: Optional[Union[float, torch.Tensor]], head_dim: int) -> Union[float, torch.Tensor]:
+    """
+    The attention logit scale, ``1/sqrt(head_dim)`` by default.
+
+    A number is returned as a float. A tensor is returned as it is, so that an
+    ``nn.Parameter`` is registered and trained by the layer that stores it; it must
+    be 0-dimensional, since the two layers multiply it into queries of different
+    layouts and anything larger would broadcast differently in each.
+    """
+    if scale is None:
+        return 1.0 / math.sqrt(head_dim)
+    if isinstance(scale, torch.Tensor):
+        if scale.dim() != 0:
+            raise ValueError(f"a tensor scale must be 0-dimensional, got shape {tuple(scale.shape)}")
+        return scale
+    if isinstance(scale, bool) or not isinstance(scale, numbers.Real):
+        raise TypeError(f"scale must be a real number or a 0-dimensional tensor, got {type(scale).__name__}")
+    scale = float(scale)
+    if not (math.isfinite(scale) and scale > 0):
+        raise ValueError(f"scale must be finite and positive, got {scale}")
+    return scale
 
 
 def _drop_inert_key_bias(module, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
@@ -97,8 +121,9 @@ class AttentionS2(nn.Module):
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
     num_heads : int
         number of attention heads
-    scale : torch.Tensor or float, optional
-        Scaling applied to the attention logits. If None (default), the usual
+    scale : float or torch.Tensor, optional
+        Scaling applied to the attention logits: a positive number, or a 0-dimensional
+        tensor, which is trained if it is an ``nn.Parameter``. If None (default), the usual
         :math:`1/\sqrt{d}` scaling is used, with :math:`d` the head dimension.
     use_qknorm : bool, optional
         if specified, applies a learnable per-head RMS normalization to the
@@ -132,7 +157,7 @@ class AttentionS2(nn.Module):
         grid_out: GridS2,
         in_channels: int,
         num_heads: int,
-        scale: Optional[Union[torch.Tensor, float]] = None,
+        scale: Optional[Union[float, torch.Tensor]] = None,
         use_qknorm: Optional[bool] = False,
         bias: Optional[bool] = True,
         k_channels: Optional[int] = None,
@@ -168,7 +193,7 @@ class AttentionS2(nn.Module):
         self.k_channels = in_channels if k_channels is None else k_channels
         self.out_channels = in_channels if out_channels is None else out_channels
         self.drop_rate = drop_rate
-        self.scale = scale
+        self.scale = _resolve_scale(scale, self.k_channels // self.num_heads)
 
         # integration weights
         # global attention has no neighbourhood to index by ring, so only the expanded
@@ -397,9 +422,10 @@ class NeighborhoodAttentionS2(nn.Module):
         number of channels of the input signal (corresponds to embed_dim in MHA in PyTorch)
     num_heads : int, optional
         number of attention heads, by default ``1``
-    scale : torch.Tensor or float, optional
-        Scaling applied to the queries after normalization. If None (default),
-        :math:`1/\sqrt{d}` is used, with :math:`d` the per-head dimension.
+    scale : float or torch.Tensor, optional
+        Scaling applied to the queries after normalization: a positive number, or a
+        0-dimensional tensor, which is trained if it is an ``nn.Parameter``. If None
+        (default), :math:`1/\sqrt{d}` is used, with :math:`d` the per-head dimension.
     use_qknorm : bool, optional
         if specified, applies a learnable per-head RMS normalization to the
         queries and keys before scaling, by default ``False``
@@ -443,7 +469,7 @@ class NeighborhoodAttentionS2(nn.Module):
         grid_out: GridS2,
         in_channels: int,
         num_heads: Optional[int] = 1,
-        scale: Optional[Union[torch.Tensor, float]] = None,
+        scale: Optional[Union[float, torch.Tensor]] = None,
         use_qknorm: Optional[bool] = False,
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
@@ -566,10 +592,7 @@ class NeighborhoodAttentionS2(nn.Module):
         self.v_weights = nn.Parameter(scale_v * (2 * torch.rand(self.out_channels, self.in_channels, 1, 1) - 1))
         self.proj_weights = nn.Parameter(scale_proj * (2 * torch.rand(self.out_channels, self.out_channels, 1, 1) - 1))
 
-        if scale is not None:
-            self.scale = scale
-        else:
-            self.scale = 1 / math.sqrt(self.k_channels // self.num_heads)
+        self.scale = _resolve_scale(scale, self.k_channels // self.num_heads)
 
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.k_channels))

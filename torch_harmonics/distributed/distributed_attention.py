@@ -1146,7 +1146,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         grid_out: RegularGridS2,
         in_channels: int,
         num_heads: Optional[int] = 1,
-        scale: Optional[Union[torch.Tensor, float]] = None,
+        scale: Optional[Union[float, torch.Tensor]] = None,
         use_qknorm: Optional[bool] = False,
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
