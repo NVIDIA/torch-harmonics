@@ -1164,7 +1164,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "double backward"):
                 torch.autograd.grad((gw**2).sum(), inp)
         else:
-            self.assertTrue(torch.autograd.gradgradcheck(fn, (inp, weight)))
+            # the CUDA scatter kernel accumulates with atomics, so two backward passes differ
+            # in the last bits; gradcheck's reentrancy check wants them bit-identical otherwise
+            self.assertTrue(torch.autograd.gradgradcheck(fn, (inp, weight), nondet_tol=1e-12))
 
 
 # A supported device is not sufficient: the kpacked buffers are only built when
