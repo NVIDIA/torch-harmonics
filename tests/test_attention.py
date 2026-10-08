@@ -44,7 +44,7 @@ from parameterized import parameterized, parameterized_class
 
 # from torch.autograd import gradcheck
 from test_neighborhood import _brute_force_neighborhood
-from testutils import build_psi_segments, compare_tensors, disable_tf32, expand_psi_segments, maybe_autocast, set_seed
+from testutils import build_psi_segments, compare_tensors, disable_tf32, expand_psi_segments, maybe_autocast, requires_torch_compile, set_seed
 from torch.library import opcheck
 
 from torch_harmonics import AttentionS2, GridS2, HealpixGrid, NeighborhoodAttentionS2, as_grid
@@ -2978,6 +2978,7 @@ class TestRaggedBackwardCudaKernel(unittest.TestCase):
         self.assertTrue(torch.isfinite(out_cuda).all())
         self.assertTrue(compare_tensors("cpu vs cuda forward", out_cuda.cpu(), out, atol=1e-4, rtol=1e-4))
 
+    @requires_torch_compile
     def test_the_op_survives_torch_compile(self):
         """
         A fake whose signature has drifted from its schema is invisible until
