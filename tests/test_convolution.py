@@ -455,6 +455,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float64, False, True, 1e-9, 1e-9],
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 2e-2, 1e-2],
             [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
+            # The fused input gradient takes the spatial-first path only when the output is less than
+            # half as wide as the input, as in the 4 -> 2 rows above; equal and widening channel
+            # counts take the weight-first path, with the einsum ahead of the sparse transpose
+            [8, 4, 4, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
+            [8, 2, 4, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
+            [8, 4, 4, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 2e-2, 1e-2],
         ],
         skip_on_empty=True,
     )
@@ -661,6 +667,10 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 1e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float16, False, True, 5e-2, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
+            # equal and widening channel counts: the weight-first input gradient (see test_sparse_against_dense)
+            [8, 4, 4, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
+            [8, 2, 4, (41, 80), (21, 40), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
+            [8, 4, 4, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 1e-2, 1e-2],
         ],
         skip_on_empty=True,
     )
