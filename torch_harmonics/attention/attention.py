@@ -55,12 +55,20 @@ def _resolve_scale(scale: Optional[Union[float, torch.Tensor]], head_dim: int) -
     ``nn.Parameter`` is registered and trained by the layer that stores it; it must
     be 0-dimensional, since the two layers multiply it into queries of different
     layouts and anything larger would broadcast differently in each.
+
+    Either way the value must be finite and positive. For a tensor this is checked
+    once, here: what training does to a parameter afterwards is the optimizer's
+    business. A meta tensor has no value to check.
     """
     if scale is None:
         return 1.0 / math.sqrt(head_dim)
     if isinstance(scale, torch.Tensor):
         if scale.dim() != 0:
             raise ValueError(f"a tensor scale must be 0-dimensional, got shape {tuple(scale.shape)}")
+        if not scale.is_meta:
+            value = float(scale.detach())
+            if not (math.isfinite(value) and value > 0):
+                raise ValueError(f"scale must be finite and positive, got a tensor holding {value}")
         return scale
     if isinstance(scale, bool) or not isinstance(scale, numbers.Real):
         raise TypeError(f"scale must be a real number or a 0-dimensional tensor, got {type(scale).__name__}")

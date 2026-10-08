@@ -1576,6 +1576,12 @@ class TestScale(unittest.TestCase):
             ["a negative number", -0.5, ValueError],
             ["infinity", math.inf, ValueError],
             ["nan", math.nan, ValueError],
+            # a tensor is held to the same values as a number
+            ["a nan tensor", torch.tensor(math.nan), ValueError],
+            ["an infinite tensor", torch.tensor(math.inf), ValueError],
+            ["a zero tensor", torch.tensor(0.0), ValueError],
+            ["a negative parameter", torch.nn.Parameter(torch.tensor(-0.5)), ValueError],
+            ["a nan parameter", torch.nn.Parameter(torch.tensor(math.nan)), ValueError],
         ],
         skip_on_empty=True,
     )
@@ -1583,6 +1589,13 @@ class TestScale(unittest.TestCase):
         for layer in (NeighborhoodAttentionS2, AttentionS2):
             with self.subTest(layer=layer.__name__), self.assertRaises(error):
                 self._build(layer, as_grid("equiangular", nlat=8, nlon=16), as_grid("equiangular", nlat=8, nlon=16), scale=scale)
+
+    def test_a_meta_tensor_has_no_value_to_check(self):
+        # building a layer on the meta device must not fail on the scale
+        for layer in (NeighborhoodAttentionS2, AttentionS2):
+            with self.subTest(layer=layer.__name__):
+                model = self._build(layer, as_grid("equiangular", nlat=8, nlon=16), as_grid("equiangular", nlat=8, nlon=16), scale=torch.empty((), device="meta"))
+                self.assertTrue(model.scale.is_meta)
 
     def test_it_accepts_any_real_number(self):
         for scale in (1, 0.5, np.float32(0.25), np.float64(0.125)):
