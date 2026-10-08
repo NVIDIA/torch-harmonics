@@ -738,7 +738,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             # equal and widening channel counts: the weight-first input gradient (see test_sparse_against_dense)
             [8, 4, 4, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
             [8, 2, 4, (41, 80), (21, 40), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
-            [8, 4, 4, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 1e-2, 1e-2],
+            # fp16 like the unfused rows: CPU autocast now reaches the fused path, which used to
+            # run it in fp32 and so passed a tighter bound on CPU only
+            [8, 4, 4, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 5e-2, 1e-2],
         ],
         skip_on_empty=True,
     )
