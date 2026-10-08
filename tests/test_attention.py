@@ -948,9 +948,15 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         )
 
         opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_regular_optimized, test_inputs)
-        # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_regular_optimized, test_inputs, test_utils="test_schema")
-        # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_regular_optimized, test_inputs, test_utils="test_faketensor")
-        # opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_regular_optimized, test_inputs, test_utils="test_aot_dispatch_dynamic")
+
+        # The raw kernels the custom op wraps have fakes of their own, which tracing reads
+        # whenever it sees through the wrapper, and checking the wrapper never runs them.
+        # They have no autograd registration (that is the wrapper's), so their inputs are
+        # detached, which keeps test_autograd_registration from demanding one.
+        raw_inputs = tuple(t.detach() if isinstance(t, torch.Tensor) else t for t in test_inputs)
+        opcheck(torch.ops.attention_kernels.forward_regular, raw_inputs)
+        dy = torch.randn_like(torch.ops.attention_kernels.forward_regular(*raw_inputs))
+        opcheck(torch.ops.attention_kernels.backward_regular, (*raw_inputs[:3], dy, *raw_inputs[3:]))
 
     @parameterized.expand(
         [
@@ -2441,6 +2447,19 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
             npoints,
         )
         opcheck(torch.ops.attention_kernels._neighborhood_s2_attention_ragged_optimized, args)
+
+        # The raw kernels under the custom op, whose fakes checking the wrapper never runs;
+        # see test_optimized_pt2_compatibility of the regular layer. Both dtypes, because
+        # y_hi is the fp32 output for bfloat16 and an empty placeholder otherwise, and the
+        # fakes branch on that.
+        for dtype in (torch.float32, torch.bfloat16):
+            with self.subTest(dtype=dtype):
+                kx, vx, qy = (t.detach().to(dtype) for t in args[:3])
+                fwd_args = (kx, vx, qy, *args[3:])
+                opcheck(torch.ops.attention_kernels.forward_ragged, fwd_args)
+                y, y_hi, alpha_sum, qdotk_max = torch.ops.attention_kernels.forward_ragged(*fwd_args)
+                bwd_args = (kx, vx, qy, torch.randn_like(y), y, y_hi, alpha_sum, qdotk_max, *args[3:])
+                opcheck(torch.ops.attention_kernels.backward_ragged, bwd_args)
 
 
 @parameterized_class(("device"), _devices)
