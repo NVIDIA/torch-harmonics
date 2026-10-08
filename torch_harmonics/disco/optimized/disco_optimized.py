@@ -414,41 +414,6 @@ def _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack
     return out.to(itype)
 
 
-class _FirstOrderOnly(torch.autograd.Function):
-    """
-    Passes the gradients of a first-order node through, and raises if they are differentiated.
-
-    The backward of :class:`_DiscoConvFn` calls the raw kernels and reads the K-expanded
-    intermediate saved without its graph, so its result is not differentiable. Left alone,
-    ``create_graph=True`` would hand back gradients whose graph silently misses those paths.
-    ``anchor`` requires grad so the outputs do too even when no gradient did (a linear loss),
-    and the error fires there as well rather than as "does not require grad".
-    """
-
-    @staticmethod
-    def forward(ctx, name, anchor, *grads):
-        ctx.name = name
-        return tuple(None if g is None else g.clone() for g in grads)
-
-    @staticmethod
-    def backward(ctx, *_):
-        raise RuntimeError(
-            f"{ctx.name}: double backward (differentiating a gradient taken with create_graph=True) is not "
-            "supported by the optimized DISCO kernels. Use optimized_kernel=False for the torch reference, "
-            "which supports it."
-        )
-
-
-def _first_order_only(name, *grads):
-    """Guard the gradients returned by a first-order backward; a no-op unless it runs with create_graph=True."""
-    # eager only: under torch.compile the backward is traced into the graph, and the compiled
-    # backward rejects create_graph=True by itself
-    if not torch.is_grad_enabled() or torch.compiler.is_compiling():
-        return grads
-    anchor = torch.empty(0, requires_grad=True)
-    return _FirstOrderOnly.apply(name, anchor, *grads)
-
-
 class _DiscoKpackedFn(torch.autograd.Function):
     """
     Kpacked forward contraction, arc scatter backward.
@@ -500,6 +465,11 @@ class _DiscoConvFn(torch.autograd.Function):
     The forward contraction is the kpacked tensor-core kernel when its layout is passed,
     the arc gather otherwise; the backward is the arc scatter either way, and so is the
     recompute.
+
+    The backward calls the raw kernels, which autograd cannot see. Under
+    ``create_graph=True`` it is built from the contraction ops and einsums instead (see
+    :func:`_conv_backward_differentiable`), so double backward works. That needs the input
+    itself, which is why it is saved even when the K-expanded intermediate is.
     """
 
     @staticmethod
@@ -526,10 +496,11 @@ class _DiscoConvFn(torch.autograd.Function):
         split_row_offsets,
     ):
         itype = inp.dtype
-        inp = inp.contiguous()
         x_expanded = _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
 
-        ctx.save_for_backward(inp if recompute else x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker)
+        # the input as passed, not a contiguous copy made here: only the input carries its
+        # graph into a create_graph backward. Saving it only keeps a reference.
+        ctx.save_for_backward(inp, None if recompute else x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker)
         ctx.recompute = recompute
         ctx.kernel_size = kernel_size
         ctx.nlat_in = inp.shape[-2]
@@ -547,7 +518,7 @@ class _DiscoConvFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        saved, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker = ctx.saved_tensors
+        inp, x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker = ctx.saved_tensors
 
         itype = grad_output.dtype
         vals_c = vals.to(_compute_dtype(itype))
@@ -558,6 +529,16 @@ class _DiscoConvFn(torch.autograd.Function):
         Og = weight.shape[1]
         B = grad_output.shape[0]
         grad_output_r = grad_output.reshape(B, G, Og, H, W)
+
+        # inp, weight, then the six arc arrays, the three kpacked ones, split_ker,
+        # kernel_size, nlat_out, nlon_out, groups, groupsize, recompute, split_row_offsets
+        nones = (None,) * 17
+
+        # create_graph=True: the gradients must be differentiable themselves. Eager only, a
+        # compiled backward rejects create_graph by itself.
+        if torch.is_grad_enabled() and not torch.compiler.is_compiling():
+            arcs = (row_ker, row_lat, seg_off, seg, val_off, vals)
+            return _conv_backward_differentiable(ctx, grad_output_r, inp, weight, arcs) + nones
 
         grad_inp = None
         grad_weight = None
@@ -575,17 +556,38 @@ class _DiscoConvFn(torch.autograd.Function):
 
         if ctx.needs_input_grad[1]:
             if ctx.recompute:
-                x_expanded = disco_kernels.forward_regular.default(saved, row_ker, row_lat, seg_off, seg, val_off, vals_c, K, H, W)
-            else:
-                x_expanded = saved
+                x_expanded = disco_kernels.forward_regular.default(inp.contiguous(), row_ker, row_lat, seg_off, seg, val_off, vals_c, K, H, W)
             x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, H, W)
             grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
 
-        grad_inp, grad_weight = _first_order_only("DISCO convolution", grad_inp, grad_weight)
+        return (grad_inp, grad_weight) + nones
 
-        # inp, weight, then the six arc arrays, the three kpacked ones, split_ker,
-        # kernel_size, nlat_out, nlon_out, groups, groupsize, recompute, split_row_offsets
-        return (grad_inp, grad_weight) + (None,) * 17
+
+def _conv_backward_differentiable(ctx, grad_output_r, inp, weight, arcs):
+    """
+    The backward of :class:`_DiscoConvFn` from ops autograd can see, for ``create_graph=True``.
+
+    The contraction op and its transpose are each other's backward, so the gradients built
+    from them and the two einsums are differentiable to any order. The input gradient takes
+    the weight-first order and the recompute the arc kernels: the same values as the fast
+    path, without its choices of kernel.
+    """
+    B, G, Og, H, W = grad_output_r.shape
+    K, Cg = ctx.kernel_size, ctx.groupsize
+    itype = grad_output_r.dtype
+
+    grad_inp = None
+    grad_weight = None
+
+    if ctx.needs_input_grad[0]:
+        grad_x_expanded = torch.einsum("bgoxy,gock->bgckxy", grad_output_r, weight.to(itype)).reshape(B, G * Cg, K, H, W)
+        grad_inp = _disco_s2_transpose_contraction_regular_optimized(grad_x_expanded, *arcs, K, ctx.nlat_in, ctx.nlon_in)
+
+    if ctx.needs_input_grad[1]:
+        x_expanded = _disco_s2_contraction_regular_optimized(inp.to(itype), *arcs, K, H, W).reshape(B, G, Cg, K, H, W)
+        grad_weight = torch.einsum("bgoxy,bgckxy->gock", grad_output_r, x_expanded)
+
+    return grad_inp, grad_weight
 
 
 def _disco_s2_conv_optimized(inp, weight, arcs, kpacked, split, kernel_size, nlat_out, nlon_out, groups, groupsize, recompute=False):

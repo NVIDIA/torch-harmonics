@@ -1121,24 +1121,25 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # (in_channels, out_channels, transpose, fused, optimized_kernel)
-            # the convolution's optimized node is first-order only: it must raise, on the
-            # weight-first (4->4) and the spatial-first (8->2) input gradient alike
-            [4, 4, False, False, True],
-            [8, 2, False, False, True],
-            [4, 4, False, True, True],
-            [8, 2, False, True, True],
-            # the reference supports double backward, fused or not, and so does the optimized
-            # transpose, which is built from the two differentiable contraction ops
-            [4, 4, False, False, False],
-            [8, 2, False, True, False],
-            [4, 4, True, False, True],
-            [4, 4, True, False, False],
+            # (in_channels, out_channels, groups, transpose, fused, optimized_kernel, contiguous)
+            # the optimized convolution: weight-first (4->4) and spatial-first (8->2) input
+            # gradient, saved and recomputed (fused) intermediate, groups, a strided input
+            [4, 4, 1, False, False, True, True],
+            [8, 2, 1, False, False, True, True],
+            [4, 4, 1, False, True, True, True],
+            [8, 2, 1, False, True, True, True],
+            [4, 6, 2, False, False, True, True],
+            [4, 4, 1, False, False, True, False],
+            # the torch reference, and the transpose convolution
+            [4, 4, 1, False, False, False, True],
+            [8, 2, 1, False, True, False, True],
+            [4, 4, 1, True, False, True, True],
+            [4, 4, 1, True, False, False, True],
         ],
         skip_on_empty=True,
     )
-    def test_double_backward(self, in_channels, out_channels, transpose, fused, optimized_kernel, verbose=False):
-        """Double backward is either correct (gradgradcheck) or raises a clear error, never silently incomplete."""
+    def test_double_backward(self, in_channels, out_channels, groups, transpose, fused, optimized_kernel, contiguous, verbose=False):
+        """Gradients taken with create_graph=True are differentiable, and equal the ordinary ones."""
         if optimized_kernel and not optimized_kernels_is_available():
             raise unittest.SkipTest("skipping test because optimized kernels are not available")
         if optimized_kernel and (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -1149,24 +1150,29 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         grid = as_grid("equiangular", nlat=8, nlon=16)
         Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
         fused_kwarg = {} if transpose else {"fused": fused}
-        conv = Conv(grid, grid, in_channels, out_channels, (3), basis_type="piecewise linear", bias=False, optimized_kernel=optimized_kernel, **fused_kwarg)
+        conv = Conv(grid, grid, in_channels, out_channels, (3), basis_type="piecewise linear", groups=groups, bias=False, optimized_kernel=optimized_kernel, **fused_kwarg)
         conv = conv.to(device=self.device, dtype=torch.float64)
 
-        inp = torch.randn(1, in_channels, 8, 16, device=self.device, dtype=torch.float64, requires_grad=True)
+        if contiguous:
+            inp = torch.randn(1, in_channels, 8, 16, device=self.device, dtype=torch.float64)
+        else:
+            inp = torch.randn(1, 16, 8, in_channels, device=self.device, dtype=torch.float64).permute(0, 3, 2, 1)
+        inp.requires_grad_(True)
         weight = conv.weight.detach().clone().requires_grad_(True)
 
         def fn(x, w):
             return torch.func.functional_call(conv, {"weight": w}, (x,))
 
-        if optimized_kernel and not transpose:
-            # a nonlinear loss, so the weight gradient keeps a graph to the input through grad_output
-            gw = torch.autograd.grad((fn(inp, weight) ** 2).sum(), weight, create_graph=True)[0]
-            with self.assertRaisesRegex(RuntimeError, "double backward"):
-                torch.autograd.grad((gw**2).sum(), inp)
-        else:
-            # the CUDA scatter kernel accumulates with atomics, so two backward passes differ
-            # in the last bits; gradcheck's reentrancy check wants them bit-identical otherwise
-            self.assertTrue(torch.autograd.gradgradcheck(fn, (inp, weight), nondet_tol=1e-12))
+        # the create_graph backward is a different code path: it must give the same gradients
+        grad = torch.randn_like(fn(inp, weight))
+        plain = torch.autograd.grad(fn(inp, weight), (inp, weight), grad)
+        graphed = torch.autograd.grad(fn(inp, weight), (inp, weight), grad, create_graph=True)
+        self.assertTrue(compare_tensors("input grad", graphed[0], plain[0], atol=1e-12, rtol=1e-10, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", graphed[1], plain[1], atol=1e-12, rtol=1e-10, verbose=verbose))
+
+        # the CUDA scatter kernel accumulates with atomics, so two backward passes differ
+        # in the last bits; gradcheck's reentrancy check wants them bit-identical otherwise
+        self.assertTrue(torch.autograd.gradgradcheck(fn, (inp, weight), nondet_tol=1e-12))
 
 
 # A supported device is not sufficient: the kpacked buffers are only built when
