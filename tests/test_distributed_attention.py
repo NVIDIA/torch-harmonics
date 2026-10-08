@@ -33,6 +33,7 @@ import os
 import unittest
 
 import torch
+import torch.distributed as dist
 from parameterized import parameterized
 from testutils import (
     compare_tensors,
@@ -152,9 +153,25 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             wgroup=self.w_group,
         )
 
+    def _allreduce_param_grad(self, tensor):
+        """
+        Sum a per-rank parameter gradient over the polar and azimuth groups.
+
+        The distributed layers leave parameter gradients partial: each rank's holds the
+        contribution of its own spatial chunk, and reducing them is the caller's job, as
+        for the distributed convolution (see test_distributed_convolution). Returns a
+        clone, since all_reduce is in place.
+        """
+        out = tensor.clone()
+        if self.grid_size_h > 1:
+            dist.all_reduce(out, group=self.h_group)
+        if self.grid_size_w > 1:
+            dist.all_reduce(out, group=self.w_group)
+        return out
+
     @parameterized.expand(
         [
-            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, dtype, atol, rtol
+            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, dtype, atol, rtol[, trainable_scale]
             # same shape tests
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
@@ -276,6 +293,12 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # multi-head same-resolution gather
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float16, 5e-2, 1e-2],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.bfloat16, 3e-1, 5e-2],
+            # a trainable scale: its gradient is partial per rank like every other parameter's,
+            # on the gather (same-shape, downsample) and scatter (upsample) paths, and with QK norm
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4, True],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4, True],
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4, True],
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4, True],
         ],
         skip_on_empty=True,
     )
@@ -296,6 +319,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         dtype,
         atol,
         rtol,
+        trainable_scale=False,
         verbose=True,
     ):
         if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_ATTN_SHAPES and not _run_slow_tests:
@@ -322,9 +346,17 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             out_channels=out_channels,
         )
 
+        # A trainable scale, one per layer, so the two backward passes do not accumulate into
+        # the same .grad; it starts at the default value, so only its gradient is new
+        def scale():
+            if not trainable_scale:
+                return {}
+            per_head = (C if k_channels is None else k_channels) // num_heads
+            return {"scale": torch.nn.Parameter(torch.tensor(per_head**-0.5))}
+
         # build serial and distributed modules with identical weights
-        attn_serial = th.NeighborhoodAttentionS2(**attn_args).to(self.device)
-        attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args).to(self.device)
+        attn_serial = th.NeighborhoodAttentionS2(**attn_args, **scale()).to(self.device)
+        attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args, **scale()).to(self.device)
         if self._refuses_device(attn_dist):
             return
 
@@ -405,6 +437,20 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             igrad_gather = self._gather_helper_bwd(igrad_local[inp], attn_dist, use_out_shapes=use_out)
             ok = compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose)
             self.assertTrue(reduce_success(ok, self.device), f"input gradient {inp}")
+
+        # ---- compare parameter gradients ----
+        # summed over the spatial ranks first, which is the caller's job (see
+        # _allreduce_param_grad). A parameter gradient sums over every point, so the two
+        # sides add the same terms in different orders: atol scales with the gradient.
+        named_serial = dict(attn_serial.named_parameters())
+        named_dist = dict(attn_dist.named_parameters())
+        self.assertEqual(sorted(named_serial), sorted(named_dist), "the two layers have different parameters")
+        self.assertEqual("scale" in named_dist, trainable_scale)
+        for name, p_serial in named_serial.items():
+            pgrad = self._allreduce_param_grad(named_dist[name].grad)
+            atol_p = atol * max(1.0, float(p_serial.grad.abs().max()))
+            ok = compare_tensors(f"parameter gradient {name}", p_serial.grad, pgrad, atol=atol_p, rtol=rtol, verbose=verbose)
+            self.assertTrue(reduce_success(ok, self.device), f"parameter gradient {name}")
 
     @parameterized.expand(
         [
