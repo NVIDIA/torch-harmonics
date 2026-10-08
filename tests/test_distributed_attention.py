@@ -334,10 +334,11 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             attn_dist.q_weights.copy_(attn_serial.q_weights)
             attn_dist.proj_weights.copy_(attn_serial.proj_weights)
             if attn_args["bias"]:
-                attn_dist.k_bias.copy_(attn_serial.k_bias)
                 attn_dist.v_bias.copy_(attn_serial.v_bias)
                 attn_dist.q_bias.copy_(attn_serial.q_bias)
                 attn_dist.proj_bias.copy_(attn_serial.proj_bias)
+            if attn_args["bias"] and use_qknorm:
+                attn_dist.k_bias.copy_(attn_serial.k_bias)
             if use_qknorm:
                 attn_dist.q_norm_weights.copy_(attn_serial.q_norm_weights)
                 attn_dist.k_norm_weights.copy_(attn_serial.k_norm_weights)
@@ -474,7 +475,6 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             attn_dist.v_weights.copy_(attn_serial.v_weights)
             attn_dist.q_weights.copy_(attn_serial.q_weights)
             attn_dist.proj_weights.copy_(attn_serial.proj_weights)
-            attn_dist.k_bias.copy_(attn_serial.k_bias)
             attn_dist.v_bias.copy_(attn_serial.v_bias)
             attn_dist.q_bias.copy_(attn_serial.q_bias)
             attn_dist.proj_bias.copy_(attn_serial.proj_bias)

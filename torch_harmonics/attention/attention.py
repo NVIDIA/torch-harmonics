@@ -46,6 +46,17 @@ from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
 from torch_harmonics.truncation import truncate_support
 
 
+def _drop_inert_key_bias(module, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+    """
+    Drop the key bias of checkpoints that predate its removal without qk-norm.
+
+    Whatever its value, that bias never changed the output (see ``__init__``), so
+    dropping it is exact and keeps such checkpoints loadable with ``strict=True``.
+    """
+    if module.k_bias is None:
+        state_dict.pop(prefix + "k_bias", None)
+
+
 class AttentionS2(nn.Module):
     r"""
     (Global) attention on the 2-sphere.
@@ -93,7 +104,9 @@ class AttentionS2(nn.Module):
         if specified, applies a learnable per-head RMS normalization to the
         queries and keys before scaling, by default ``False``
     bias : bool, optional
-        if specified, adds bias to input / output projection layers
+        if specified, adds bias to input / output projection layers. The key
+        projection gets one only with ``use_qknorm``, since without it a key bias
+        shifts all scores of a query equally and cannot change the output
     k_channels : int
         number of dimensions for interior inner product in the attention matrix (corresponds to kdim in MHA in PyTorch)
     out_channels : int, optional
@@ -193,7 +206,10 @@ class AttentionS2(nn.Module):
 
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
-            self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
+            # Without qk-norm a key bias adds q_i . b to every score of query i, a shift the
+            # softmax removes, so it would be a parameter with an identically zero gradient.
+            # Under qk-norm it sits inside the normalization and does change the scores.
+            self.k_bias = nn.Parameter(torch.zeros(self.k_channels)) if use_qknorm else None
             self.v_bias = nn.Parameter(torch.zeros(self.out_channels))
             self.proj_bias = nn.Parameter(torch.zeros(self.out_channels))
         else:
@@ -208,6 +224,8 @@ class AttentionS2(nn.Module):
         else:
             self.q_norm_weights = None
             self.k_norm_weights = None
+
+        self.register_load_state_dict_pre_hook(_drop_inert_key_bias)
 
     def extra_repr(self):
         return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
@@ -386,7 +404,9 @@ class NeighborhoodAttentionS2(nn.Module):
         if specified, applies a learnable per-head RMS normalization to the
         queries and keys before scaling, by default ``False``
     bias : bool, optional
-        if specified, adds bias to input / output projection layers
+        if specified, adds bias to input / output projection layers. The key
+        projection gets one only with ``use_qknorm``, since without it a key bias
+        shifts all scores of a query equally and cannot change the output
     theta_cutoff : float, optional
         Angular radius of the geodesic neighborhood disk, in radians. Input points
         farther than this from an output location are excluded from its attention.
@@ -553,7 +573,10 @@ class NeighborhoodAttentionS2(nn.Module):
 
         if bias:
             self.q_bias = nn.Parameter(torch.zeros(self.k_channels))
-            self.k_bias = nn.Parameter(torch.zeros(self.k_channels))
+            # Without qk-norm a key bias adds q_i . b to every score of query i, a shift the
+            # softmax removes, so it would be a parameter with an identically zero gradient.
+            # Under qk-norm it sits inside the normalization and does change the scores.
+            self.k_bias = nn.Parameter(torch.zeros(self.k_channels)) if use_qknorm else None
             self.v_bias = nn.Parameter(torch.zeros(self.out_channels))
             self.proj_bias = nn.Parameter(torch.zeros(self.out_channels))
         else:
@@ -568,6 +591,8 @@ class NeighborhoodAttentionS2(nn.Module):
         else:
             self.q_norm_weights = None
             self.k_norm_weights = None
+
+        self.register_load_state_dict_pre_hook(_drop_inert_key_bias)
 
         # last, so that a backend handed this layer finds it fully built
         self._setup()

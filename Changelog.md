@@ -20,6 +20,7 @@
 * The example losses' `get_quadrature_weights(tile=False)` raises on grids that are not regular.
 * `NeighborhoodAttentionS2` accepts any `GridS2` on either side, including HEALPix and mixed pairs, with new compiled CPU and CUDA kernels for ragged grids.
 * `AttentionS2` accepts any `GridS2` on either side, no longer requires `nlon_in` to be a multiple of `nlon_out`, and projects channels-last like `NeighborhoodAttentionS2`.
+* **Breaking**: `AttentionS2` and `NeighborhoodAttentionS2` have a key bias (`k_bias`) only with `use_qknorm=True`. Without qk-norm it shifts all scores of a query equally, which the softmax removes, so it never changed the output and its gradient was always zero. Old checkpoints still load with `strict=True` and give the same results, but optimizer states saved with the old parameter list no longer match.
 * `AttentionS2` passes no weight mask on equal-area input grids, which is exact and lets SDPA use FlashAttention.
 * New `torch_harmonics.neighborhood` module computing the neighborhood pattern of any `GridS2` directly as contiguous longitude arcs, replacing the DISCO-based precompute neighborhood attention used before.
 * Neighborhood attention picks its implementation through backends selected per device, and each layer registers only the buffers its backend reads.

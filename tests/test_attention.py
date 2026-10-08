@@ -312,12 +312,10 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
 
         # Check parameter gradient equivalence. A bias gradient is a sum over the whole batch and
         # every grid point, the largest reduction in the layer, so its absolute rounding error
-        # grows with the size of the terms it sums rather than with its own value. The k bias
-        # gradient is the extreme case: zero analytically -- a bias on k shifts every score of a
-        # row by the same q . b, which the softmax ignores -- so both sides hold only rounding
-        # residue, which varies with the CPU the reference's matmuls dispatch to (CI has seen
-        # exactly 0 against -1.05e-5). Bias gradients therefore get an absolute tolerance of a
-        # few float32 ulps of the largest parameter gradient; weight gradients keep atol.
+        # grows with the size of the terms it sums rather than with its own value, and varies
+        # with the CPU the reference's matmuls dispatch to. Bias gradients therefore get an
+        # absolute tolerance of a few float32 ulps of the largest parameter gradient; weight
+        # gradients keep atol.
         pgrad_scale = max(p_ref.grad.abs().max().item() for _, p_ref in model_ref.named_parameters())
         bias_atol = max(atol, 8 * torch.finfo(torch.float32).eps * pgrad_scale)
         for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
@@ -1298,7 +1296,6 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             att_optimized.k_weights.normal_()
             att_optimized.v_weights.normal_()
             att_optimized.q_bias.normal_()
-            att_optimized.k_bias.normal_()
             att_optimized.v_bias.normal_()
 
         # forward test
@@ -1425,6 +1422,66 @@ class TestCrossDeviceExecution(unittest.TestCase):
         for label, g, e in zip(("output", "grad q", "grad kv"), got, expected):
             with self.subTest(what=label):
                 self.assertTrue(compare_tensors(f"{name} {label}", g, e, atol=1e-5, rtol=1e-4))
+
+
+@parameterized_class(("device"), _devices)
+class TestKeyBias(unittest.TestCase):
+    """
+    Without qk-norm a key bias adds ``q_i . b`` to every score of query ``i``, a shift the
+    softmax removes, so the layers carry one only under qk-norm. Checkpoints from before
+    that change still hold one, and must load and compute the same.
+    """
+
+    def setUp(self):
+        disable_tf32()
+        set_seed(333)
+
+    _cases = [
+        # Format: [name, layer, grid_in, grid_out]
+        ["neighborhood regular", NeighborhoodAttentionS2, as_grid("equiangular", nlat=8, nlon=16), as_grid("equiangular", nlat=8, nlon=16)],
+        ["neighborhood ragged", NeighborhoodAttentionS2, HealpixGrid(nside=2), as_grid("equiangular", nlat=8, nlon=16)],
+        ["global regular", AttentionS2, as_grid("legendre-gauss", nlat=8, nlon=16), as_grid("equiangular", nlat=6, nlon=12)],
+        ["global ragged", AttentionS2, HealpixGrid(nside=2), HealpixGrid(nside=2)],
+    ]
+
+    @parameterized.expand(_cases, skip_on_empty=True)
+    def test_it_exists_only_under_qknorm(self, name, layer, grid_in, grid_out):
+        for use_qknorm in (False, True):
+            model = layer(grid_in=grid_in, grid_out=grid_out, in_channels=4, num_heads=2, use_qknorm=use_qknorm, bias=True)
+            self.assertEqual(model.k_bias is not None, use_qknorm, f"{name}, use_qknorm={use_qknorm}")
+            self.assertEqual("k_bias" in model.state_dict(), use_qknorm, f"{name}, use_qknorm={use_qknorm}")
+            # the other biases are unaffected
+            for other in ("q_bias", "v_bias", "proj_bias"):
+                self.assertIsNotNone(getattr(model, other), f"{name}: {other}")
+
+    @parameterized.expand(_cases, skip_on_empty=True)
+    def test_an_old_checkpoint_loads_and_its_key_bias_was_inert(self, name, layer, grid_in, grid_out):
+        model = layer(grid_in=grid_in, grid_out=grid_out, in_channels=4, num_heads=2, bias=True).to(self.device)
+
+        def make(grid):
+            return torch.randn(2, 4, *grid.shape, device=self.device)
+
+        q, kv = make(grid_out), make(grid_in)
+        with torch.no_grad():
+            out = model(q, kv, kv)
+
+        # an old checkpoint, with a key bias far from its zero initialization
+        old = model.state_dict()
+        old["k_bias"] = 10 * torch.randn(model.k_channels, device=self.device)
+
+        # inert: the same layer with that bias in its projection computes the same output
+        with_bias = layer(grid_in=grid_in, grid_out=grid_out, in_channels=4, num_heads=2, bias=True).to(self.device)
+        with_bias.k_bias = torch.nn.Parameter(old["k_bias"].clone())
+        with_bias.load_state_dict(old)
+        with torch.no_grad():
+            self.assertTrue(compare_tensors(f"{name} output with a key bias", with_bias(q, kv, kv), out, atol=1e-5, rtol=1e-4))
+
+        # and loadable: strict loading drops it rather than reporting an unexpected key
+        loaded = layer(grid_in=grid_in, grid_out=grid_out, in_channels=4, num_heads=2, bias=True).to(self.device)
+        loaded.load_state_dict(old, strict=True)
+        self.assertIsNone(loaded.k_bias)
+        with torch.no_grad():
+            self.assertTrue(torch.equal(loaded(q, kv, kv), out), f"{name}: output after loading an old checkpoint")
 
 
 @parameterized_class(("device"), _devices)
