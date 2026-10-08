@@ -286,6 +286,9 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # polar ranks is enough.
             [32, 64, 16, 32, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "halo-exchange", 1e-6, 1e-5, False],
             [32, 64, 32, 64, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, False, "reduce-scatter", 1e-6, 1e-5, False],
+            # fused=True on the reference: the reordered all-to-all is kept, and the intermediate
+            # is saved rather than recomputed, which only the compiled kernels can do
+            [32, 64, 16, 32, 2, 8, (3), "piecewise linear", "mean", 1, "equiangular", "equiangular", torch.float32, False, True, "halo-exchange", 1e-6, 1e-5, False],
             # The transpose convolution's fallback is a separate code path (it gathers the
             # polar split and contracts a COO psi over the output grid), and the rows above
             # never reach it. Upsampling and same-shape; it has no polar_mode.
@@ -719,20 +722,17 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             dist.all_reduce(local_nnz, group=self.h_group)
         self.assertEqual(int(local_nnz.item()), int(ser_vals.numel()), "polar ranks together must hold every serial psi entry exactly once")
 
-    def test_fused_requires_cuda_and_the_optimized_kernels(self):
+    def test_fused_runs_on_every_backend(self):
         """
-        fused=True runs the reordered all-to-all on the fused CUDA op and has no other
-        implementation, so the layer refuses it where that op cannot run instead of
-        silently computing the unfused path.
+        fused=True is accepted wherever the layer can be built, the torch reference included:
+        there the reordered all-to-all is kept and the intermediate is saved instead of
+        recomputed. The numerics are checked by the fused reference row of
+        test_distributed_disco_conv.
         """
         grid = th.as_grid("equiangular", nlat=32, nlon=64)
-        cases = [("optimized_kernel=False", {"optimized_kernel": False})]
-        if not torch.cuda.is_available():
-            cases.append(("no CUDA", {}))
-        for name, kwargs in cases:
-            with self.subTest(name), self.assertRaises(NotImplementedError) as ctx:
-                thd.DistributedDiscreteContinuousConvS2(grid, grid, 4, 4, kernel_shape=(3, 3), fused=True, **kwargs)
-            self.assertIn("fused=True", str(ctx.exception))
+        conv = thd.DistributedDiscreteContinuousConvS2(grid, grid, 4, 4, kernel_shape=(3, 3), fused=True, optimized_kernel=False)
+        self.assertTrue(conv.fused)
+        self.assertEqual(conv.backend.name, "reference")
 
     def test_polar_mode_rejects_unknown_value(self):
         """An unrecognised mode is a typo, not a request for a default."""
