@@ -40,8 +40,6 @@
 #include <atomic>
 #include <cub/cub.cuh>
 #include <limits>
-#include <map>
-#include <mutex>
 #include <utility>
 
 #include "cudamacro.h"
@@ -247,57 +245,6 @@ namespace attention_kernels
         return x + 1;
     }
 
-    void ensure_dyn_shmem(const void *kern, size_t shsize)
-    {
-
-        if (shsize <= 48u * 1024u) { return; }
-
-        // The opt-in is per (device, kernel), and the granted size has to be at
-        // least the largest ever requested for that pair:
-        //
-        //  - shsize depends on the channel count, so one kernel instantiation is
-        //    launched at different sizes by different module instances in the
-        //    same process. Caching on the kernel alone drops every request after
-        //    the first, and a later, larger launch then fails with
-        //    cudaErrorInvalidValue.
-        //
-        //  - cudaFuncSetAttribute applies to the current device, so a
-        //    process-wide cache would let device 0 suppress the opt-in that
-        //    device 1 never received.
-        //
-        // The mutex is what makes the cache safe to touch from the launch path,
-        // which torch may drive from several threads; an unsynchronized
-        // container mutation here is a data race. It is uncontended, and only
-        // reached on the >48KB path.
-        int dev = 0;
-        CHECK_CUDA(cudaGetDevice(&dev));
-
-        static std::mutex mtx;
-        static std::map<std::pair<int, const void *>, size_t> granted;
-
-        std::lock_guard<std::mutex> lock(mtx);
-
-        // inserts a 0 entry when this (device, kernel) pair is new
-        size_t &granted_size = granted[std::make_pair(dev, kern)];
-        if (granted_size >= shsize) { return; }
-
-        // The opt-in cannot exceed what the device offers a block, less the kernel's
-        // static shared memory. The requests scale with the per-head channel count, so
-        // past that point the launch is impossible rather than merely un-opted-in; say
-        // so instead of letting cudaFuncSetAttribute fail with a bare invalid argument.
-        int optin_max = 0;
-        CHECK_CUDA(cudaDeviceGetAttribute(&optin_max, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev));
-        cudaFuncAttributes attr;
-        CHECK_CUDA(cudaFuncGetAttributes(&attr, kern));
-        const size_t avail = static_cast<size_t>(optin_max) - attr.sharedSizeBytes;
-        TORCH_CHECK(shsize <= avail, "attention kernel needs ", shsize, " bytes of dynamic shared memory, but device ",
-                    dev, " offers at most ", avail,
-                    " per block; the request grows with the per-head channel count, so use fewer channels per head "
-                    "(more heads)");
-
-        CHECK_CUDA(cudaFuncSetAttribute(kern, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(shsize)));
-        granted_size = shsize;
-    }
     // END - general host-side functions
 
 } // namespace attention_kernels

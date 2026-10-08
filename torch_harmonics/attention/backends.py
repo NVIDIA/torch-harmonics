@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Dict
 
 import torch
 
+from torch_harmonics._backend import BackendS2
 from torch_harmonics.attention._attention_utils import _kernel_device_types
 from torch_harmonics.attention.kernels_torch.attention_ragged_torch import _neighborhood_s2_attention_ragged_torch
 from torch_harmonics.attention.kernels_torch.attention_regular_torch import _neighborhood_s2_attention_regular_torch
@@ -75,7 +76,7 @@ _RAGGED_DEVICES = _kernel_device_types("attention_kernels::forward_ragged")
 _REGULAR_DEVICES = _kernel_device_types("attention_kernels::forward_regular")
 
 
-class AttentionBackendS2:
+class AttentionBackendS2(BackendS2):
     """
     One way of evaluating neighbourhood attention, and the state it needs to do it.
 
@@ -106,19 +107,6 @@ class AttentionBackendS2:
     The per-point form is npoints long -- 4 MB at a quarter degree -- which is why it is
     registered only by the backend that reads it.
     """
-
-    name = "?"
-
-    #: a pure-torch reference: the layer warns when it lands here although the compiled
-    #: kernels were asked for
-    reference = False
-
-    @classmethod
-    def available(cls, layer: "NeighborhoodAttentionS2", device: torch.device) -> bool:
-        raise NotImplementedError
-
-    def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
-        raise NotImplementedError
 
     def __call__(self, layer: "NeighborhoodAttentionS2", key: torch.Tensor, value: torch.Tensor, query_scaled: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError

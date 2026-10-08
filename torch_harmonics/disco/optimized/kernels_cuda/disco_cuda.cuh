@@ -31,14 +31,14 @@
 #pragma once
 
 #include "../disco.h"
+#include "../disco_checks.h"
 
 #include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
 
-#define CHECK_CUDA_TENSOR(x) TORCH_INTERNAL_ASSERT(x.device().type() == torch::kCUDA)
-#define CHECK_CUDA_INPUT_TENSOR(x)                                                                                     \
-    CHECK_CUDA_TENSOR(x);                                                                                              \
-    CHECK_CONTIGUOUS_TENSOR(x)
+#include <type_traits>
 
 #define DIV_UP(a, b) (((a) + ((b) - 1)) / (b))
 
@@ -102,13 +102,51 @@ namespace disco_kernels
         return v;
     }
 
-    // forward kernel (CSR)
-    torch::Tensor disco_cuda_fwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+    // psi in arc form as the kernels take it: raw pointers to the arrays of _psi.py, one
+    // set per launch
+    struct ArcPsi {
+        int64_t nrows;
+        const int32_t *row_ker;
+        const int32_t *row_lat;
+        const int64_t *seg_off;
+        const int32_t *seg;
+        const int64_t *val_off;
+    };
 
-    // backward kernel (CSR)
-    torch::Tensor disco_cuda_bwd(torch::Tensor inp, torch::Tensor roff_idx, torch::Tensor ker_idx, torch::Tensor row_idx,
-                                 torch::Tensor col_idx, torch::Tensor val, int64_t K, int64_t Ho, int64_t Wo);
+    inline ArcPsi arc_psi(const torch::Tensor &row_ker, const torch::Tensor &row_lat, const torch::Tensor &seg_off,
+                          const torch::Tensor &seg, const torch::Tensor &val_off)
+    {
+        return ArcPsi {row_ker.size(0),
+                       row_ker.data_ptr<int32_t>(),
+                       row_lat.data_ptr<int32_t>(),
+                       seg_off.data_ptr<int64_t>(),
+                       seg.data_ptr<int32_t>(),
+                       val_off.data_ptr<int64_t>()};
+    }
+
+    // The starting block shape for a row of W elements: 64 lanes up to 64*ELXTH_MAX, then
+    // the smallest wider block starting from (ELXTH_MAX / 2) + 1 elements per lane.
+    // Calls launch(integral_constant<NTH>, integral_constant<ELXTH>).
+    template <typename LAUNCH> inline void with_block_shape(int64_t W, const char *what, LAUNCH &&launch)
+    {
+        // the wide configs split the element count as (ELXTH_MAX / 2) + 1, which is exact
+        // only for an even ELXTH_MAX
+        static_assert(0 == (ELXTH_MAX % 2));
+        constexpr int E = (ELXTH_MAX / 2) + 1;
+        if (W <= 64 * ELXTH_MAX) {
+            launch(std::integral_constant<int, 64> {}, std::integral_constant<int, 1> {});
+        } else if (W <= 128 * ELXTH_MAX) {
+            launch(std::integral_constant<int, 128> {}, std::integral_constant<int, E> {});
+        } else if (W <= 256 * ELXTH_MAX) {
+            launch(std::integral_constant<int, 256> {}, std::integral_constant<int, E> {});
+        } else if (W <= 512 * ELXTH_MAX) {
+            launch(std::integral_constant<int, 512> {}, std::integral_constant<int, E> {});
+        } else if (W <= 1024 * ELXTH_MAX) {
+            launch(std::integral_constant<int, 1024> {}, std::integral_constant<int, E> {});
+        } else {
+            TORCH_CHECK(false, what, " (", W, ") exceeds the largest supported value (", 1024 * ELXTH_MAX, ")");
+        }
+    }
 
     // K-packed forward (WGMMA, Hopper SM_90a + bf16/fp16 only)
     torch::Tensor disco_cuda_fwd_kpacked(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,

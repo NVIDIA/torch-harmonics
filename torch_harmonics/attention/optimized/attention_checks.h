@@ -34,6 +34,8 @@
 
 #include <vector>
 
+#include "../../csrc/tensor_checks.h"
+
 // Input validation for the attention ops' host entry points, shared by the CPU and CUDA
 // sides. Every check reads tensor metadata only -- device, dtype, sizes, strides -- so it
 // costs no synchronization and is invisible to torch.compile, which traces the ops' fake
@@ -43,37 +45,11 @@
 namespace attention_kernels
 {
 
-    // A tensor the kernels address as dense and row-major over its logical shape: the
-    // innermost dimension has stride 1, and each outer one the product of the extents
-    // inside it. For the activations the logical shape is (B, H, W, C), heads packed along
-    // C, so this is "channels-last" in the only sense the kernels rely on.
-    //
-    // Decided from the strides directly, not from a memory-format predicate, and the stride
-    // of a dimension of extent 1 is never inspected: it addresses nothing, and PyTorch
-    // leaves it arbitrary, so a singleton C (or batch, or anything else) cannot be rejected
-    // on it. An empty tensor has nothing to misread and passes.
-    inline void check_dense(const at::Tensor &t, const char *name)
-    {
-        if (t.numel() == 0) { return; }
-        int64_t expected = 1;
-        for (int64_t d = t.dim() - 1; d >= 0; --d) {
-            if (t.size(d) != 1) {
-                TORCH_CHECK(t.stride(d) == expected, name,
-                            " must be dense and row-major over its logical shape (innermost dimension "
-                            "contiguous); got sizes ",
-                            t.sizes(), " and strides ", t.strides());
-            }
-            expected *= t.size(d);
-        }
-    }
-
-    // The kernels take one device's pointers; a tensor elsewhere would be read through a
-    // pointer that means nothing there.
-    inline void check_same_device(const at::Tensor &t, const at::Tensor &ref, const char *name)
-    {
-        TORCH_CHECK(t.device() == ref.device(), name, " must be on the same device as the activations (", ref.device(),
-                    "), got ", t.device());
-    }
+    // generic metadata checks, shared with the other extensions; for the activations the
+    // logical shape check_dense is applied to is (B, H, W, C), heads packed along C, so
+    // "dense" is "channels-last" in the only sense the kernels rely on
+    using th_checks::check_dense;
+    using th_checks::check_same_device;
 
     // The activations share one dtype: each host dispatches on qy's scalar type and
     // reinterpret_casts the others to it, so a mismatch would be reinterpreted rather than

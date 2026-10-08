@@ -177,9 +177,8 @@ def get_ext_modules():
             [
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
-                # Experimental backward behind disco_kernels::backward_exp.
-                # Not reachable from any module backward; driven only by
-                # performance/disco/ncu_disco.py. Drop this line to build it out.
+                # the tensor-core forward; each file compiles to a stub unless its
+                # architecture (9.0a, 10.0a/10.3a) is in TORCH_CUDA_ARCH_LIST
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm100.cu",
             ]

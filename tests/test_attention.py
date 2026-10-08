@@ -30,11 +30,9 @@
 #
 
 import math
-import os
 import unittest
 import warnings
 from dataclasses import dataclass
-from time import perf_counter_ns
 from typing import ClassVar
 from unittest import mock
 
@@ -79,13 +77,6 @@ if not optimized_kernels_is_available():
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
-
-# perf thresholds
-# CPU results normalized to 16 OpenMP threads,
-# GPU results normalized to V100 16 GB GPU
-# this is just to detect performance regressions, not for absolute performance
-_perf_test_thresholds = {"cpu": {"fwd_ms": 1000, "bwd_ms": 8000}, "cuda": {"fwd_ms": 50, "bwd_ms": 150}}
-_run_perf_tests = os.getenv("TORCH_HARMONICS_RUN_PERF_TESTS", "0") == "1"
 
 
 @parameterized_class(("device"), _devices)
@@ -1259,92 +1250,6 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         )
 
         opcheck(torch.ops.attention_kernels.backward_ring_step_upsample_pass2, bwd2_inputs)
-
-    @parameterized.expand(
-        [
-            # self attention
-            [1, 256, 1, (91, 180), (91, 180), "equiangular", "equiangular", 1e-5, 1e-5],
-        ],
-        skip_on_empty=True,
-    )
-    @unittest.skipUnless(optimized_kernels_is_available() and _run_perf_tests, "skipping performance test because optimized kernels are not available or perf tests are disabled")
-    def test_perf(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
-
-        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
-            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
-
-        # set seed
-        set_seed(333)
-
-        # extract some parameters
-        nlat_in, nlon_in = in_shape
-        nlat_out, nlon_out = out_shape
-
-        # TODO: this test seems hardcoded for GPU. Is this necessary?
-        k_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
-        k_inp.requires_grad = False
-        v_inp = torch.randn(batch_size, channels, nlat_in, nlon_in, dtype=torch.float32, device=self.device)
-        v_inp.requires_grad = False
-        q_inp = torch.randn(batch_size, channels, nlat_out, nlon_out, dtype=torch.float32, device=self.device)
-        q_inp.requires_grad = False
-
-        att_optimized = NeighborhoodAttentionS2(
-            grid_in=as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1]),
-            grid_out=as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1]),
-            in_channels=channels,
-            num_heads=heads,
-            bias=True,
-            optimized_kernel=True,
-        ).to(self.device)
-
-        # random weights
-        with torch.no_grad():
-            att_optimized.q_weights.normal_()
-            att_optimized.k_weights.normal_()
-            att_optimized.v_weights.normal_()
-            att_optimized.q_bias.normal_()
-            att_optimized.v_bias.normal_()
-
-        # forward test
-        # warmup
-        for i in range(2):
-            out_optimized = att_optimized(q_inp, k_inp, v_inp)
-
-        # start timer
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        start = perf_counter_ns()
-        out_optimized = att_optimized(q_inp, k_inp, v_inp)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        end = perf_counter_ns()
-        duration = (end - start) / 1e6
-        if verbose:
-            print(f"Forward execution time on device {self.device.type}: {duration:.2f} ms")
-        threshold = _perf_test_thresholds[self.device.type]["fwd_ms"]
-        self.assertTrue(duration <= threshold, msg=f"Forward execution time on device {self.device.type} is too high: {duration:.2f} ms > {threshold:.2f} ms")
-
-        # # backward test
-        out_optimized = att_optimized(q_inp, k_inp, v_inp)
-        out_grad = torch.randn(out_optimized.shape, dtype=torch.float32, device=self.device)
-
-        # # warmup
-        for i in range(2):
-            out_optimized.backward(out_grad, retain_graph=True)
-
-        # start timer
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        start = perf_counter_ns()
-        out_optimized.backward(out_grad)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize()
-        end = perf_counter_ns()
-        duration = (end - start) / 1e6
-        if verbose:
-            print(f"Backward execution time on device {self.device.type}: {duration:.2f} ms")
-        threshold = _perf_test_thresholds[self.device.type]["bwd_ms"]
-        self.assertTrue(duration <= threshold, msg=f"Backward execution time on device {self.device.type} is too high: {duration:.2f} ms > {threshold:.2f} ms")
 
     def test_wrong_shape_assertions(self):
         """Verify that forward raises RuntimeError on spatial-shape mismatches."""

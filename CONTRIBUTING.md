@@ -78,6 +78,11 @@ Optional extras:
 
 ```bash
 pip install -e ".[dev,filter_basis]"   # scipy for filter-basis tests
+
+# earth2grid, to check the HEALPix grid against an independent implementation; it is not
+# on PyPI and builds against the installed torch, hence the separate pinned requirements
+pip install numpy packaging
+pip install --no-build-isolation -r .github/requirements/test-tools.txt
 ```
 
 Install [pre-commit](https://pre-commit.com/) hooks:
