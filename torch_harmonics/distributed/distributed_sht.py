@@ -29,13 +29,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
-from torch_harmonics.quadrature import precompute_latitudes
-from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import check
 
 from .primitives import (
@@ -51,7 +53,7 @@ from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, pol
 class DistributedRealSHT(nn.Module):
     """
     Distributed version of the forward (real-valued) SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last two dimensions of the input.
 
     **Distribution scheme.**
@@ -76,15 +78,10 @@ class DistributedRealSHT(nn.Module):
     The output has shape ``(B, C, lmax_local, mmax_local)`` with spectral modes
     partitioned in the same way as the spatial grid.
 
-    Keeping ``nlat`` distributed is what makes the precomputed Legendre weights
-    scale: they are partitioned as ``(mmax_local, lmax, nlat_local)``, so the
-    tensor is split across the full process grid rather than replicated over the
-    polar group.  The cost is that the quadrature sum is now accumulated across
-    ranks, so results are not bitwise identical to the serial transform.
-
-    If ``N < azimuth_group_size``, the leading axis is zero-padded before the
-    transposes and the padding is removed afterwards; since the transform is
-    linear this is exact.
+    The precomputed Legendre weights are split across the full process grid rather
+    than replicated. Because the quadrature sum is accumulated across ranks, results
+    are not bitwise identical to the serial transform. A leading axis ``N`` smaller
+    than the group size is supported; it is zero-padded internally, which is exact.
 
     .. seealso::
         :class:`torch_harmonics.RealSHT`
@@ -93,16 +90,15 @@ class DistributedRealSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        The grid is the *global* one; the local shard is derived from it.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
@@ -111,28 +107,28 @@ class DistributedRealSHT(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+        Local spectral coefficients, shape ``(..., lmax_local, mmax_local)``.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        _warn_if_not_spectrally_accurate(self.grid)
         self.norm = norm
         self.csphase = csphase
 
         # TODO: include assertions regarding the dimensions
-
-        # quadrature weights; the grid switch and the cosine transform live in
-        # precompute_latitudes, which is cached on (nlat, grid)
-        _, weights = precompute_latitudes(nlat, grid=self.grid)
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -140,14 +136,26 @@ class DistributedRealSHT(nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
+        # quadrature weights come from the grid descriptor, which supports every grid
+        # precompute_latitudes does -- the switch this replaced silently rejected
+        # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
+        # descriptor and reads them itself, which is also what keys its cache.
+        weights = self.grid.colat_weights
+
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
-        self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
-        self.nlat_local = self.lat_shapes[self.comm_rank_polar]
-        self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
-        self.nlon_local = self.lon_shapes[self.comm_rank_azimuth]
+        # the grid decomposes itself in space; the spectral split below stays manual,
+        # since lmax/mmax are not grid dimensions
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
+        self.nlat_local = self.shard.nlat
+        self.nlon_local = self.shard.nlon
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
@@ -171,7 +179,6 @@ class DistributedRealSHT(nn.Module):
         pct = _precompute_legpoly(
             self.mmax_offset + self.mmax_local,
             self.lmax,
-            self.nlat,
             self.grid,
             norm=self.norm,
             csphase=self.csphase,
@@ -185,7 +192,7 @@ class DistributedRealSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -251,7 +258,7 @@ class DistributedRealSHT(nn.Module):
 class DistributedInverseRealSHT(nn.Module):
     """
     Distributed version of the inverse (real-valued) SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials on the nodes of the given grid.
 
     **Distribution scheme.**
     The input tensor has shape ``(B, C, lmax_local, mmax_local)`` where spectral
@@ -273,15 +280,11 @@ class DistributedInverseRealSHT(nn.Module):
     The output has shape ``(B, C, nlat_local, nlon_local)`` with the spatial
     grid partitioned in the same way as the input spectral modes.
 
-    Keeping ``l`` distributed is what makes the precomputed Legendre polynomials
-    scale: they are partitioned as ``(mmax_local, nlat, lmax_local)``, so the
-    tensor is split across the full process grid rather than replicated over the
-    polar group.  The cost is that the synthesis sum is now accumulated across
-    ranks, so results are not bitwise identical to the serial transform.
-
-    If ``N < azimuth_group_size``, the leading axis is zero-padded before the
-    transposes and the padding is removed afterwards; since the transform is
-    linear this is exact.
+    The precomputed Legendre polynomials are split across the full process grid
+    rather than replicated. Because the synthesis sum is accumulated across ranks,
+    results are not bitwise identical to the serial transform. A leading axis ``N``
+    smaller than the group size is supported; it is zero-padded internally, which is
+    exact.
 
     .. seealso::
         :class:`torch_harmonics.InverseRealSHT`
@@ -290,16 +293,15 @@ class DistributedInverseRealSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        The grid is the *global* one; the local shard is derived from it.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
@@ -308,20 +310,24 @@ class DistributedInverseRealSHT(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+        Local spatial signal, shape ``(..., nlat_local, nlon_local)``.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        _warn_if_not_spectrally_accurate(self.grid)
         self.norm = norm
         self.csphase = csphase
 
@@ -332,11 +338,17 @@ class DistributedInverseRealSHT(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
-        self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
-        self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
+        # the grid decomposes itself in space; the spectral split below stays manual,
+        # since lmax/mmax are not grid dimensions
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
@@ -353,7 +365,6 @@ class DistributedInverseRealSHT(nn.Module):
         pct = _precompute_legpoly(
             self.mmax_offset + self.mmax_local,
             self.lmax_offset + self.lmax_local,
-            self.nlat,
             self.grid,
             norm=self.norm,
             inverse=True,
@@ -367,7 +378,7 @@ class DistributedInverseRealSHT(nn.Module):
         self.register_buffer("pct", pct, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -432,7 +443,7 @@ class DistributedInverseRealSHT(nn.Module):
 class DistributedRealVectorSHT(nn.Module):
     """
     Distributed version of the forward (real) vector SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last three dimensions of the input.
 
     The distribution scheme is the same as for
@@ -447,16 +458,15 @@ class DistributedRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        The grid is the *global* one; the local shard is derived from it.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
@@ -465,26 +475,26 @@ class DistributedRealVectorSHT(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+        Local spectral coefficients, shape ``(..., 2, lmax_local, mmax_local)``.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        _warn_if_not_spectrally_accurate(self.grid)
         self.norm = norm
         self.csphase = csphase
-
-        # quadrature weights; the grid switch and the cosine transform live in
-        # precompute_latitudes, which is cached on (nlat, grid)
-        _, weights = precompute_latitudes(nlat, grid=self.grid)
 
         # get the comms grid:
         self.comm_size_polar = polar_group_size()
@@ -492,14 +502,26 @@ class DistributedRealVectorSHT(nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
+        # quadrature weights come from the grid descriptor, which supports every grid
+        # precompute_latitudes does -- the switch this replaced silently rejected
+        # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
+        # descriptor and reads them itself, which is also what keys its cache.
+        weights = self.grid.colat_weights
+
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
-        self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
-        self.nlat_local = self.lat_shapes[self.comm_rank_polar]
-        self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
-        self.nlon_local = self.lon_shapes[self.comm_rank_azimuth]
+        # the grid decomposes itself in space; the spectral split below stays manual,
+        # since lmax/mmax are not grid dimensions
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
+        self.nlat_local = self.shard.nlat
+        self.nlon_local = self.shard.nlon
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
@@ -514,7 +536,6 @@ class DistributedRealVectorSHT(nn.Module):
         dpct = _precompute_dlegpoly(
             self.mmax_offset + self.mmax_local,
             self.lmax,
-            self.nlat,
             self.grid,
             norm=self.norm,
             csphase=self.csphase,
@@ -539,7 +560,7 @@ class DistributedRealVectorSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -614,7 +635,7 @@ class DistributedRealVectorSHT(nn.Module):
 class DistributedInverseRealVectorSHT(nn.Module):
     """
     Distributed version of the inverse (real-valued) vector SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials on the nodes of the given grid.
 
     The distribution scheme is the same as for
     :class:`DistributedInverseRealSHT` (see its docstring for a step-by-step
@@ -628,16 +649,15 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        The grid is the *global* one; the local shard is derived from it.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
@@ -646,20 +666,24 @@ class DistributedInverseRealVectorSHT(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape (..., lmax, mmax)
+        Local spatial vector field, shape ``(..., 2, nlat_local, nlon_local)``.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        _warn_if_not_spectrally_accurate(self.grid)
         self.norm = norm
         self.csphase = csphase
 
@@ -669,11 +693,17 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # compute splits
-        self.lat_shapes = compute_split_shapes(self.nlat, self.comm_size_polar)
-        self.lon_shapes = compute_split_shapes(self.nlon, self.comm_size_azimuth)
+        # the grid decomposes itself in space; the spectral split below stays manual,
+        # since lmax/mmax are not grid dimensions
+        self.shard = self.grid.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_shapes = list(self.shard.lat_shapes)
+        self.lon_shapes = list(self.shard.lon_shapes)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
@@ -688,7 +718,6 @@ class DistributedInverseRealVectorSHT(nn.Module):
         dpct = _precompute_dlegpoly(
             self.mmax_offset + self.mmax_local,
             self.lmax_offset + self.lmax_local,
-            self.nlat,
             self.grid,
             norm=self.norm,
             inverse=True,
@@ -702,7 +731,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.register_buffer("dpct", dpct, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at

@@ -39,7 +39,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from torch_harmonics import RealSHT
+from torch_harmonics import RealSHT, as_grid
 from torch_harmonics.examples import PdeDataset
 from torch_harmonics.examples.losses import L1LossS2, L2LossS2, SquaredL2LossS2, W11LossS2
 from torch_harmonics.plotting import plot_sphere
@@ -125,7 +125,7 @@ def autoregressive_inference(
 
             # do plotting
             fig = plt.figure(figsize=(6, 6))
-            plot_sphere(prd[0, plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic")
+            plot_sphere(prd[0, plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic", grid=dataset.grid)
             fig.tight_layout()
             plt.savefig(os.path.join(path_root, "truth_" + str(0) + ".png"))
             plt.close()
@@ -142,7 +142,7 @@ def autoregressive_inference(
 
                 # do plotting
                 fig = plt.figure(figsize=(6, 6))
-                plot_sphere(prd[0, plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic")
+                plot_sphere(prd[0, plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic", grid=dataset.grid)
                 fig.tight_layout()
                 plt.savefig(os.path.join(path_root, "pred_" + str(i // nskip) + ".png"))
                 plt.close()
@@ -161,7 +161,7 @@ def autoregressive_inference(
             if iic == nics - 1 and i % nskip == 0 and nskip > 0:
 
                 fig = plt.figure(figsize=(6, 6))
-                plot_sphere(ref[plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic")
+                plot_sphere(ref[plot_channel].cpu(), fig, vmax=4, vmin=-4, central_latitude=30, gridlines=True, projection="orthographic", grid=dataset.grid)
                 fig.tight_layout()
                 plt.savefig(os.path.join(path_root, "truth_" + str(i // nskip) + ".png"))
                 plt.close()
@@ -365,22 +365,18 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
     dt = 1 * 1800
     dt_solver = 150
     nsteps = dt // dt_solver
-    grid = "legendre-gauss"
-    nlat, nlon = (128, 256)
-    dataset = PdeDataset(dt=dt, nsteps=nsteps, dims=(nlat, nlon), device=device, grid=grid, normalize=True)
-    dataset.sht = RealSHT(nlat=nlat, nlon=nlon, grid=grid).to(device=device)
+    grid = as_grid("legendre-gauss", nlat=128, nlon=256)
+    dataset = PdeDataset(dt=dt, nsteps=nsteps, grid=grid, device=device, normalize=True)
+    dataset.sht = RealSHT(grid).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
     # dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0, persistent_workers=False)
-
-    nlat = dataset.nlat
-    nlon = dataset.nlon
 
     # prepare dicts containing models and corresponding metrics
     models = {}
 
     # get baseline model registry
-    baseline_models = get_baseline_models(img_size=(nlat, nlon), in_chans=3, out_chans=3, residual_prediction=True, grid=grid)
+    baseline_models = get_baseline_models(grid, in_chans=3, out_chans=3, residual_prediction=True)
 
     # specify which models to train here
     models = [
@@ -398,14 +394,14 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
     models = {k: baseline_models[k] for k in models}
 
     # loss function
-    loss_fn = SquaredL2LossS2(nlat=nlat, nlon=nlon, grid=grid).to(device)
+    loss_fn = SquaredL2LossS2(grid).to(device)
 
     # dictionary for logging the metrics
     metrics = {}
     metrics_fns = {
-        "L2 error": L2LossS2(nlat=nlat, nlon=nlon, grid=grid).to(device=device),
-        "L1 error": L1LossS2(nlat=nlat, nlon=nlon, grid=grid).to(device=device),
-        "W11 error": W11LossS2(nlat=nlat, nlon=nlon, grid=grid).to(device=device),
+        "L2 error": L2LossS2(grid).to(device=device),
+        "L1 error": L1LossS2(grid).to(device=device),
+        "W11 error": W11LossS2(grid).to(device=device),
     }
 
     # iterate over models and train each model

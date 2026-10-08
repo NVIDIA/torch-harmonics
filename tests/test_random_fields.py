@@ -35,6 +35,7 @@ import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
+from torch_harmonics import as_grid
 from torch_harmonics.random_fields import GaussianRandomFieldS2
 
 _devices = [(torch.device("cpu"),)]
@@ -51,7 +52,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     )
     def test_sampler_follows_module_conversion(self, grid, conversion, verbose=False):
         initial_dtype = torch.float64 if conversion == "float" else torch.float32
-        field = GaussianRandomFieldS2(8, grid=grid, dtype=initial_dtype).to(self.device)
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=8, nlon=16), dtype=initial_dtype).to(self.device)
         if conversion == "double":
             field.double()
         elif conversion == "float":
@@ -77,7 +78,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
 
     @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA for a real device transfer")
     def test_sampler_follows_parent_cuda_and_cpu(self, verbose=False):
-        field = GaussianRandomFieldS2(8)
+        field = GaussianRandomFieldS2(as_grid("equiangular", nlat=8, nlon=16))
         parent = torch.nn.Sequential(field).cuda()
         for device in ("cuda", "cpu"):
             parent.to(device)
@@ -101,7 +102,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     )
     def test_reproducibility(self, nlat, alpha, tau, sigma, grid, verbose=False):
         """Fixed seed produces identical output across two calls."""
-        field = GaussianRandomFieldS2(nlat, alpha=alpha, tau=tau, sigma=sigma, grid=grid).to(self.device)
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat), alpha=alpha, tau=tau, sigma=sigma).to(self.device)
 
         set_seed(333)
         u1 = field(4)
@@ -121,7 +122,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     )
     def test_custom_xi(self, nlat, alpha, tau, sigma, grid, verbose=False):
         """Providing xi explicitly bypasses sampling and gives deterministic output."""
-        field = GaussianRandomFieldS2(nlat, alpha=alpha, tau=tau, sigma=sigma, grid=grid).to(self.device)
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat), alpha=alpha, tau=tau, sigma=sigma).to(self.device)
 
         lmax = field.isht.lmax
         mmax = field.isht.mmax
@@ -142,7 +143,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     )
     def test_zero_xi(self, nlat, alpha, tau, sigma, grid, verbose=False):
         """xi=0 → output is zero everywhere (ISHT is linear)."""
-        field = GaussianRandomFieldS2(nlat, alpha=alpha, tau=tau, sigma=sigma, grid=grid).to(self.device)
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat), alpha=alpha, tau=tau, sigma=sigma).to(self.device)
 
         lmax = field.isht.lmax
         mmax = field.isht.mmax
@@ -162,7 +163,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     def test_alpha_assertion(self, nlat, alpha, verbose=False):
         """alpha <= 1 with sigma=None must raise ValueError."""
         with self.assertRaises(ValueError):
-            GaussianRandomFieldS2(nlat, alpha=alpha, sigma=None)
+            GaussianRandomFieldS2(as_grid("equiangular", nlat=nlat, nlon=2 * nlat), alpha=alpha, sigma=None)
 
     @parameterized.expand(
         [
@@ -173,7 +174,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     )
     def test_explicit_sigma(self, nlat, alpha, tau, sigma, grid, verbose=False):
         """Providing sigma directly bypasses the alpha > 1 check and tau-based formula."""
-        field = GaussianRandomFieldS2(nlat, alpha=alpha, tau=tau, sigma=sigma, grid=grid).to(self.device)
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat), alpha=alpha, tau=tau, sigma=sigma).to(self.device)
 
         set_seed(333)
         u = field(4)
@@ -191,7 +192,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     )
     def test_single_sample_preserves_batch_dimension(self, nlat, grid, verbose=False):
         """Sampling one field preserves the leading batch dimension."""
-        field = GaussianRandomFieldS2(nlat, grid=grid).to(self.device)
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat)).to(self.device)
 
         set_seed(333)
         u = field(1)
@@ -208,7 +209,7 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
     )
     def test_sampling_preserves_tiny_truncation_dimensions(self, nlat, grid, verbose=False):
         """Sampling with lmax=mmax=1 preserves the sample and spectral dimensions."""
-        field = GaussianRandomFieldS2(nlat, grid=grid).to(self.device)
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat)).to(self.device)
 
         for num_samples in [1, 2, 4]:
             set_seed(333)
@@ -230,7 +231,7 @@ class TestGaussianRandomFieldS2Probabilistic(unittest.TestCase):
     )
     def test_zero_mean(self, nlat, alpha, tau, grid, num_samples, atol, verbose=False):
         """Sample mean over many realizations is near zero (DC spectral coefficient is forced to 0)."""
-        field = GaussianRandomFieldS2(nlat, alpha=alpha, tau=tau, grid=grid).to(self.device)
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat), alpha=alpha, tau=tau).to(self.device)
 
         set_seed(333)
         u = field(num_samples)  # (num_samples, nlat, 2*nlat)
@@ -247,8 +248,8 @@ class TestGaussianRandomFieldS2Probabilistic(unittest.TestCase):
     )
     def test_power_spectrum_ordering(self, nlat, alpha_rough, alpha_smooth, tau, grid, num_samples, verbose=False):
         """Larger alpha suppresses high-degree modes → lower total variance (smoother field)."""
-        field_rough = GaussianRandomFieldS2(nlat, alpha=alpha_rough, tau=tau, grid=grid).to(self.device)
-        field_smooth = GaussianRandomFieldS2(nlat, alpha=alpha_smooth, tau=tau, grid=grid).to(self.device)
+        field_rough = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat), alpha=alpha_rough, tau=tau).to(self.device)
+        field_smooth = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=2 * nlat), alpha=alpha_smooth, tau=tau).to(self.device)
 
         set_seed(333)
         u_rough = field_rough(num_samples)

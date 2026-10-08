@@ -36,6 +36,7 @@ import torch
 from parameterized import parameterized
 from testutils import compare_tensors
 
+from torch_harmonics import as_grid
 from torch_harmonics.examples.losses import (
     CrossEntropyLossS2,
     DiceLossS2,
@@ -87,7 +88,7 @@ class TestDiceLossIgnoredPixels(unittest.TestCase):
         target = torch.randint(0, 3, (2, 6, 8), generator=generator)
         target[:, ::2, ::3] = ignore_index
         class_weights = torch.tensor([0.2, 0.3, 0.5], dtype=torch.float64) if weighted else None
-        loss = DiceLossS2(6, 8, weight=class_weights, smooth=smooth, ignore_index=ignore_index, mode=mode).double()
+        loss = DiceLossS2(as_grid("equiangular", nlat=6, nlon=8), weight=class_weights, smooth=smooth, ignore_index=ignore_index, mode=mode).double()
         before = target.clone()
         actual = loss(logits, target)
         expected = valid_pixel_reference(loss, logits, target)
@@ -106,7 +107,7 @@ class TestDiceLossIgnoredPixels(unittest.TestCase):
         logits[:, 1] = -100
         target = torch.zeros((1, 6, 8), dtype=torch.long)
         target[:, 1:3, :] = -100
-        loss = DiceLossS2(6, 8, grid=grid).double()
+        loss = DiceLossS2(as_grid(grid, nlat=6, nlon=8)).double()
         self.assertTrue(compare_tensors("perfect valid predictions have zero loss", loss(logits, target), torch.tensor(0.0, dtype=torch.float64), atol=1e-12, rtol=0))
 
     @parameterized.expand(list(itertools.product(["micro", "macro"], [None, -100])))
@@ -114,7 +115,7 @@ class TestDiceLossIgnoredPixels(unittest.TestCase):
         generator = torch.Generator().manual_seed(46)
         logits = torch.randn((1, 3, 6, 8), dtype=torch.float64, generator=generator)
         target = torch.randint(0, 3, (1, 6, 8), generator=generator)
-        loss = DiceLossS2(6, 8, ignore_index=ignore_index, mode=mode, smooth=0.1).double()
+        loss = DiceLossS2(as_grid("equiangular", nlat=6, nlon=8), ignore_index=ignore_index, mode=mode, smooth=0.1).double()
         self.assertTrue(compare_tensors("unmasked inputs retain existing result", loss(logits, target), valid_pixel_reference(loss, logits, target), atol=1e-12, rtol=1e-12))
 
     def test_ignored_prediction_values_do_not_affect_loss(self):
@@ -124,7 +125,7 @@ class TestDiceLossIgnoredPixels(unittest.TestCase):
         target[:, 2:4, :] = -100
         changed = logits.clone()
         changed[:, :, 2:4, :] = 100 * torch.randn((1, 3, 2, 8), dtype=torch.float64, generator=generator)
-        loss = DiceLossS2(6, 8, smooth=0.1).double()
+        loss = DiceLossS2(as_grid("equiangular", nlat=6, nlon=8), smooth=0.1).double()
         self.assertTrue(compare_tensors("ignored prediction values do not affect loss", loss(logits, target), loss(changed, target), atol=0, rtol=0))
 
 
@@ -162,7 +163,7 @@ class TestCrossEntropyLossS2(unittest.TestCase):
         target = torch.randint(0, 3, (2, 6, 8), generator=generator)
         target[:, ::3, ::2] = ignore_index
         class_weights = torch.tensor([0.4, 0.1, 0.5], dtype=torch.float64) if weighted else None
-        loss = CrossEntropyLossS2(6, 8, weight=class_weights, ignore_index=ignore_index).double()
+        loss = CrossEntropyLossS2(as_grid("equiangular", nlat=6, nlon=8), weight=class_weights, ignore_index=ignore_index).double()
 
         actual = loss(logits, target)
         expected = cross_entropy_reference(loss, logits, target, class_weights)
@@ -175,7 +176,7 @@ class TestCrossEntropyLossS2(unittest.TestCase):
         target[:, 2:4, :] = -100
         changed = logits.clone()
         changed[:, :, 2:4, :] = 50 * torch.randn((1, 3, 2, 8), dtype=torch.float64, generator=generator)
-        loss = CrossEntropyLossS2(6, 8).double()
+        loss = CrossEntropyLossS2(as_grid("equiangular", nlat=6, nlon=8)).double()
         self.assertTrue(compare_tensors("ignored prediction values do not affect loss", loss(logits, target), loss(changed, target), atol=0, rtol=0))
 
     def test_gradients_vanish_on_ignored_pixels(self):
@@ -183,7 +184,7 @@ class TestCrossEntropyLossS2(unittest.TestCase):
         logits = torch.randn((1, 3, 6, 8), dtype=torch.float64, generator=generator, requires_grad=True)
         target = torch.randint(0, 3, (1, 6, 8), generator=generator)
         target[:, 1:3, :] = -100
-        loss = CrossEntropyLossS2(6, 8).double()
+        loss = CrossEntropyLossS2(as_grid("equiangular", nlat=6, nlon=8)).double()
         gradient = torch.autograd.grad(loss(logits, target), logits)[0]
         self.assertEqual(torch.count_nonzero(gradient[:, :, 1:3, :]).item(), 0)
 
@@ -195,7 +196,7 @@ class TestCrossEntropyLossS2(unittest.TestCase):
             torch.tensor(60.0, dtype=torch.float64),
             torch.tensor(-60.0, dtype=torch.float64),
         )
-        loss = CrossEntropyLossS2(6, 8, grid=grid).double()
+        loss = CrossEntropyLossS2(as_grid(grid, nlat=6, nlon=8)).double()
         self.assertTrue(compare_tensors("confident correct prediction approaches zero", loss(logits, target), torch.tensor(0.0, dtype=torch.float64), atol=1e-12, rtol=0))
 
     def test_ignored_area_lowers_the_integral(self):
@@ -209,7 +210,7 @@ class TestCrossEntropyLossS2(unittest.TestCase):
         generator = torch.Generator().manual_seed(20)
         logits = torch.randn((1, 2, 6, 8), dtype=torch.float64, generator=generator)
         target = torch.randint(0, 2, (1, 6, 8), generator=generator)
-        loss = CrossEntropyLossS2(6, 8).double()
+        loss = CrossEntropyLossS2(as_grid("equiangular", nlat=6, nlon=8)).double()
 
         unmasked = loss(logits, target)
         masked_target = target.clone()
@@ -230,7 +231,7 @@ class TestFocalLossS2(unittest.TestCase):
         logits = torch.randn((2, 3, 6, 8), dtype=torch.float64, generator=generator)
         target = torch.randint(0, 3, (2, 6, 8), generator=generator)
         target[:, ::3, ::2] = -100
-        loss = FocalLossS2(6, 8).double()
+        loss = FocalLossS2(as_grid("equiangular", nlat=6, nlon=8)).double()
 
         entropy = torch.nn.functional.cross_entropy(logits, target, reduction="none", ignore_index=-100)
         expected = area_weighted_mean(loss.quad_weights, alpha * (1 - torch.exp(-entropy)) ** gamma * entropy).mean()
@@ -244,8 +245,8 @@ class TestFocalLossS2(unittest.TestCase):
         target[:, 2:4, :] = -100
         alpha = 0.25
 
-        focal = FocalLossS2(6, 8).double()
-        entropy = CrossEntropyLossS2(6, 8).double()
+        focal = FocalLossS2(as_grid("equiangular", nlat=6, nlon=8)).double()
+        entropy = CrossEntropyLossS2(as_grid("equiangular", nlat=6, nlon=8)).double()
         self.assertTrue(
             compare_tensors("zero gamma reduces to scaled cross entropy", focal(logits, target, alpha=alpha, gamma=0.0), alpha * entropy(logits, target), atol=1e-12, rtol=1e-12)
         )
@@ -257,7 +258,7 @@ class TestFocalLossS2(unittest.TestCase):
         target[:, 2:4, :] = -100
         changed = logits.clone()
         changed[:, :, 2:4, :] = 50 * torch.randn((1, 3, 2, 8), dtype=torch.float64, generator=generator)
-        loss = FocalLossS2(6, 8).double()
+        loss = FocalLossS2(as_grid("equiangular", nlat=6, nlon=8)).double()
         self.assertTrue(compare_tensors("ignored prediction values do not affect loss", loss(logits, target), loss(changed, target), atol=0, rtol=0))
 
     def test_gradients_vanish_on_ignored_pixels(self):
@@ -265,7 +266,7 @@ class TestFocalLossS2(unittest.TestCase):
         logits = torch.randn((1, 3, 6, 8), dtype=torch.float64, generator=generator, requires_grad=True)
         target = torch.randint(0, 3, (1, 6, 8), generator=generator)
         target[:, 1:3, :] = -100
-        loss = FocalLossS2(6, 8).double()
+        loss = FocalLossS2(as_grid("equiangular", nlat=6, nlon=8)).double()
         gradient = torch.autograd.grad(loss(logits, target), logits)[0]
         self.assertEqual(torch.count_nonzero(gradient[:, :, 1:3, :]).item(), 0)
 
@@ -277,7 +278,7 @@ class TestSphericalRegressionLosses(unittest.TestCase):
     def test_identical_inputs_give_zero_loss(self, loss_type):
         generator = torch.Generator().manual_seed(25)
         field = torch.randn((1, 1, 8, 16), generator=generator)
-        loss = loss_type(8, 16)
+        loss = loss_type(as_grid("equiangular", nlat=8, nlon=16))
         self.assertTrue(compare_tensors("identical inputs give zero loss", loss(field, field.clone()), torch.tensor(0.0), atol=1e-6, rtol=0))
 
     @parameterized.expand([("equiangular",), ("legendre-gauss",), ("lobatto",)])
@@ -285,7 +286,7 @@ class TestSphericalRegressionLosses(unittest.TestCase):
         generator = torch.Generator().manual_seed(26)
         prd = torch.randn((2, 1, 8, 16), dtype=torch.float64, generator=generator)
         tar = torch.randn((2, 1, 8, 16), dtype=torch.float64, generator=generator)
-        loss = SquaredL2LossS2(8, 16, grid=grid).double()
+        loss = SquaredL2LossS2(as_grid(grid, nlat=8, nlon=16)).double()
         expected = area_weighted_mean(loss.quad_weights, torch.square(prd - tar)).mean()
         self.assertTrue(compare_tensors("squared l2 matches area weighted reference", loss(prd, tar), expected, atol=1e-12, rtol=1e-12))
 
@@ -293,7 +294,7 @@ class TestSphericalRegressionLosses(unittest.TestCase):
         generator = torch.Generator().manual_seed(27)
         prd = torch.randn((2, 1, 8, 16), dtype=torch.float64, generator=generator)
         tar = torch.randn((2, 1, 8, 16), dtype=torch.float64, generator=generator)
-        loss = L1LossS2(8, 16).double()
+        loss = L1LossS2(as_grid("equiangular", nlat=8, nlon=16)).double()
         expected = area_weighted_mean(loss.quad_weights, torch.abs(prd - tar)).mean()
         self.assertTrue(compare_tensors("l1 matches area weighted reference", loss(prd, tar), expected, atol=1e-12, rtol=1e-12))
 
@@ -301,14 +302,16 @@ class TestSphericalRegressionLosses(unittest.TestCase):
         generator = torch.Generator().manual_seed(28)
         prd = torch.randn((1, 1, 8, 16), dtype=torch.float64, generator=generator)
         tar = torch.randn((1, 1, 8, 16), dtype=torch.float64, generator=generator)
-        squared = SquaredL2LossS2(8, 16).double()(prd, tar)
-        self.assertTrue(compare_tensors("l2 is the root of the squared loss", L2LossS2(8, 16).double()(prd, tar), torch.sqrt(squared), atol=1e-12, rtol=1e-12))
+        squared = SquaredL2LossS2(as_grid("equiangular", nlat=8, nlon=16)).double()(prd, tar)
+        self.assertTrue(
+            compare_tensors("l2 is the root of the squared loss", L2LossS2(as_grid("equiangular", nlat=8, nlon=16)).double()(prd, tar), torch.sqrt(squared), atol=1e-12, rtol=1e-12)
+        )
 
     @parameterized.expand([(SquaredL2LossS2,), (L1LossS2,)])
     def test_mask_normalizes_by_the_valid_area(self, loss_type):
         """A constant error over the valid region integrates to that error whatever the
         mask covers, because _integrate_sphere divides by the valid area."""
-        loss = loss_type(8, 16).double()
+        loss = loss_type(as_grid("equiangular", nlat=8, nlon=16)).double()
         tar = torch.zeros((1, 1, 8, 16), dtype=torch.float64)
         prd = torch.full((1, 1, 8, 16), 3.0, dtype=torch.float64)
 
@@ -340,7 +343,7 @@ class TestW11LossS2(unittest.TestCase):
     @parameterized.expand([(1,), (2,), (3,)])
     def test_matches_analytic_derivative(self, order):
         field, derivative = longitude_wave(8, 16, order)
-        loss = W11LossS2(8, 16)
+        loss = W11LossS2(as_grid("equiangular", nlat=8, nlon=16))
         # the target is flat, so the theta term drops out and only |d/dphi| survives
         expected = area_weighted_mean(loss.quad_weights.double(), derivative.abs()).mean()
         self.assertTrue(compare_tensors("matches analytic derivative", loss(field.float(), torch.zeros_like(field).float()).double(), expected, atol=1e-6, rtol=1e-5))
@@ -353,12 +356,12 @@ class TestW11LossS2(unittest.TestCase):
         """
         generator = torch.Generator().manual_seed(41)
         tar = torch.randn((1, 1, 8, 16), generator=generator)
-        loss = W11LossS2(8, 16)
+        loss = W11LossS2(as_grid("equiangular", nlat=8, nlon=16))
         self.assertTrue(compare_tensors("a constant offset is invisible", loss(tar + 5.0, tar), torch.tensor(0.0), atol=1e-5, rtol=0))
 
     def test_scales_linearly_with_the_derivative_difference(self):
         field, _ = longitude_wave(8, 16, 2)
-        loss = W11LossS2(8, 16)
+        loss = W11LossS2(as_grid("equiangular", nlat=8, nlon=16))
         single = loss(field.float(), torch.zeros_like(field).float())
         double = loss(2.0 * field.float(), torch.zeros_like(field).float())
         self.assertTrue(compare_tensors("scales linearly with the derivative difference", double, 2.0 * single, atol=1e-6, rtol=1e-5))
@@ -370,7 +373,7 @@ class TestNormalLossS2(unittest.TestCase):
     @parameterized.expand([(1,), (2,)])
     def test_matches_analytic_cosine_distance(self, order):
         field, derivative = longitude_wave(8, 16, order)
-        loss = NormalLossS2(8, 16)
+        loss = NormalLossS2(as_grid("equiangular", nlat=8, nlon=16))
         # normals are [-d/dphi, -d/dtheta, 1] normalized; against a flat target whose
         # normal is [0, 0, 1] the cosine reduces to 1 / sqrt(1 + (d/dphi)^2)
         cosine = 1.0 / torch.sqrt(1.0 + derivative**2)
@@ -380,7 +383,7 @@ class TestNormalLossS2(unittest.TestCase):
     def test_a_constant_offset_leaves_the_normals_unchanged(self):
         generator = torch.Generator().manual_seed(42)
         tar = torch.randn((1, 1, 8, 16), generator=generator)
-        loss = NormalLossS2(8, 16)
+        loss = NormalLossS2(as_grid("equiangular", nlat=8, nlon=16))
         self.assertTrue(compare_tensors("a constant offset leaves the normals unchanged", loss(tar + 5.0, tar), torch.tensor(0.0), atol=1e-6, rtol=0))
 
 
@@ -395,8 +398,8 @@ class TestSphericalLossIntegration(unittest.TestCase):
         prd = torch.randn((1, 1, 8, 16), dtype=torch.float64, generator=generator)
         tar = torch.randn((1, 1, 8, 16), dtype=torch.float64, generator=generator)
 
-        normalized = loss_type(8, 16).double()(prd, tar)
-        unnormalized = loss_type(8, 16, normalized=False).double()(prd, tar)
+        normalized = loss_type(as_grid("equiangular", nlat=8, nlon=16)).double()(prd, tar)
+        unnormalized = loss_type(as_grid("equiangular", nlat=8, nlon=16), normalized=False).double()(prd, tar)
         ratio = (4 * torch.pi) ** (0.5 if loss_type is L2LossS2 else 1.0)
         # the quadrature rules are float64 but the weights are cast to float32 at the
         # layer boundary, the same convention QuadratureS2 follows and documents. the
@@ -409,7 +412,7 @@ class TestSphericalLossIntegration(unittest.TestCase):
         generator = torch.Generator().manual_seed(44)
         prd = torch.randn((1, 1, 8, 16), generator=generator, requires_grad=True)
         tar = torch.randn((1, 1, 8, 16), generator=generator)
-        gradient = torch.autograd.grad(loss_type(8, 16)(prd, tar), prd)[0]
+        gradient = torch.autograd.grad(loss_type(as_grid("equiangular", nlat=8, nlon=16))(prd, tar), prd)[0]
         self.assertEqual(gradient.shape, prd.shape)
         self.assertGreater(torch.count_nonzero(gradient).item(), 0)
         self.assertTrue(torch.isfinite(gradient).all())
@@ -422,7 +425,7 @@ class TestSphericalLossIntegration(unittest.TestCase):
         mask = torch.zeros((1, 1, 8, 16), dtype=torch.float64)
         mask[..., :4, :] = 1.0
 
-        loss = loss_type(8, 16).double()
+        loss = loss_type(as_grid("equiangular", nlat=8, nlon=16)).double()
         polluted = prd.clone()
         polluted[..., 4:, :] = 1e3
         self.assertTrue(compare_tensors("masked integration ignores the masked region", loss(prd, tar, mask=mask), loss(polluted, tar, mask=mask), atol=0, rtol=0))

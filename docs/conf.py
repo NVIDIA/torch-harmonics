@@ -85,6 +85,10 @@ autodoc_inherit_docstrings = False
 def autodoc_skip_member_handler(app, what, name, obj, skip, options):
     if name == "extra_repr":
         return True
+    # NamedTuple fields are class-level accessors that autodoc documents as members,
+    # duplicating the entries napoleon already emits from the "Attributes" section
+    if (getattr(obj, "__doc__", None) or "").startswith("Alias for field number"):
+        return True
     return skip
 
 
@@ -114,7 +118,7 @@ nb_execution_mode = "off"
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
-    "torch": ("https://pytorch.org/docs/stable/", None),
+    "torch": ("https://docs.pytorch.org/docs/stable/", None),
     "matplotlib": ("https://matplotlib.org/stable/", None),
 }
 

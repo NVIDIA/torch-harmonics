@@ -56,9 +56,10 @@ simply the other direction. That matters: it means the layout conversion in the
 *backward* pass uses the fast kernel too, rather than falling back to an ATen
 copy.
 
-When the optimized kernels are not built, everything falls back to
+When the optimized kernels are not built, or have no kernel for the tensor's
+device (MPS, XPU, or CUDA under a CPU-only build), everything falls back to
 ``permute(...).contiguous()`` behind the same interface, so the pure-torch
-reference path keeps working with no build dependency.
+reference path keeps working on any device.
 """
 
 from typing import Tuple
@@ -66,11 +67,16 @@ from typing import Tuple
 import torch
 from attention_helpers import optimized_kernels_is_available
 
+from torch_harmonics.attention._attention_utils import _kernel_device_types
 from torch_harmonics.utils import check
 
 __all__ = ["to_nhwc", "to_nchw"]
 
 _OPTIMIZED = optimized_kernels_is_available()
+
+# the device types the compiled permutes serve; anything else -- MPS, XPU, or CUDA with a
+# CPU-only build -- takes the torch copy below
+_PERMUTE_DEVICES = _kernel_device_types("attention_kernels::permute_to_nhwc")
 
 
 if _OPTIMIZED:
@@ -113,7 +119,7 @@ if _OPTIMIZED:
     #
     # This differs from the attention ops themselves (see the AutocastCUDA
     # registrations in optimized/attention_optimized.py and
-    # kernels_torch/attention_torch.py), which *do* need a rule because they
+    # kernels_torch/attention_regular_torch.py), which *do* need a rule because they
     # must pull k/v/q to a common autocast dtype before the softmax. A layout
     # conversion has no such requirement: casting inside it would be a silent
     # precision change. test_autocast_preserves_dtype pins this.
@@ -155,7 +161,7 @@ def to_nhwc(x: torch.Tensor) -> torch.Tensor:
     # closure that captures anything other than Python constants
     check(x.dim() == 4, lambda: "to_nhwc expects a 4-dimensional (B, C, H, W) tensor")
 
-    if _OPTIMIZED:
+    if x.device.type in _PERMUTE_DEVICES:
         return torch.ops.attention_kernels.permute_to_nhwc.default(x.contiguous())
 
     return _permuted_copy(x, (0, 2, 3, 1))
@@ -180,7 +186,7 @@ def to_nchw(x: torch.Tensor) -> torch.Tensor:
 
     check(x.dim() == 4, lambda: "to_nchw expects a 4-dimensional (B, H, W, C) tensor")
 
-    if _OPTIMIZED:
+    if x.device.type in _PERMUTE_DEVICES:
         return torch.ops.attention_kernels.permute_to_nchw.default(x.contiguous())
 
     return _permuted_copy(x, (0, 3, 1, 2))

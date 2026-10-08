@@ -34,13 +34,42 @@ import torch
 
 from torch_harmonics.utils import check
 
+
+def _kernel_device_types(op_name: str) -> frozenset:
+    """
+    The device types the compiled operator ``op_name`` has a kernel for.
+
+    Being built is not the same as being usable on a device: the extension registers CPU
+    and, when compiled with CUDA, CUDA kernels, and nothing for MPS or XPU. Callers test a
+    tensor's ``device.type`` against this set before calling the operator and fall back to
+    torch otherwise. It is computed once, at import, so the test is a set membership on a
+    constant that dynamo traces without a graph break.
+    """
+    try:
+        return frozenset(t for t, key in (("cpu", "CPU"), ("cuda", "CUDA")) if torch._C._dispatch_has_kernel_for_dispatch_key(op_name, key))
+    except RuntimeError:
+        # the extension is not built, so the operator does not exist
+        return frozenset()
+
+
+def _reciprocal_or_zero(alpha_sum: torch.Tensor) -> torch.Tensor:
+    """
+    ``1 / alpha_sum``, or zero where ``alpha_sum`` is zero.
+
+    An output point whose neighbourhood is empty -- possible across two grids when the
+    cutoff is below the input spacing -- has an empty softmax sum. Every path, the
+    references, the kernels and the distributed finalize, returns zero output and zero
+    gradient for it instead of dividing by that zero.
+    """
+    return torch.where(alpha_sum > 0, alpha_sum.reciprocal(), torch.zeros_like(alpha_sum))
+
+
 # Input validation helpers.
 #
-# These exist because torch._check messages have to survive dynamo: the message
-# argument must be a callable whose closure captures only Python constants. An
-# inline ``lambda: f"... {tensor.dim()} ..."`` captures the tensor (and, when it
-# mentions a module attribute, ``self``), which makes the enclosing function
-# impossible to trace with fullgraph=True.
+# These exist because torch._check messages have to survive dynamo. A *callable*
+# message never traces -- not even one returning a constant -- which is why the
+# codebase routes these through torch_harmonics.utils.check, and why a message
+# that has to interpolate a runtime value cannot simply be inlined here.
 #
 # The two cases differ in what can be reported:
 #   - rank is static under dynamo, so the actual value is safe to interpolate
@@ -88,97 +117,59 @@ def _check_dtypes_match(tensors) -> None:
     # with both actual dtypes, and this check only has to fire first.
     ref = tensors[0].dtype
     for tensor in tensors[1:]:
-        torch._check(tensor.dtype == ref, "all attention inputs must share a single dtype")
+        check(tensor.dtype == ref, "all attention inputs must share a single dtype")
 
 
-# Shared backward-context helper used by both the torch reference kernels
-# (in kernels_torch/) and the optimized custom_op path (in optimized/).
-def _setup_context_attention_backward(ctx, inputs, output):
-    # col_idx / row_off are saved alongside seg / seg_off. The CUDA backward walks the
-    # arc segments, but the CPU backward still consumes the column list, and both reach
-    # backward through the same op schema.
-    kw, vw, qw, quad_weights, col_idx, row_off, seg, seg_off, nh, nlon_in, nlat_out, nlon_out = inputs
-    ctx.save_for_backward(col_idx, row_off, seg, seg_off, quad_weights, kw, vw, qw)
+def _setup_context_attention_regular_optimized_backward(ctx, inputs, output):
+    """
+    Backward context for the compiled product-grid operator, which reads arcs.
+
+    There were once one of these, shared with the torch reference, because both
+    operators declared both forms of the neighbourhood and each ignored one. They now
+    declare only what they read, so the input lists differ and so do these.
+    """
+    kw, vw, qw, ring_weights, seg, seg_off, nh, nlon_in, nlat_out, nlon_out = inputs
+    ctx.save_for_backward(seg, seg_off, ring_weights, kw, vw, qw)
     ctx.nh = nh
     ctx.nlon_in = nlon_in
     ctx.nlat_out = nlat_out
     ctx.nlon_out = nlon_out
 
 
-def _build_psi_segments(col_idx: torch.Tensor, roff_idx: torch.Tensor, nlon: int):
+def _setup_context_attention_regular_reference_backward(ctx, inputs, output):
     """
-    Re-express psi's column list as contiguous longitude arcs.
+    Backward context for the torch reference, which reads the column list.
 
-    psi's sparsity is a union of arcs: for a given output row and input latitude, the
-    neighbor longitudes are contiguous on the circle (possibly wrapping). This is
-    geometric -- a geodesic ball meets a latitude circle in one arc -- and is pinned by
-    TestPsiArcStructure.
-
-    That lets a kernel iterate (hi, lo, len) segments and derive each neighbor's column
-    by counting, instead of loading it from col_idx and recovering hi with a 64-bit
-    integer division. The GPU has no integer divide instruction, so that division costs
-    ~70-100 emulated instructions per neighbor against roughly four instructions of
-    useful math; profiling showed the forward kernel at 80% compute throughput while
-    delivering ~2.4% of peak FLOPs.
-
-    Returns
-    -------
-    seg : int32 tensor of shape (nsegs, 3), columns (hi, lo, len)
-    seg_off : int32 tensor of shape (nrows + 1,), row -> segment range
-
-    Notes
-    -----
-    Relies on col_idx being sorted ascending within each row, which is how
-    _precompute_convolution_tensor_s2 emits it. A wrapping arc therefore appears as
-    two runs at the ends of the sorted list, which is handled explicitly.
+    That it takes the columns and not the arcs is the whole of its value as a
+    reference: the arcs are a derivation, and a reference that consumed them could not
+    catch an error in deriving them. The signature now says so.
     """
-
-    col = col_idx.cpu().to(torch.int64)
-    roff = roff_idx.cpu().to(torch.int64)
-    nrows = roff.numel() - 1
-
-    seg_rows = []
-    segs = []
-    for row in range(nrows):
-        beg, end = int(roff[row]), int(roff[row + 1])
-        n_before = len(segs)
-        if end > beg:
-            cols = col[beg:end]
-            hi = torch.div(cols, nlon, rounding_mode="floor")
-            wi = cols - hi * nlon
-            for h in torch.unique(hi):
-                w = torch.unique(wi[hi == h]).sort().values
-                count = int(w.numel())
-                lo, hi_w = int(w[0]), int(w[-1])
-                if hi_w - lo + 1 == count:
-                    # plain arc
-                    start, length = lo, count
-                else:
-                    # wraps the seam: sorted as [0..a] u [b..nlon-1]; the arc starts at
-                    # b, which is one past the single interior gap
-                    gaps = torch.diff(w)
-                    split = int(torch.argmax(gaps))
-                    start = int(w[split + 1])
-                    length = count
-                segs.append((int(h), start, length))
-        seg_rows.append(len(segs) - n_before)
-
-    seg = torch.tensor(segs, dtype=torch.int32).reshape(-1, 3)
-    seg_off = torch.zeros(nrows + 1, dtype=torch.int32)
-    seg_off[1:] = torch.tensor(seg_rows, dtype=torch.int32).cumsum(0)
-    return seg, seg_off
+    kw, vw, qw, ring_weights, col_idx, row_off, nh, nlon_in, nlat_out, nlon_out = inputs
+    ctx.save_for_backward(col_idx, row_off, ring_weights, kw, vw, qw)
+    ctx.nh = nh
+    ctx.nlon_in = nlon_in
+    ctx.nlat_out = nlat_out
+    ctx.nlon_out = nlon_out
 
 
-def _expand_psi_segments(seg: torch.Tensor, seg_off: torch.Tensor, nlon: int):
-    """Expand segments back to a per-row column list. Inverse of _build_psi_segments,
-    used to verify the two representations describe the same sparsity."""
+def _setup_context_attention_ragged_backward(ctx, inputs, output):
+    """
+    Backward context for the ragged optimized op.
 
-    out = []
-    for row in range(seg_off.numel() - 1):
-        cols = []
-        for s in range(int(seg_off[row]), int(seg_off[row + 1])):
-            hi, lo, length = (int(x) for x in seg[s])
-            for j in range(length):
-                cols.append(hi * nlon + (lo + j) % nlon)
-        out.append(sorted(cols))
-    return out
+    Two differences from the regular helper above. The neighbourhood is saved in arc
+    form, with the ring tables -- both ragged backwards, CPU and CUDA, walk the arcs.
+
+    The other is the three trailing outputs. The forward returns its softmax
+    bookkeeping so the backward does not have to rebuild it, but that bookkeeping is
+    not a function of the inputs in the differentiable sense: alpha_sum and qdotk_max
+    are reduction statistics, and y_hi is the output over again, so a gradient routed
+    through it would be counted twice. Marking them non-differentiable makes attempting
+    any of that an error at the autograd level rather than a silently wrong number.
+    """
+    kw, vw, qw, ring_weights, psi_seg, psi_seg_off, ring_base, ring_size, nh, npoints_out = inputs
+    y, y_hi, alpha_sum, qdotk_max = output
+
+    ctx.save_for_backward(psi_seg, psi_seg_off, ring_base, ring_size, ring_weights, kw, vw, qw, y, y_hi, alpha_sum, qdotk_max)
+    ctx.nh = nh
+    ctx.npoints_out = npoints_out
+    ctx.mark_non_differentiable(y_hi, alpha_sum, qdotk_max)

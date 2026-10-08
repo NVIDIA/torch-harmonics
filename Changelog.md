@@ -2,6 +2,56 @@
 
 ## Versioning
 
+### v1.0.0rc1 (unreleased)
+
+* `polar_halo_exchange` and `polar_halo_reduce` take a `lat_dim` argument, so channels-last tensors can be exchanged directly.
+* **Breaking**: layers take a grid descriptor instead of a resolution and a grid name, e.g. `RealSHT(as_grid("legendre-gauss", nlat=n, nlon=2*n))`, and `grid_in`/`grid_out` when mapping between grids; the old arguments raise a `TypeError`.
+* **Breaking**: renamed or moved since v0.9.3: `lats_in`/`lats_out` are now `colats_in`/`colats_out` (`ResampleS2`, `DistributedResampleS2`, `latitude_support_band`, `compute_polar_halo_radius`); `QuadratureS2` moved from `torch_harmonics.quadrature` to `torch_harmonics.integration`; `NeighborhoodAttentionS2.quad_weights` became the backend buffer `ring_weights`; `AttentionS2.log_quad_weights` is now `log_point_weights`; the shallow-water example's `quad_weights` buffer is per-point and no longer checkpointed.
+* **Breaking**: removed `torch_harmonics.legendre.clm`, which nothing in the library used. Its factorial ratio underflows to zero from degree ~120 on; `legpoly` builds the normalization into its recursion instead.
+* New `as_grid` builds a grid descriptor from a grid type and its parameters by keyword, e.g. `as_grid("equiangular", nlat=128, nlon=256)`, validated against the type; `grid_params` lists what a type takes.
+* `as_grid(descriptor, **params)` accepts only the descriptor type's own parameters and raises on anything else.
+* Grid descriptors form a hierarchy of `PointSetS2` (points and weights), `GridS2` (isolatitude rings) and `RegularGridS2` (rings of equal length), with matching `GridShardS2`/`RegularGridShardS2`.
+* New `require_point_set`, `require_grid` and `require_regular_grid` guards state which of these levels each routine needs, so an unsupported grid fails at construction.
+* New `HealpixGrid(nside)` (also `as_grid("healpix", nside=...)`), the HEALPix pixelization in RING order, accepted today by `QuadratureS2`, `AttentionS2` and `NeighborhoodAttentionS2`.
+* New `HealpixGrid.from_level(level)` builds the grid at refinement level `level`, i.e. `nside = 2**level`.
+* New `PointSetS2.is_equal_area`, `True` for HEALPix and `False` for every latitude-longitude grid.
+* New `PointSetS2.coords` gives every point's `(colat, lon)` in the order a field is stored in.
+* New `GridS2.ring_weights(dtype)` and `GridS2.point_weights(dtype)` give the quadrature weights per ring and per point, computed in the requested dtype.
+* `plot_sphere` takes a `grid` argument that places the samples at the grid's actual latitudes, and draws ragged grids such as HEALPix by nearest-point resampling.
+* The example losses' `get_quadrature_weights(tile=False)` raises on grids that are not regular.
+* `NeighborhoodAttentionS2` accepts any `GridS2` on either side, including HEALPix and mixed pairs, with new compiled CPU and CUDA kernels for ragged grids.
+* `AttentionS2` accepts any `GridS2` on either side, no longer requires `nlon_in` to be a multiple of `nlon_out`, and projects channels-last like `NeighborhoodAttentionS2`.
+* **Breaking**: `AttentionS2` and `NeighborhoodAttentionS2` have a key bias (`k_bias`) only with `use_qknorm=True`. Without qk-norm it shifts all scores of a query equally, which the softmax removes, so it never changed the output and its gradient was always zero. Old checkpoints still load with `strict=True` and give the same results, but optimizer states saved with the old parameter list no longer match.
+* The `scale` of `AttentionS2` and `NeighborhoodAttentionS2` is validated: a number or a 0-dimensional tensor, either holding a positive finite value; a tensor is trained when it is an `nn.Parameter`. Both layers store the default `1/sqrt(channels per head)` as a float, where `AttentionS2` used to keep `None`.
+* `AttentionS2` passes no weight mask on equal-area input grids, which is exact and lets SDPA use FlashAttention.
+* New `torch_harmonics.neighborhood` module computing the neighborhood pattern of any `GridS2` directly as contiguous longitude arcs, replacing the DISCO-based precompute neighborhood attention used before.
+* Neighborhood attention picks its implementation through backends selected per device, and each layer registers only the buffers its backend reads.
+* `DistributedNeighborhoodAttentionS2` shares the serial forward pass and uses ring backends whose kernels take the serial layout and arc form, walking only the neighbours in each key/value chunk.
+* `DistributedNeighborhoodAttentionS2` builds only its rank's slice of the sparsity pattern, so its memory shrinks as ranks are added.
+* `DistributedNeighborhoodAttentionS2` raises on `optimized_kernel=False` instead of ignoring it, since it has no reference implementation.
+* Fixed attention CUDA kernel launches failing when a large channel count needs more than 48 KiB of shared memory.
+* Fixed the attention CUDA ops running on the current device rather than their inputs' when a module lives on another GPU.
+* The compiled attention operators changed: `forward`/`backward` became `forward_regular`/`backward_regular`, `forward_ragged`/`backward_ragged` were added, the ring operators take arcs, and `split_csr_rows` was removed.
+* Grid descriptors give ring colatitudes as `colats` and geographic latitudes as `lats`.
+* Grid descriptors carry the quadrature per ring as `colat_weights` (summing to 2) and per point as `quad_weights` (summing to `4*pi`).
+* **Breaking**: the default `theta_cutoff` of DISCO and neighborhood attention is one node spacing, `PointSetS2.max_node_spacing`: the larger of the latitude spacing that v0.9.3 uses and the spacing along a ring. It changes from v0.9.3 wherever the spacing along a ring is the larger, e.g. on Gauss grids with `nlon = 2*nlat` and on equiangular grids with `nlon` below about `2*(nlat - 1)`. Neighborhood attention also takes it from the grid with fewer points instead of from the direction of the mapping, which differs only where the two disagree, e.g. a latitude-only upsampling. Pass `theta_cutoff` explicitly to keep the v0.9.3 operator.
+* New `truncate_support` returns the default support radius of DISCO and neighborhood attention from the grid descriptor, with override, validation and a warning when the default changed.
+* `QuadratureS2` takes any `PointSetS2` and reads its per-point weights, which is also correct on ragged grids.
+* Grid resolutions may be any integer type, e.g. `numpy.int64`.
+* **Breaking**: the example losses and metrics take a grid descriptor instead of `(nlat, nlon, grid)`.
+* **Breaking**: the example models, solvers and `PdeDataset` take grid descriptors: `grid` replaces `img_size`/`dims` plus a grid name, and `grid_internal` (or `grids_internal`, one per stage, for `SphericalUNet` and `SphericalSegformer`) replaces `scale_factor`.
+* Fixed `SphericalUNet` convolving its input and output stages on the internal grid type instead of the grid the data lives on.
+* The shallow-water solver skips transforms whose results it discards, and its time step is a `forward` that `ShallowWaterSolver.compile()` or `PdeDataset(compile=True)` can compile.
+* `Stanford2D3DSDownloader` downloads archives concurrently (`max_workers`), in larger chunks (`chunk_size`), and hashes them while downloading.
+* **Breaking**: the example models default to the `"harmonic"` filter basis, the L2-normalized form of the deprecated `"morlet"`, which changes their results; pass `filter_basis_type="morlet"` for the previous behaviour.
+* **Breaking**: the `"equiangular-trapezoidal"` grid is renamed `"trapezoidal"` (class `TrapezoidalGrid`), since its nodes are equispaced in `cos(theta)`.
+* **Breaking**: `GaussianRandomFieldS2` no longer assumes `nlon = 2 * nlat`.
+* New `RegularGridS2.shard()` describes one rank's piece of a grid, and the distributed layers take their decomposition from it; `compute_split_shapes` moved to `torch_harmonics.partition`.
+* `DistributedQuadratureS2` builds only its rank's weights and now accepts the `"trapezoidal"` grid.
+* The SHT and quadrature layers read nodes and weights from the grid descriptor instead of dispatching on the grid string, with bit-identical results.
+* The SHTs warn on a `"trapezoidal"` grid, which does not round-trip, instead of raising.
+* Fixed the caching decorator hiding the docstrings and signatures of cached routines.
+
 ### v0.9.3
 
 * **Breaking**: the default `theta_cutoff` of `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2`, `NeighborhoodAttentionS2` and their distributed counterparts is derived from the grid's actual latitude spacing instead of from `nlat` alone, which under-covered the poles on non-equiangular grids. Equiangular grids are unaffected; models trained on other grids change unless `theta_cutoff` is passed explicitly.

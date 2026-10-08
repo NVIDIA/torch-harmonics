@@ -223,5 +223,18 @@ class TestAttentionLayout(unittest.TestCase):
                 torch.library.opcheck(torch.ops.attention_kernels.permute_to_nchw.default, (z,))
 
 
+@unittest.skipUnless(torch.backends.mps.is_available(), "needs a device the compiled permutes have no kernel for")
+class TestAttentionLayoutUncompiledDevice(unittest.TestCase):
+    """On a device the extension registers no kernel for, the conversions fall back to torch."""
+
+    def test_round_trip(self):
+        x = torch.randn(2, 8, 6, 12, device="mps", requires_grad=True)
+        y = to_nhwc(x)
+        self.assertTrue(torch.equal(y, x.permute(0, 2, 3, 1)))
+        self.assertTrue(torch.equal(to_nchw(y), x))
+        y.backward(torch.ones_like(y))
+        self.assertTrue(torch.equal(x.grad, torch.ones_like(x)))
+
+
 if __name__ == "__main__":
     unittest.main()

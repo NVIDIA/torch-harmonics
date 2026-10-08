@@ -15,3 +15,12 @@ omit =
 source =
     torch_harmonics/
     */site-packages/torch_harmonics/
+
+[report]
+# Abstract interface methods: a base class says what a subclass must define, and no
+# test can reach the raise without a subclass that is broken on purpose. Only these
+# two forms -- a bare raise, and the grid base classes' "does not define" -- so that a
+# NotImplementedError refusing an unsupported mode or device still has to be tested.
+exclude_also =
+    ^\s*raise NotImplementedError$
+    raise NotImplementedError\(f"\{(type\(self\)|cls)\.__name__\} does not define

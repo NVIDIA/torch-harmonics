@@ -29,21 +29,22 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from itertools import accumulate
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Union
 
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics.attention import attention_kernels
-from torch_harmonics.attention._attention_utils import _check_extent, _check_ndim
-from torch_harmonics.attention._layout import to_nchw, to_nhwc
+from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim, _kernel_device_types, _reciprocal_or_zero
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
+from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
-from torch_harmonics.quadrature import effective_theta_cutoff, precompute_latitudes
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.quadrature import effective_theta_cutoff
+from torch_harmonics.utils import check
 
-from .primitives import compute_polar_halo_radius, compute_split_shapes, get_group_neighbors, polar_halo_exchange
+from .primitives import compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 # ---------------------------------------------------------------------------
@@ -121,16 +122,29 @@ def _ring_grad(dkw_acc, dvw_acc, az_group, next_nlon):
     return recv_dkw, recv_dvw, reqs
 
 
+def _per_head(packed: torch.Tensor, num_heads: int) -> torch.Tensor:
+    """``[B, H, W, nh * C]`` -> ``[B, H, W, nh, C]``: split the packed channel axis. A view."""
+    return packed.unflatten(-1, (num_heads, -1))
+
+
+def _stat_per_head(stat: torch.Tensor) -> torch.Tensor:
+    """``[B, nh, H, W]`` softmax statistic -> ``[B, H, W, nh, 1]``, broadcastable against :func:`_per_head`."""
+    return stat.permute(0, 2, 3, 1).unsqueeze(-1)
+
+
 class _RingNeighborhoodAttentionFn(torch.autograd.Function):
-    """Forward ring attention + backward ring for one attention head group.
+    """Forward ring attention + backward ring, gather (self / downsample) direction.
 
-    kw, vw : [B*nh, C_k/C_v, H_halo, W_local]  channels-first, lat-halo-padded
-    qw     : [B*nh, C_k,     H_out_local, W_out_local]  channels-first
+    Channels-last with the heads packed along the channel dim, as in the serial
+    kernels; the ring carries these tensors as they are, so no step converts:
 
-    State buffers use channels-last layout as required by the CUDA kernels:
-      y_acc        : [B, H_out, W_out, C_v]
-      alpha_k/kvw  : [B, H_out, W_out, C_k]
-      alpha_sum/qdotk_max/integral : [B, H_out, W_out]
+    kw, vw : [B, H_halo, W_local, nh * C_k / nh * C_v]  lat-halo-padded
+    qw     : [B, H_out_local, W_out_local, nh * C_k]
+
+    State buffers follow the kernels' ABI:
+      y_acc        : [B, H_out, W_out, nh * C_v]
+      alpha_k/kvw  : [B, H_out, W_out, nh * C_k]
+      alpha_sum/qdotk_max/integral : [B, nh, H_out, W_out]
     """
 
     @staticmethod
@@ -139,27 +153,23 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         kw,
         vw,
         qw,
-        psi_col_idx,
-        psi_roff_idx,
-        psi_row_idx,
-        quad_weights,
+        psi_seg,
+        psi_seg_off,
+        ring_weights,
+        num_heads: int,
         nlon_in: int,
-        pscale: int,
+        nlon_out_global: int,
         lon_chunk_starts: list,
         nlon_kx_list: list,
         lat_halo_start: int,
         nlat_out_local: int,
         nlon_out_local: int,
-        r_lat: int,
         az_group,
         az_rank: int,
         az_size: int,
-        psi_n_long_rows: int,
-        psi_max_row_len: int,
-        psi_mid_row_len: int,
     ):
-        B, _, _, _ = kw.shape
-        _, C_v, _, _ = vw.shape
+        B = kw.shape[0]
+        C_v = vw.shape[-1]
         device = kw.device
 
         # Capture input dtype so we can cast the user-visible output (y_out)
@@ -168,20 +178,16 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # and the saved alpha_sum/qdotk_max feed fp32 math in backward.
         inp_dtype = kw.dtype
 
-        # Allocate state buffers in formats expected by the CUDA kernels:
-        # y_acc: channels-last [B, H, W, C_v];  scalars: [B, H, W]
+        # State buffers in the kernels' ABI: y_acc packed like the activations,
+        # one softmax statistic per (batch, head, point).
         y_acc = torch.zeros(B, nlat_out_local, nlon_out_local, C_v, device=device, dtype=torch.float32)
-        alpha_sum = torch.zeros(B, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
-        qdotk_max = torch.full((B, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
+        alpha_sum = torch.zeros(B, num_heads, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
+        qdotk_max = torch.full((B, num_heads, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
 
-        # Convert to the kernels' NHWC ABI once, here, and keep the ring in that
-        # layout for every step: received chunks arrive ready to use. Previously the
-        # launcher converted all three tensors on every one of the az_size steps --
-        # including qw, which is loop-invariant and so was converted identically
-        # each time.
-        kw_chunk = to_nhwc(kw.contiguous())
-        vw_chunk = to_nhwc(vw.contiguous())
-        qw_nhwc = to_nhwc(qw.contiguous())
+        # already in the kernels' layout: the ring sends and receives these directly
+        kw_chunk = kw.contiguous()
+        vw_chunk = vw.contiguous()
+        qw = qw.contiguous()
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -195,23 +201,20 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             attention_kernels.forward_ring_step.default(
                 kw_chunk,
                 vw_chunk,
-                qw_nhwc,
+                qw,
                 y_acc,
                 alpha_sum,
                 qdotk_max,
-                quad_weights,
-                psi_col_idx,
-                psi_roff_idx,
-                psi_row_idx,
+                ring_weights,
+                psi_seg,
+                psi_seg_off,
+                num_heads,
                 nlon_in,
-                pscale,
+                nlon_out_global,
                 lon_lo_kx,
                 lat_halo_start,
                 nlat_out_local,
                 nlon_out_local,
-                psi_n_long_rows,
-                psi_max_row_len,
-                psi_mid_row_len,
             )
 
             if step < az_size - 1:
@@ -220,10 +223,10 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 kw_chunk = recv_kw.clone()
                 vw_chunk = recv_vw.clone()
 
-        # Finalize: y = y_acc / alpha_sum  (both channels-last layout). Cast
-        # back to the input dtype to keep the op faithful to its input dtype.
-        y_out = y_acc / alpha_sum.unsqueeze(-1)  # [B, H, W, C_v]
-        y_out = to_nchw(y_out).to(dtype=inp_dtype)  # [B, C_v, H, W]
+        # Finalize: y = y_acc / alpha_sum, per head. Cast back to the input dtype
+        # to keep the op faithful to its input dtype.
+        y_out = (_per_head(y_acc, num_heads) * _stat_per_head(_reciprocal_or_zero(alpha_sum))).flatten(-2)  # [B, H, W, nh * C_v]
+        y_out = y_out.to(dtype=inp_dtype)
 
         # alpha_sum and qdotk_max are returned so setup_context can save them;
         # they are marked non-differentiable there, so backward still only
@@ -237,32 +240,29 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             kw,
             vw,
             qw,
-            psi_col_idx,
-            psi_roff_idx,
-            psi_row_idx,
-            quad_weights,
+            psi_seg,
+            psi_seg_off,
+            ring_weights,
+            num_heads,
             nlon_in,
-            pscale,
+            nlon_out_global,
             lon_chunk_starts,
             nlon_kx_list,
             lat_halo_start,
             nlat_out_local,
             nlon_out_local,
-            r_lat,
             az_group,
             az_rank,
             az_size,
-            psi_n_long_rows,
-            psi_max_row_len,
-            psi_mid_row_len,
         ) = inputs
         y_out, alpha_sum, qdotk_max = output
         # alpha_sum and qdotk_max are internal accumulators, not true outputs;
         # marking them non-differentiable keeps backward's signature as (ctx, dy).
         ctx.mark_non_differentiable(alpha_sum, qdotk_max)
-        ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, alpha_sum, qdotk_max)
+        ctx.save_for_backward(kw, vw, qw, psi_seg, psi_seg_off, ring_weights, alpha_sum, qdotk_max)
+        ctx.num_heads = num_heads
         ctx.nlon_in = nlon_in
-        ctx.pscale = pscale
+        ctx.nlon_out_global = nlon_out_global
         ctx.lon_chunk_starts = lon_chunk_starts
         ctx.nlon_kx_list = nlon_kx_list
         ctx.lat_halo_start = lat_halo_start
@@ -271,18 +271,16 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         ctx.az_group = az_group
         ctx.az_rank = az_rank
         ctx.az_size = az_size
-        ctx.psi_n_long_rows = psi_n_long_rows
-        ctx.psi_max_row_len = psi_max_row_len
-        ctx.psi_mid_row_len = psi_mid_row_len
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        kw, vw, qw, psi_col_idx, psi_roff_idx, psi_row_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
+        kw, vw, qw, psi_seg, psi_seg_off, ring_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
+        num_heads = ctx.num_heads
         nlon_in = ctx.nlon_in
-        pscale = ctx.pscale
+        nlon_out_global = ctx.nlon_out_global
         lon_chunk_starts = ctx.lon_chunk_starts
         nlon_kx_list = ctx.nlon_kx_list
         lat_halo_start = ctx.lat_halo_start
@@ -291,14 +289,11 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         az_group = ctx.az_group
         az_rank = ctx.az_rank
         az_size = ctx.az_size
-        psi_n_long_rows = ctx.psi_n_long_rows
-        psi_max_row_len = ctx.psi_max_row_len
-        psi_mid_row_len = ctx.psi_mid_row_len
 
-        # Autograd contract: skip per-branch work (kernel calls, allreduces) for any
+        # Autograd contract: skip per-branch work (kernel calls, ring exchanges) for any
         # of {kw, vw, qw} that doesn't need a gradient, and return None in those slots.
         # This is what lets torch.compile / AOTAutograd prune dead subgraphs (including
-        # the NCCL allreduces) from the compiled backward.
+        # the NCCL exchanges) from the compiled backward.
         kw_needs_grad = ctx.needs_input_grad[0]
         vw_needs_grad = ctx.needs_input_grad[1]
         qw_needs_grad = ctx.needs_input_grad[2]
@@ -306,10 +301,10 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # Defensive: if somehow none of (kw, vw, qw) need grad (e.g., user wired
         # requires_grad onto one of the index buffers), there's nothing to compute.
         if not (kw_needs_grad or vw_needs_grad or qw_needs_grad):
-            return (None,) * 21
+            return (None,) * 17
 
-        B, C_k, H_halo, _ = kw.shape
-        _, C_v, _, _ = vw.shape
+        B, H_halo, _, C_k = kw.shape
+        C_v = vw.shape[-1]
         device = kw.device
 
         # Capture input dtypes so the returned grads can be cast back. The
@@ -323,9 +318,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         kw_dtype = kw.dtype
         vw_dtype = vw.dtype
         qw_dtype = qw.dtype
-        # dy and qw are loop-invariant: converted once here, not once per ring step.
-        dy_nhwc = to_nhwc(dy.contiguous())  # NHWC [B, H, W, C_v], native dtype
-        qw_nhwc = to_nhwc(qw.contiguous())
+        dy = dy.contiguous()  # [B, H, W, nh * C_v], native dtype
+        qw = qw.contiguous()
 
         # ----------------------------------------------------------------
         # Backward pass 1: re-accumulate {alpha_sum, qdotk_max, integral,
@@ -335,15 +329,15 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # writes all three buffers in one call, so pass-1 cannot be pruned
         # per-branch.
         # ----------------------------------------------------------------
-        bwd_alpha_sum = torch.zeros(B, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
-        bwd_qdotk_max = torch.full((B, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
+        bwd_alpha_sum = torch.zeros(B, num_heads, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
+        bwd_qdotk_max = torch.full((B, num_heads, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
         integral_buf = torch.zeros_like(bwd_alpha_sum)
         alpha_k_buf = torch.zeros(B, nlat_out_local, nlon_out_local, C_k, device=device, dtype=torch.float32)
         alpha_kvw_buf = torch.zeros_like(alpha_k_buf)
 
-        kw_nhwc = to_nhwc(kw.contiguous())
-        vw_nhwc = to_nhwc(vw.contiguous())
-        kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
+        kw = kw.contiguous()
+        vw = vw.contiguous()
+        kw_chunk, vw_chunk = kw, vw
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -356,26 +350,23 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             attention_kernels.backward_ring_step_pass1.default(
                 kw_chunk,
                 vw_chunk,
-                qw_nhwc,
-                dy_nhwc,
+                qw,
+                dy,
                 bwd_alpha_sum,
                 bwd_qdotk_max,
                 integral_buf,
                 alpha_k_buf,
                 alpha_kvw_buf,
-                quad_weights,
-                psi_col_idx,
-                psi_roff_idx,
-                psi_row_idx,
+                ring_weights,
+                psi_seg,
+                psi_seg_off,
+                num_heads,
                 nlon_in,
-                pscale,
+                nlon_out_global,
                 lon_lo_kx,
                 lat_halo_start,
                 nlat_out_local,
                 nlon_out_local,
-                psi_n_long_rows,
-                psi_max_row_len,
-                psi_mid_row_len,
             )
 
             if step < az_size - 1:
@@ -388,17 +379,19 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # Finalize pass-1 outputs.
         # Use the SAVED forward alpha_sum/qdotk_max (same values, but authoritative).
         # ----------------------------------------------------------------
-        alpha_sum_inv = 1.0 / fwd_alpha_sum  # [B, H, W]
+        alpha_sum_inv = _reciprocal_or_zero(fwd_alpha_sum)  # [B, nh, H, W]
 
         # integral_norm only feeds pass-2; skip if neither kw nor vw needs grad.
         if kw_needs_grad or vw_needs_grad:
-            integral_norm = integral_buf * alpha_sum_inv  # [B, H, W]
+            integral_norm = integral_buf * alpha_sum_inv  # [B, nh, H, W]
 
-        # dqy[b,h,w,c] = inv_sq*(alpha_sum*alpha_kvw - integral*alpha_k)
+        # dqy[b,h,w,c] = inv_sq*(alpha_sum*alpha_kvw - integral*alpha_k), per head
         if qw_needs_grad:
             alpha_sum_inv_sq = alpha_sum_inv**2
-            dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf - integral_buf.unsqueeze(-1) * alpha_k_buf)  # [B, H, W, C_k]
-            dqy = to_nchw(dqy_cl).to(dtype=qw_dtype)  # [B, C_k, H, W]
+            dqy = _stat_per_head(alpha_sum_inv_sq) * (
+                _stat_per_head(fwd_alpha_sum) * _per_head(alpha_kvw_buf, num_heads) - _stat_per_head(integral_buf) * _per_head(alpha_k_buf, num_heads)
+            )
+            dqy = dqy.flatten(-2).to(dtype=qw_dtype)  # [B, H, W, nh * C_k]
         else:
             dqy = None
 
@@ -413,9 +406,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # both in a single call.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
-            # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
-            # already converted -- no second conversion needed.
-            kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
+            # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk
+            kw_chunk, vw_chunk = kw, vw
             # the accumulator starts on this rank's own chunk, which is the one it holds
             # at step 0, and is re-sized by each hop to match the chunk it then carries
             my_nlon = nlon_kx_list[az_rank]
@@ -440,26 +432,23 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 attention_kernels.backward_ring_step_pass2.default(
                     kw_chunk,
                     vw_chunk,
-                    qw_nhwc,
-                    dy_nhwc,
+                    qw,
+                    dy,
                     fwd_alpha_sum,
                     fwd_qdotk_max,
                     integral_norm,
                     dkw_out,
                     dvw_out,
-                    quad_weights,
-                    psi_col_idx,
-                    psi_roff_idx,
-                    psi_row_idx,
+                    ring_weights,
+                    psi_seg,
+                    psi_seg_off,
+                    num_heads,
                     nlon_in,
-                    pscale,
+                    nlon_out_global,
                     lon_lo_kx,
                     lat_halo_start,
                     nlat_out_local,
                     nlon_out_local,
-                    psi_n_long_rows,
-                    psi_max_row_len,
-                    psi_mid_row_len,
                 )
 
                 if step < az_size - 1:
@@ -487,27 +476,26 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
                 recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
                 for req in grad_reqs:
                     req.wait()
-                # No clone here, deliberately: nothing writes into these again. The only
-                # remaining use is to_nchw, which always materializes a new tensor, so the
-                # returned gradient never aliases the irecv destination.
-                dkw_acc, dvw_acc = recv_dkw, recv_dvw
+                # Cloned for the same reason as in the loop: .to() below is a no-op for
+                # fp32, so without it the returned gradient would alias the irecv
+                # destination.
+                dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
+                dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
 
-            # The accumulator IS the local chunk now, so only the layout conversion is left.
-            # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
-            # The autograd through torch.cat in _exchange_lat_halo extracts the
-            # middle H_in rows as the gradient for key_proj/value_proj.
-            dkw = to_nchw(dkw_acc).to(dtype=kw_dtype) if kw_needs_grad else None  # [B, C_k, H_halo, W_local]
-            dvw = to_nchw(dvw_acc).to(dtype=vw_dtype) if vw_needs_grad else None  # [B, C_v, H_halo, W_local]
+            # The accumulator IS the local chunk now, already in the layout of kw/vw.
+            # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo);
+            # the halo exchange's backward returns the halo rows to their owners.
+            dkw = dkw_acc.to(dtype=kw_dtype) if kw_needs_grad else None  # [B, H_halo, W_local, nh * C_k]
+            dvw = dvw_acc.to(dtype=vw_dtype) if vw_needs_grad else None  # [B, H_halo, W_local, nh * C_v]
         else:
             dkw = None
             dvw = None
 
-        # Return grads for (kw, vw, qw, psi_col, psi_roff, psi_row, quad_weights,
-        #                   nlon_in, pscale, lon_chunk_starts, nlon_kx_list, lat_halo_start,
-        #                   nlat_out_local, nlon_out_local, r_lat,
-        #                   az_group, az_rank, az_size,
-        #                   psi_n_long_rows, psi_max_row_len, psi_mid_row_len)
-        return (dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        # Return grads for (kw, vw, qw, psi_seg, psi_seg_off, ring_weights,
+        #                   num_heads, nlon_in, nlon_out_global, lon_chunk_starts, nlon_kx_list,
+        #                   lat_halo_start, nlat_out_local, nlon_out_local,
+        #                   az_group, az_rank, az_size)
+        return (dkw, dvw, dqy) + (None,) * 14
 
 
 class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
@@ -515,19 +503,19 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
 
     K/V live on the coarse input grid (sharded, halo-padded in lat, rotating
     around the azimuth ring); Q and the output live on the fine output grid and
-    stay local.
+    stay local. Layouts are those of :class:`_RingNeighborhoodAttentionFn`:
 
-    kw, vw : [B*nh, C_k/C_v, H_halo, W_in_local]   channels-first, lat-halo-padded
-    qw     : [B*nh, C_k,     H_out_local, W_out_local]  channels-first
+    kw, vw : [B, H_halo, W_in_local, nh * C_k / nh * C_v]  lat-halo-padded
+    qw     : [B, H_out_local, W_out_local, nh * C_k]
 
-    State buffers use channels-last layout as required by the CUDA kernels:
-      y_acc        : [B, H_out, W_out, C_v]
-      alpha_k/kvw  : [B, H_out, W_out, C_k]
-      alpha_sum/qdotk_max/integral : [B, H_out, W_out]
+    State buffers:
+      y_acc        : [B, H_out, W_out, nh * C_v]
+      alpha_k/kvw  : [B, H_out, W_out, nh * C_k]
+      alpha_sum/qdotk_max/integral : [B, nh, H_out, W_out]
 
-    The local psi is built by _build_local_psi_upsample: rows are keyed by the
-    halo-padded LOCAL input latitude, cols encode (ho_local, wo_shifted) on the
-    fine output grid with wo pre-shifted by -lon_lo_out.
+    The local psi is built by RingUpsampleBackend.prepare: rows are keyed by the
+    halo-padded LOCAL input latitude, arcs are (ho_local, lo, len) on the fine
+    output grid with lo pre-shifted by -lon_lo_out.
     """
 
     @staticmethod
@@ -536,24 +524,23 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         kw,
         vw,
         qw,
-        psi_col_idx,
-        psi_roff_idx,
-        quad_weights,
+        psi_seg,
+        psi_seg_off,
+        ring_weights,
+        num_heads: int,
         nlon_in: int,
         nlon_out_global: int,
-        pscale_out: int,
         lon_chunk_starts: list,
         nlon_kx_list: list,
         lat_halo_start: int,
         nlat_out_local: int,
         nlon_out_local: int,
-        r_lat: int,
         az_group,
         az_rank: int,
         az_size: int,
     ):
-        B, _, _, _ = kw.shape
-        _, C_v, _, _ = vw.shape
+        B = kw.shape[0]
+        C_v = vw.shape[-1]
         device = kw.device
 
         # Capture input dtype so we can cast the user-visible output (y_out)
@@ -562,17 +549,16 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # feed fp32 math in backward.
         inp_dtype = kw.dtype
 
-        # Allocate state buffers in formats expected by the CUDA kernels:
-        # y_acc: channels-last [B, H, W, C_v];  scalars: [B, H, W]
+        # State buffers in the kernels' ABI: y_acc packed like the activations,
+        # one softmax statistic per (batch, head, point).
         y_acc = torch.zeros(B, nlat_out_local, nlon_out_local, C_v, device=device, dtype=torch.float32)
-        alpha_sum = torch.zeros(B, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
-        qdotk_max = torch.full((B, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
+        alpha_sum = torch.zeros(B, num_heads, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
+        qdotk_max = torch.full((B, num_heads, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
 
-        # Converted once here, not once per ring step; qw is loop-invariant and the
-        # rotating chunks stay NHWC across the exchange.
-        kw_chunk = to_nhwc(kw.contiguous())
-        vw_chunk = to_nhwc(vw.contiguous())
-        qw_nhwc = to_nhwc(qw.contiguous())
+        # already in the kernels' layout: the ring sends and receives these directly
+        kw_chunk = kw.contiguous()
+        vw_chunk = vw.contiguous()
+        qw = qw.contiguous()
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -586,16 +572,16 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
             attention_kernels.forward_ring_step_upsample.default(
                 kw_chunk,
                 vw_chunk,
-                qw_nhwc,
+                qw,
                 y_acc,
                 alpha_sum,
                 qdotk_max,
-                quad_weights,
-                psi_col_idx,
-                psi_roff_idx,
+                ring_weights,
+                psi_seg,
+                psi_seg_off,
+                num_heads,
                 nlon_in,
                 nlon_out_global,
-                pscale_out,
                 lon_lo_kx,
                 lat_halo_start,
                 nlat_out_local,
@@ -608,10 +594,10 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 kw_chunk = recv_kw.clone()
                 vw_chunk = recv_vw.clone()
 
-        # Finalize: y = y_acc / alpha_sum  (both channels-last layout). Cast
-        # back to the input dtype to keep the op faithful to its input dtype.
-        y_out = y_acc / alpha_sum.unsqueeze(-1)  # [B, H, W, C_v]
-        y_out = to_nchw(y_out).to(dtype=inp_dtype)  # [B, C_v, H, W]
+        # Finalize: y = y_acc / alpha_sum, per head. Cast back to the input dtype
+        # to keep the op faithful to its input dtype.
+        y_out = (_per_head(y_acc, num_heads) * _stat_per_head(_reciprocal_or_zero(alpha_sum))).flatten(-2)  # [B, H, W, nh * C_v]
+        y_out = y_out.to(dtype=inp_dtype)
 
         # alpha_sum and qdotk_max are returned so setup_context can save them;
         # they are marked non-differentiable there, so backward still only
@@ -625,18 +611,17 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
             kw,
             vw,
             qw,
-            psi_col_idx,
-            psi_roff_idx,
-            quad_weights,
+            psi_seg,
+            psi_seg_off,
+            ring_weights,
+            num_heads,
             nlon_in,
             nlon_out_global,
-            pscale_out,
             lon_chunk_starts,
             nlon_kx_list,
             lat_halo_start,
             nlat_out_local,
             nlon_out_local,
-            r_lat,
             az_group,
             az_rank,
             az_size,
@@ -645,10 +630,10 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # alpha_sum and qdotk_max are internal accumulators, not true outputs;
         # marking them non-differentiable keeps backward's signature as (ctx, dy).
         ctx.mark_non_differentiable(alpha_sum, qdotk_max)
-        ctx.save_for_backward(kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, alpha_sum, qdotk_max)
+        ctx.save_for_backward(kw, vw, qw, psi_seg, psi_seg_off, ring_weights, alpha_sum, qdotk_max)
+        ctx.num_heads = num_heads
         ctx.nlon_in = nlon_in
         ctx.nlon_out_global = nlon_out_global
-        ctx.pscale_out = pscale_out
         ctx.lon_chunk_starts = lon_chunk_starts
         ctx.nlon_kx_list = nlon_kx_list
         ctx.lat_halo_start = lat_halo_start
@@ -662,11 +647,11 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        kw, vw, qw, psi_col_idx, psi_roff_idx, quad_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
+        kw, vw, qw, psi_seg, psi_seg_off, ring_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
+        num_heads = ctx.num_heads
         nlon_in = ctx.nlon_in
         nlon_out_global = ctx.nlon_out_global
-        pscale_out = ctx.pscale_out
         lon_chunk_starts = ctx.lon_chunk_starts
         nlon_kx_list = ctx.nlon_kx_list
         lat_halo_start = ctx.lat_halo_start
@@ -676,7 +661,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         az_rank = ctx.az_rank
         az_size = ctx.az_size
 
-        # Autograd contract: skip per-branch work (kernel calls, allreduces) for any
+        # Autograd contract: skip per-branch work (kernel calls, ring exchanges) for any
         # of {kw, vw, qw} that doesn't need a gradient, and return None in those slots.
         kw_needs_grad = ctx.needs_input_grad[0]
         vw_needs_grad = ctx.needs_input_grad[1]
@@ -684,10 +669,10 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
 
         # Defensive: if somehow none of (kw, vw, qw) need grad, there's nothing to compute.
         if not (kw_needs_grad or vw_needs_grad or qw_needs_grad):
-            return (None,) * 18
+            return (None,) * 17
 
-        B, C_k, H_halo, _ = kw.shape
-        _, C_v, _, _ = vw.shape
+        B, H_halo, _, C_k = kw.shape
+        C_v = vw.shape[-1]
         device = kw.device
 
         # Capture input dtypes so the returned grads can be cast back. The
@@ -697,9 +682,8 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         kw_dtype = kw.dtype
         vw_dtype = vw.dtype
         qw_dtype = qw.dtype
-        # dy and qw are loop-invariant: converted once here, not once per ring step.
-        dy_nhwc = to_nhwc(dy.contiguous())  # NHWC [B, H, W, C_v], native dtype
-        qw_nhwc = to_nhwc(qw.contiguous())
+        dy = dy.contiguous()  # [B, H, W, nh * C_v], native dtype
+        qw = qw.contiguous()
 
         # ----------------------------------------------------------------
         # Backward pass 1: re-accumulate {integral, alpha_k, alpha_kvw} via
@@ -710,13 +694,13 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # alpha_k/alpha_kvw. The kernel writes all buffers in one call, so
         # pass-1 cannot be pruned per-branch.
         # ----------------------------------------------------------------
-        integral_buf = torch.zeros(B, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
+        integral_buf = torch.zeros(B, num_heads, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
         alpha_k_buf = torch.zeros(B, nlat_out_local, nlon_out_local, C_k, device=device, dtype=torch.float32)
         alpha_kvw_buf = torch.zeros_like(alpha_k_buf)
 
-        kw_nhwc = to_nhwc(kw.contiguous())
-        vw_nhwc = to_nhwc(vw.contiguous())
-        kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
+        kw = kw.contiguous()
+        vw = vw.contiguous()
+        kw_chunk, vw_chunk = kw, vw
 
         for step in range(az_size):
             src_rank = (az_rank + step) % az_size
@@ -729,18 +713,18 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
             attention_kernels.backward_ring_step_upsample_pass1.default(
                 kw_chunk,
                 vw_chunk,
-                qw_nhwc,
-                dy_nhwc,
+                qw,
+                dy,
                 fwd_qdotk_max,
                 integral_buf,
                 alpha_k_buf,
                 alpha_kvw_buf,
-                quad_weights,
-                psi_col_idx,
-                psi_roff_idx,
+                ring_weights,
+                psi_seg,
+                psi_seg_off,
+                num_heads,
                 nlon_in,
                 nlon_out_global,
-                pscale_out,
                 lon_lo_kx,
                 lat_halo_start,
                 nlat_out_local,
@@ -756,17 +740,19 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # ----------------------------------------------------------------
         # Finalize pass-1 outputs.
         # ----------------------------------------------------------------
-        alpha_sum_inv = 1.0 / fwd_alpha_sum  # [B, H, W]
+        alpha_sum_inv = _reciprocal_or_zero(fwd_alpha_sum)  # [B, nh, H, W]
 
         # integral_norm only feeds pass-2; skip if neither kw nor vw needs grad.
         if kw_needs_grad or vw_needs_grad:
-            integral_norm = integral_buf * alpha_sum_inv  # [B, H, W]
+            integral_norm = integral_buf * alpha_sum_inv  # [B, nh, H, W]
 
-        # dqy[b,h,w,c] = inv_sq*(alpha_sum*alpha_kvw - integral*alpha_k)
+        # dqy[b,h,w,c] = inv_sq*(alpha_sum*alpha_kvw - integral*alpha_k), per head
         if qw_needs_grad:
             alpha_sum_inv_sq = alpha_sum_inv**2
-            dqy_cl = alpha_sum_inv_sq.unsqueeze(-1) * (fwd_alpha_sum.unsqueeze(-1) * alpha_kvw_buf - integral_buf.unsqueeze(-1) * alpha_k_buf)  # [B, H, W, C_k]
-            dqy = to_nchw(dqy_cl).to(dtype=qw_dtype)  # [B, C_k, H, W]
+            dqy = _stat_per_head(alpha_sum_inv_sq) * (
+                _stat_per_head(fwd_alpha_sum) * _per_head(alpha_kvw_buf, num_heads) - _stat_per_head(integral_buf) * _per_head(alpha_k_buf, num_heads)
+            )
+            dqy = dqy.flatten(-2).to(dtype=qw_dtype)  # [B, H, W, nh * C_k]
         else:
             dqy = None
 
@@ -777,9 +763,8 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
         # (see _ring_grad) -- chunk-sized throughout, so no allreduce and no slice.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
-            # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk, which is
-            # already converted -- no second conversion needed.
-            kw_chunk, vw_chunk = kw_nhwc, vw_nhwc
+            # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk
+            kw_chunk, vw_chunk = kw, vw
             # starts on this rank's own chunk (the one held at step 0), re-sized by each hop
             my_nlon = nlon_kx_list[az_rank]
             dkw_acc = torch.zeros(B, H_halo, my_nlon, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
@@ -802,19 +787,19 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 attention_kernels.backward_ring_step_upsample_pass2.default(
                     kw_chunk,
                     vw_chunk,
-                    qw_nhwc,
-                    dy_nhwc,
+                    qw,
+                    dy,
                     fwd_alpha_sum,
                     fwd_qdotk_max,
                     integral_norm,
                     dkw_chunk_cl,
                     dvw_chunk_cl,
-                    quad_weights,
-                    psi_col_idx,
-                    psi_roff_idx,
+                    ring_weights,
+                    psi_seg,
+                    psi_seg_off,
+                    num_heads,
                     nlon_in,
                     nlon_out_global,
-                    pscale_out,
                     lon_lo_kx,
                     lat_halo_start,
                     nlat_out_local,
@@ -850,24 +835,272 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
                 recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
                 for req in grad_reqs:
                     req.wait()
-                # No clone here, deliberately: nothing writes into these again. The only
-                # remaining use is to_nchw, which always materializes a new tensor, so the
-                # returned gradient never aliases the irecv destination.
-                dkw_acc, dvw_acc = recv_dkw, recv_dvw
+                # Cloned for the same reason as in the loop: .to() below is a no-op for
+                # fp32, so without it the returned gradient would alias the irecv
+                # destination.
+                dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
+                dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
 
-            # The accumulator IS the local chunk now, so only the layout conversion is left.
+            # The accumulator IS the local chunk now, already in the layout of kw/vw.
             # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
-            dkw = to_nchw(dkw_acc).to(dtype=kw_dtype) if kw_needs_grad else None  # [B, C_k, H_halo, W_local]
-            dvw = to_nchw(dvw_acc).to(dtype=vw_dtype) if vw_needs_grad else None  # [B, C_v, H_halo, W_local]
+            dkw = dkw_acc.to(dtype=kw_dtype) if kw_needs_grad else None  # [B, H_halo, W_local, nh * C_k]
+            dvw = dvw_acc.to(dtype=vw_dtype) if vw_needs_grad else None  # [B, H_halo, W_local, nh * C_v]
         else:
             dkw = None
             dvw = None
 
-        # Return grads for (kw, vw, qw, psi_col, psi_roff, quad_weights,
-        #                   nlon_in, nlon_out_global, pscale_out, lon_chunk_starts,
+        # Return grads for (kw, vw, qw, psi_seg, psi_seg_off, ring_weights,
+        #                   num_heads, nlon_in, nlon_out_global, lon_chunk_starts,
         #                   nlon_kx_list, lat_halo_start, nlat_out_local, nlon_out_local,
-        #                   r_lat, az_group, az_rank, az_size)
-        return (dkw, dvw, dqy, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        #                   az_group, az_rank, az_size)
+        return (dkw, dvw, dqy) + (None,) * 14
+
+
+# ---------------------------------------------------------------------------
+# Ring backends
+# ---------------------------------------------------------------------------
+
+
+def _cast_and_halo(layer: "DistributedNeighborhoodAttentionS2", key: torch.Tensor, value: torch.Tensor, query_scaled: torch.Tensor):
+    """
+    What both ring backends do before the ring: the autocast cast, then the latitude halo.
+
+    Under autocast, k/v/q are cast to the autocast dtype before ``.apply()`` -- mirrors
+    PyTorch's autocast-eligible-op dataflow. Upstream projections under autocast already
+    produce the autocast dtype, so this is usually a no-op; it covers an fp32-producing
+    upstream. Casting first means the halo rows travel in that dtype too, not in fp32.
+
+    key/value arrive as ``[B, H_in_local, W_in_local, C]``, latitude on dim 1. The halo
+    exchange is differentiable and dtype-agnostic, and only runs when there is an actual
+    polar split; otherwise it is the identity.
+    """
+    key, value, query_scaled = _cast_to_autocast_dtype(key, value, query_scaled)
+
+    if layer.r_lat > 0 and layer.comm_size_polar > 1:
+        key = polar_halo_exchange(key, layer.r_lat, lat_dim=1)
+        value = polar_halo_exchange(value, layer.r_lat, lat_dim=1)
+
+    return key, value, query_scaled
+
+
+def _require_halo_covers(layer: "DistributedNeighborhoodAttentionS2", hi_global: torch.Tensor) -> None:
+    """
+    Every input latitude a local output row reaches must be in the halo-padded chunk.
+
+    The ring kernels skip an arc whose latitude falls outside the chunk, as they must for
+    pole padding, so a halo sized too small would not fail -- it would drop neighbours and
+    return a plausible, wrong result. The halo is derived from the geometry by
+    compute_polar_halo_radius; this holds that derivation to the pattern it has to serve.
+    Construction time only, so none of it is traced.
+    """
+    lo = layer.lat_halo_start
+    hi = lo + layer.nlat_in_local + 2 * layer.r_lat
+    outside = (hi_global < lo) | (hi_global >= hi)
+    if bool(outside.any()):
+        missing = sorted(set(hi_global[outside].tolist()))
+        raise RuntimeError(
+            f"DistributedNeighborhoodAttentionS2: the latitude halo (r_lat={layer.r_lat}) does not cover the input "
+            f"latitudes {missing[:8]}{'...' if len(missing) > 8 else ''} that this rank's output rows reach; the chunk "
+            f"spans [{lo}, {hi}). This is a bug in the halo derivation, not in the arguments."
+        )
+
+
+# the device types the ring kernels exist for: CUDA, in a CUDA build, and nothing else
+_RING_GATHER_DEVICES = _kernel_device_types("attention_kernels::forward_ring_step")
+_RING_UPSAMPLE_DEVICES = _kernel_device_types("attention_kernels::forward_ring_step_upsample")
+
+
+def _check_ring_inputs(devices: frozenset, key: torch.Tensor) -> None:
+    """
+    Refuse, with a message that says why, what the ring kernels cannot do, instead of
+    leaving the op dispatcher to report a missing kernel or the kernels to round float64
+    to float32. The serial layer hands both cases to its torch reference; this layer has
+    none, so it refuses.
+
+    The dtype is checked first, so that it is reported on any device. Both tests read
+    tensor metadata that is static under dynamo, so on a supported input they fold to a
+    constant and cost no graph break. The messages close over plain strings only, never a
+    tensor (see torch_harmonics.utils.check).
+    """
+    check(
+        key.dtype != torch.float64,
+        lambda: (
+            "DistributedNeighborhoodAttentionS2 does not support float64: the ring kernels compute in float32, and there is no "
+            "reference implementation to fall back to. Use float32, or float16/bfloat16 through autocast."
+        ),
+    )
+    device_type = key.device.type
+    check(
+        device_type in devices,
+        lambda: (
+            f"DistributedNeighborhoodAttentionS2 has no {device_type} implementation: the ring kernels run on CUDA only, "
+            f"and this build has them for {', '.join(sorted(devices)) or 'no device'}. Move the layer and its inputs to a CUDA device."
+        ),
+    )
+
+
+class RingGatherBackend(AttentionBackendS2):
+    """
+    The ring kernels in the gather direction: self-attention and downsampling.
+
+    State is this rank's output rows of the serial arcs. The arcs are folded -- one row
+    per output latitude, the other longitudes of the ring reached by the p-shift -- so
+    those rows are a contiguous slice, and nothing global is ever expanded. The arc
+    starts are canonical at global wo = 0 and the kernels shift them by pscale * wo with
+    the LOCAL wo, so the missing pscale * lon_lo_out is added here, once:
+
+        (lo + pscale * (lon_lo_out + wo_local)) % nlon_in
+            == ((lo + pscale * lon_lo_out) % nlon_in + pscale * wo_local) % nlon_in
+
+    pscale = 1 when nlon_in == nlon_out (same-shape case).
+    """
+
+    name = "ring-gather"
+
+    # No device test: the ring ops exist only for CUDA, but a layer built on CPU is
+    # normally moved there before it runs, so construction must not refuse. There is no
+    # reference to fall back to either; __call__ refuses a device without the kernels.
+    @classmethod
+    def available(cls, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> bool:
+        return not layer.upsample
+
+    def prepare(self, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        lat_lo = layer.lat_lo_out
+        lat_hi = lat_lo + layer.nlat_out_local
+
+        arcs = layer._neighborhood_arcs()
+        start = int(arcs.offsets[lat_lo])
+        end = int(arcs.offsets[lat_hi])
+
+        seg = arcs.segments[start:end].clone()
+        seg_off = arcs.offsets[lat_lo : lat_hi + 1] - arcs.offsets[lat_lo]
+
+        # the arcs' input latitudes are global; each must be inside the chunk
+        _require_halo_covers(layer, seg[:, 0].to(torch.int64))
+
+        pscale = layer.nlon_in // layer.nlon_out
+        seg[:, 1] = (seg[:, 1] + pscale * layer.lon_lo_out) % layer.nlon_in
+
+        return {"ring_weights": _ring_weights(layer, device), "psi_seg": seg.contiguous().to(device), "psi_seg_off": seg_off.contiguous().to(device)}
+
+    def __call__(self, layer, key, value, query_scaled):
+        _check_ring_inputs(_RING_GATHER_DEVICES, key)
+        key, value, query_scaled = _cast_and_halo(layer, key, value, query_scaled)
+
+        out, _, _ = _RingNeighborhoodAttentionFn.apply(
+            key,
+            value,
+            query_scaled,
+            layer.psi_seg,
+            layer.psi_seg_off,
+            layer.ring_weights,
+            layer.num_heads,
+            layer.nlon_in,
+            layer.nlon_out,
+            layer.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
+            layer.lon_in_shapes,  # lon chunk sizes for kv
+            layer.lat_halo_start,
+            layer.nlat_out_local,
+            layer.nlon_out_local,
+            azimuth_group(),
+            layer.comm_rank_azimuth,
+            layer.comm_size_azimuth,
+        )
+
+        # [B, H_out_local, W_out_local, nh * C_v]
+        return out
+
+
+class RingUpsampleBackend(AttentionBackendS2):
+    """
+    The ring kernels in the scatter direction: upsampling.
+
+    The serial arcs have rows keyed by the input lat hi in [0, nlat_in) and arcs
+    (ho, lo, len) on the fine output grid, with lo canonical at wi = 0. This rank's
+    state
+
+      * re-keys the rows to the halo-padded LOCAL input lat range
+        [lat_halo_start, lat_halo_start + nlat_halo); pole-padding rows
+        (hi outside the global grid) are empty,
+      * keeps only arcs whose output row ho falls into the local output shard
+        and re-keys ho to ho_local = ho - lat_lo_out,
+      * pre-shifts lo by -lon_lo_out (mod nlon_out), so the kernel's serial shift
+        (lo + pscale_out * wi_global) mod nlon_out lands relative to this rank's
+        first output longitude, and clipping to [0, nlon_out_local) keeps the
+        part it owns.
+    """
+
+    name = "ring-upsample"
+
+    # no device test; see RingGatherBackend
+    @classmethod
+    def available(cls, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> bool:
+        return layer.upsample
+
+    def prepare(self, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
+        nlon_out = layer.nlon_out
+        lat_lo_out = layer.lat_lo_out
+        lat_hi_out = lat_lo_out + layer.nlat_out_local
+        lon_lo_out = layer.lon_lo_out
+
+        nlat_halo = layer.nlat_in_local + 2 * layer.r_lat
+
+        arcs = layer._neighborhood_arcs()
+        segments = arcs.segments
+        offsets = arcs.offsets.to(torch.int64)
+
+        # input-lat row index of every arc
+        hi_of_seg = torch.repeat_interleave(torch.arange(layer.nlat_in, dtype=torch.int64), offsets.diff())
+        ho = segments[:, 0].to(torch.int64)
+
+        # every arc feeding a local output row must come from an input row in the chunk;
+        # the in-range test below then only discards arcs of other ranks' output rows
+        local_out = (ho >= lat_lo_out) & (ho < lat_hi_out)
+        _require_halo_covers(layer, hi_of_seg[local_out])
+
+        # keep arcs whose input row lies in the halo-padded local range and whose
+        # output row is owned by this polar rank
+        hi_local = hi_of_seg - layer.lat_halo_start
+        mask = local_out & (hi_local >= 0) & (hi_local < nlat_halo)
+
+        seg = segments[mask].clone()
+        seg[:, 0] -= lat_lo_out
+        seg[:, 1] = (seg[:, 1] - lon_lo_out) % nlon_out
+
+        # rebuild the row offsets over the halo-padded local rows; masked selection
+        # preserves the row-major order, so seg is already consistent with seg_off
+        counts = torch.bincount(hi_local[mask], minlength=nlat_halo)
+        seg_off = torch.zeros(nlat_halo + 1, dtype=arcs.offsets.dtype)
+        seg_off[1:] = torch.cumsum(counts, dim=0)
+
+        return {"ring_weights": _ring_weights(layer, device), "psi_seg": seg.contiguous().to(device), "psi_seg_off": seg_off.contiguous().to(device)}
+
+    def __call__(self, layer, key, value, query_scaled):
+        _check_ring_inputs(_RING_UPSAMPLE_DEVICES, key)
+        key, value, query_scaled = _cast_and_halo(layer, key, value, query_scaled)
+
+        out, _, _ = _RingNeighborhoodAttentionUpsampleFn.apply(
+            key,
+            value,
+            query_scaled,
+            layer.psi_seg,
+            layer.psi_seg_off,
+            layer.ring_weights,
+            layer.num_heads,
+            layer.nlon_in,
+            layer.nlon_out,
+            layer.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
+            layer.lon_in_shapes,  # lon chunk sizes for kv
+            layer.lat_halo_start,
+            layer.nlat_out_local,
+            layer.nlon_out_local,
+            azimuth_group(),
+            layer.comm_rank_azimuth,
+            layer.comm_size_azimuth,
+        )
+
+        # [B, H_out_local, W_out_local, nh * C_v]
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -886,28 +1119,34 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     of key/value chunks over the azimuth group so that every output point can
     attend to its full spherical neighborhood.
 
-    All three directions of the serial layer are supported: self-attention
-    (in_shape == out_shape), downsampling cross-attention (gather kernels,
-    nlon_in % nlon_out == 0) and upsampling cross-attention (scatter kernels,
-    nlon_out % nlon_in == 0). In all cases K/V (which live on the input grid)
-    rotate around the azimuth ring while Q and the softmax state stay local.
+    Self-attention (``grid_in == grid_out``), downsampling
+    (``nlon_in % nlon_out == 0``) and upsampling (``nlon_out % nlon_in == 0``)
+    cross-attention are supported. In all cases keys and values circulate around the
+    azimuth ranks while queries and the softmax state stay local. Parameters are the
+    same as for the serial layer.
 
-    Inherits learnable parameters from :class:`torch_harmonics.NeighborhoodAttentionS2`.
+    Requires the compiled kernels; ``optimized_kernel`` must be ``True``.
 
     .. seealso::
         :class:`torch_harmonics.NeighborhoodAttentionS2`
             Serial counterpart with full parameter documentation.
     """
 
+    _backends = (RingGatherBackend, RingUpsampleBackend)
+
+    @_rejects_legacy_signature(
+        'in_channels, in_shape, out_shape, grid_in="equiangular", grid_out="equiangular", num_heads=1, scale=None, '
+        "use_qknorm=False, bias=True, theta_cutoff=None, k_channels=None, out_channels=None, optimized_kernel=True",
+        grid_in="in_shape",
+        grid_out="out_shape",
+    )
     def __init__(
         self,
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
-        in_shape: Tuple[int, int],
-        out_shape: Tuple[int, int],
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         num_heads: Optional[int] = 1,
-        scale: Optional[Union[torch.Tensor, float]] = None,
+        scale: Optional[Union[float, torch.Tensor]] = None,
         use_qknorm: Optional[bool] = False,
         bias: Optional[bool] = True,
         theta_cutoff: Optional[float] = None,
@@ -915,16 +1154,29 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         out_channels: Optional[int] = None,
         optimized_kernel: Optional[bool] = True,
     ):
+        # the ring exchange is implemented only in the compiled kernels; refuse a request for
+        # the reference path rather than silently running the optimized one instead
+        if not optimized_kernel:
+            raise ValueError("DistributedNeighborhoodAttentionS2 has no reference implementation; optimized_kernel=False is not supported.")
         if not optimized_kernels_is_available():
             raise RuntimeError("Optimized kernels are required to run DistributedNeighborhoodAttentionS2.")
 
-        # initialise base class (builds global psi, creates parameters)
+        # The base class accepts any GridS2, because the serial layer has a ragged path.
+        # This one does not: the ring backends re-shift arc starts by pscale * lon_lo,
+        # and the ring kernels shift them by pscale * wo, which is the p-shift of a
+        # regular grid. On a grid whose rings differ in length none of that arithmetic
+        # means anything -- it would not raise, it would silently address the wrong
+        # points. So the assumption is stated here rather than inherited, as it is in
+        # DistributedDiscreteContinuousConvS2.
+        require_regular_grid(grid_in, "grid_in")
+        require_regular_grid(grid_out, "grid_out")
+
+        # the decomposition is settled in _setup, which the base class calls just before
+        # it selects a backend
         super().__init__(
+            grid_in,
+            grid_out,
             in_channels,
-            in_shape,
-            out_shape,
-            grid_in=grid_in,
-            grid_out=grid_out,
             num_heads=num_heads,
             scale=scale,
             use_qknorm=use_qknorm,
@@ -935,28 +1187,40 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             optimized_kernel=True,
         )
 
+    def _setup(self) -> None:
+        """Split the grids across the polar and azimuth groups, and size the latitude halo."""
+
         # ---- distributed info ----
         self.comm_size_polar = polar_group_size()
         self.comm_rank_polar = polar_group_rank()
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # split shapes
-        self.lat_in_shapes = compute_split_shapes(self.nlat_in, self.comm_size_polar)
-        self.lon_in_shapes = compute_split_shapes(self.nlon_in, self.comm_size_azimuth)
-        self.lat_out_shapes = compute_split_shapes(self.nlat_out, self.comm_size_polar)
-        self.lon_out_shapes = compute_split_shapes(self.nlon_out, self.comm_size_azimuth)
+        # each grid decomposes itself. The ring and the halo exchange need every
+        # rank's extent, not just this one's, which is what the shape lists carry.
+        self.shard_in = self.grid_in.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.shard_out = self.grid_out.shard(
+            polar=(self.comm_rank_polar, self.comm_size_polar),
+            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
+        )
+        self.lat_in_shapes = list(self.shard_in.lat_shapes)
+        self.lon_in_shapes = list(self.shard_in.lon_shapes)
+        self.lat_out_shapes = list(self.shard_out.lat_shapes)
+        self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         # local sizes for this rank
-        self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
-        self.nlon_in_local = self.lon_in_shapes[self.comm_rank_azimuth]
-        self.nlat_out_local = self.lat_out_shapes[self.comm_rank_polar]
-        self.nlon_out_local = self.lon_out_shapes[self.comm_rank_azimuth]
+        self.nlat_in_local = self.shard_in.nlat
+        self.nlon_in_local = self.shard_in.nlon
+        self.nlat_out_local = self.shard_out.nlat
+        self.nlon_out_local = self.shard_out.nlon
 
         # Uniform-pscale invariant: every azimuth rank must carry the same lon pscale.
         # The global divisibility check is inherited from the serial
         # NeighborhoodAttentionS2.__init__, but that is not sufficient in distributed:
-        # if compute_split_shapes hands different ranks different local pscales
+        # if the grid hands different ranks different local pscales
         # (e.g. nlon_in=12, nlon_out=4, comm_size_azimuth=3 -> [4,4,4] vs [2,1,1]),
         # the p-shift mapping in the ring exchange is ill-defined.
         if self.upsample:
@@ -968,7 +1232,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
                         f"nlon_in_local={lon_in_r}, nlon_out_local={lon_out_r}. "
                         f"Every azimuth rank must satisfy nlon_out_local == (nlon_out // nlon_in) * nlon_in_local "
                         f"= {pscale_lon} * nlon_in_local. "
-                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that compute_split_shapes "
+                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that the azimuth split "
                         f"produces uniform local pscale."
                     )
         else:
@@ -980,18 +1244,15 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
                         f"nlon_in_local={lon_in_r}, nlon_out_local={lon_out_r}. "
                         f"Every azimuth rank must satisfy nlon_in_local == (nlon_in // nlon_out) * nlon_out_local "
                         f"= {pscale_lon} * nlon_out_local. "
-                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that compute_split_shapes "
+                        f"Choose (nlon_in, nlon_out, comm_size_azimuth) so that the azimuth split "
                         f"produces uniform local pscale."
                     )
 
-        # global lon/lat offsets
+        # global lon offset of every rank's kv chunk, which the ring walks through
         self.lon_in_starts = list(accumulate([0] + self.lon_in_shapes[:-1]))
-        self.lon_out_starts = list(accumulate([0] + self.lon_out_shapes[:-1]))
-        self.lat_in_starts = list(accumulate([0] + self.lat_in_shapes[:-1]))
-        self.lat_out_starts = list(accumulate([0] + self.lat_out_shapes[:-1]))
 
-        self.lon_lo_out = self.lon_out_starts[self.comm_rank_azimuth]
-        self.lat_lo_out = self.lat_out_starts[self.comm_rank_polar]
+        self.lon_lo_out = self.shard_out.lon_offset
+        self.lat_lo_out = self.shard_out.lat_offset
 
         # ---- lat halo size ----
         # Derived from the grid geometry rather than measured off the psi: an output latitude
@@ -1001,314 +1262,27 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # builds its psi with the shapes swapped, but the latitudes it needs are the same ones.
         # It also raises if the halo outgrows a local chunk, which the immediate-neighbour
         # exchange could not serve.
-        # the grid types are constructor arguments the base class does not retain, so they are
-        # read from the local parameters rather than off self
-        lats_in, _ = precompute_latitudes(self.nlat_in, grid=grid_in)
-        lats_out, _ = precompute_latitudes(self.nlat_out, grid=grid_out)
+        colats_in, colats_out = self.grid_in.colats, self.grid_out.colats
         self.r_lat = compute_polar_halo_radius(
-            lats_in,
-            lats_out,
+            colats_in,
+            colats_out,
             effective_theta_cutoff(self.theta_cutoff),
             self.lat_in_shapes,
             self.lat_out_shapes,
         )
 
-        if self.upsample:
-            # ---- build local psi ----
-            # Rows are re-keyed to the halo-padded local input lat range, cols
-            # are filtered to the local output lat rows and the wo component is
-            # pre-shifted by -lon_lo_out (see _build_local_psi_upsample). This needs r_lat,
-            # which is why the halo size is settled above rather than after the build.
-            self._build_local_psi_upsample()
-        else:
-            # ---- build local psi ----
-            # The global psi built by the base class covers all output lat rows.
-            # We filter to only the rows owned by this rank and shift the wi
-            # component of col_idx by lon_lo_out so that the kernel can use
-            # local wo directly without knowing the global lon offset.
-            self._build_local_psi()  # also precomputes self.psi_{n_long_rows,max_row_len,mid_row_len}
+        # global lat index of the first halo row, which is where the K/V chunks start
+        self.lat_halo_start = self.shard_in.lat_offset - self.r_lat
 
-        # the local psi supersedes the global one the base class built; drop it
-        self._drop_global_psi()
-
-    # -----------------------------------------------------------------------
-
-    def _drop_global_psi(self):
-        """Free the global sparsity buffers registered by the serial base class.
-
-        ``_build_local_psi`` / ``_build_local_psi_upsample`` are their only readers and both
-        run during ``__init__``; the ring kernels take the ``*_local`` buffers exclusively.
-        Left in place they would sit on the device for the lifetime of the module alongside
-        the local copies that replace them -- and being keyed to the *global* grid, they do
-        not shrink as ranks are added. ``psi_row_idx``, ``psi_seg`` and ``psi_seg_off`` are
-        never read here at all: the local row order is rebuilt in ``_build_local_psi`` and
-        the arc segments are only consumed by the serial kernels.
-
-        All five are ``persistent=False``, so no checkpoint content changes -- only
-        ``named_buffers()`` differs from the serial module. Deleting rather than setting
-        them to ``None`` means a stale read raises ``AttributeError`` naming the buffer,
-        instead of a ``None`` propagating into index arithmetic and failing a frame later.
-
-        ``del`` is the supported route: ``nn.Module.__delattr__`` removes the entry from
-        ``_buffers`` and discards the name from ``_non_persistent_buffers_set``. The base
-        class registers all five unconditionally, so none of these can be missing.
-        """
-        del self.psi_row_idx
-        del self.psi_col_idx
-        del self.psi_roff_idx
-        del self.psi_seg
-        del self.psi_seg_off
-
-    # -----------------------------------------------------------------------
-
-    def _build_local_psi(self):
-        """Filter global psi to local output lat rows and shift col_idx wi."""
-
-        lat_lo = self.lat_lo_out
-        lat_hi = lat_lo + self.nlat_out_local
-
-        # global psi from the base class (built over all nlat_out rows)
-        col_idx_global = self.psi_col_idx  # [nnz]        int64
-        roff_global = self.psi_roff_idx  # [nlat_out+1] int64
-
-        # psi_row_idx stores the sorted permutation: value is the row index.
-        # psi_roff_idx[ho] .. psi_roff_idx[ho+1] gives entries for row ho.
-        # (The row_idx buffer is the *sort order*, not the row indices directly.)
-        # For the distributed case we rebuild roff for the local rows only.
-
-        # Build local roff: select rows lat_lo..lat_hi-1
-        roff_local = roff_global[lat_lo : lat_hi + 1] - roff_global[lat_lo]  # offset by first entry
-
-        # Select the corresponding col_idx entries
-        start = roff_global[lat_lo].item()
-        end = roff_global[lat_hi].item()
-        col_idx_local = col_idx_global[start:end].clone()
-
-        # Shift wi by pscale * lon_lo_out so the kernel can reconstruct wip from wo_local:
-        # col stores hi_global * nlon_in + wi_canonical. For global wo_global = lon_lo_out + wo_local,
-        # the target input column is (wi_canonical + pscale * wo_global) % nlon_in. The kernel evaluates
-        # (wi_shifted + pscale * wo_local) % nlon_in, so pre-shifting by pscale * lon_lo_out absorbs
-        # the rank-offset piece. pscale = 1 when nlon_in == nlon_out (same-shape case).
-        nlon_in = self.nlon_in
-        lon_lo = self.lon_lo_out
-        pscale = self.nlon_in // self.nlon_out
-        hi_global = col_idx_local // nlon_in
-        wi_canon = col_idx_local - hi_global * nlon_in
-        wi_shifted = (wi_canon + pscale * lon_lo) % nlon_in
-        col_idx_shifted = hi_global * nlon_in + wi_shifted
-
-        # Build sorted row_idx for local output rows (0-indexed within local range)
-        # Reuse the serial sort order: just re-sort by nnz per local row
-        nnz_per_row = (roff_local[1:] - roff_local[:-1]).cpu()
-        row_idx_local = torch.argsort(nnz_per_row, descending=True).to(torch.int32)
-
-        self.register_buffer("psi_col_idx_local", col_idx_shifted, persistent=False)
-        self.register_buffer("psi_roff_idx_local", roff_local, persistent=False)
-        self.register_buffer("psi_row_idx_local", row_idx_local, persistent=False)
-
-        # Precompute the CSR long/short row split once, here in the constructor,
-        # on the still-on-CPU local psi buffers (split_csr_rows has a CPU path).
-        # The split depends only on the psi sparsity geometry, which is fixed
-        # after init, so it is identical on every ring step / iteration. Computing
-        # it once keeps it off the per-step hot path (it otherwise cost a 24-byte
-        # D2H sync per ring step) and off any compiled forward. Stored as plain
-        # Python ints and threaded into the ring-step ops.
-        n_long_rows, max_row_len, mid_row_len = attention_kernels.split_csr_rows.default(row_idx_local, roff_local, self.nlat_out_local)
-        self.psi_n_long_rows = int(n_long_rows)
-        self.psi_max_row_len = int(max_row_len)
-        self.psi_mid_row_len = int(mid_row_len)
-
-    # -----------------------------------------------------------------------
-    # upsample (scatter) direction helpers
-    # -----------------------------------------------------------------------
-
-    def _build_local_psi_upsample(self):
-        """Build the local scatter psi for the upsample ring kernels.
-
-        The global psi built by the base class has rows keyed by the input lat
-        hi in [0, nlat_in) and cols encoding ho * nlon_out + wo_canonical on the
-        fine output grid (canonical at wi = 0). The local psi
-
-          * re-keys the rows to the halo-padded LOCAL input lat range
-            [lat_halo_start, lat_halo_start + nlat_halo); pole-padding rows
-            (hi outside the global grid) are empty,
-          * keeps only entries whose output row ho falls into the local output
-            shard and re-keys ho to ho_local = ho - lat_lo_out,
-          * pre-shifts the wo component by -lon_lo_out (mod nlon_out) so the
-            kernel's mapping w = (wo_shifted + pscale_out * wi_global) mod
-            nlon_out directly yields the LOCAL output longitude, with the
-            locality test w < nlon_out_local.
-        """
-
-        nlon_out = self.nlon_out
-        lat_lo_out = self.lat_lo_out
-        lat_hi_out = lat_lo_out + self.nlat_out_local
-        lon_lo_out = self.lon_lo_out
-
-        col_idx_global = self.psi_col_idx  # [nnz]        int64
-        roff_global = self.psi_roff_idx  # [nlat_in+1]  int64
-
-        nlat_halo = self.nlat_in_local + 2 * self.r_lat
-        lat_halo_start = self.lat_in_starts[self.comm_rank_polar] - self.r_lat
-
-        # input-lat row index of every nonzero entry
-        nnz_per_row = roff_global[1:] - roff_global[:-1]
-        hi_of_nz = torch.repeat_interleave(torch.arange(self.nlat_in, dtype=torch.int64, device=col_idx_global.device), nnz_per_row)
-
-        ho = col_idx_global // nlon_out
-        wo = col_idx_global - ho * nlon_out
-
-        # keep entries whose input row lies in the halo-padded local range and
-        # whose output row is owned by this polar rank
-        hi_local = hi_of_nz - lat_halo_start
-        mask = (ho >= lat_lo_out) & (ho < lat_hi_out) & (hi_local >= 0) & (hi_local < nlat_halo)
-
-        hi_sel = hi_local[mask]
-        ho_sel = ho[mask] - lat_lo_out
-        wo_sel = (wo[mask] - lon_lo_out) % nlon_out
-        col_idx_local = ho_sel * nlon_out + wo_sel
-
-        # rebuild the CSR row offsets over the halo-padded local rows; masked
-        # selection preserves the global row-major order, so col_idx_local is
-        # already CSR-consistent with roff_local
-        counts = torch.bincount(hi_sel, minlength=nlat_halo)
-        roff_local = torch.zeros(nlat_halo + 1, dtype=roff_global.dtype, device=roff_global.device)
-        roff_local[1:] = torch.cumsum(counts, dim=0)
-
-        self.register_buffer("psi_col_idx_local", col_idx_local.contiguous(), persistent=False)
-        self.register_buffer("psi_roff_idx_local", roff_local.contiguous(), persistent=False)
-
-    # -----------------------------------------------------------------------
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: Optional[torch.Tensor] = None,
-        value: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-
-        if key is None:
-            key = query
-        if value is None:
-            value = query
-
+    def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
+        """The serial contract, against this rank's shard rather than the global grid."""
         _check_ndim(query, 4, "query")
         _check_ndim(key, 4, "key")
         _check_ndim(value, 4, "value")
+        _check_dtypes_match((query, key, value))
         _check_extent(query, -2, self.nlat_out_local, "query latitudes")
         _check_extent(query, -1, self.nlon_out_local, "query longitudes")
         _check_extent(key, -2, self.nlat_in_local, "key latitudes")
         _check_extent(key, -1, self.nlon_in_local, "key longitudes")
         _check_extent(value, -2, self.nlat_in_local, "value latitudes")
         _check_extent(value, -1, self.nlon_in_local, "value longitudes")
-
-        # ---- 1. project to k/v/q ----
-        key_proj = nn.functional.conv2d(key, self.k_weights, bias=self.k_bias)
-        value_proj = nn.functional.conv2d(value, self.v_weights, bias=self.v_bias)
-        query_proj = nn.functional.conv2d(query, self.q_weights, bias=self.q_bias)
-
-        # QK normalization (must come before scale)
-        if self.q_norm_weights is not None:
-            B, C, H, W = query_proj.shape
-            query_proj = query_proj.reshape(B, self.num_heads, -1, H, W).permute(0, 1, 3, 4, 2)
-            query_proj = nn.functional.rms_norm(query_proj, normalized_shape=self.q_norm_weights.shape, weight=1 + self.q_norm_weights)
-            query_proj = query_proj.permute(0, 1, 4, 2, 3).reshape(B, C, H, W).contiguous()
-
-        if self.k_norm_weights is not None:
-            B, C, H, W = key_proj.shape
-            key_proj = key_proj.reshape(B, self.num_heads, -1, H, W).permute(0, 1, 3, 4, 2)
-            key_proj = nn.functional.rms_norm(key_proj, normalized_shape=self.k_norm_weights.shape, weight=1 + self.k_norm_weights)
-            key_proj = key_proj.permute(0, 1, 4, 2, 3).reshape(B, C, H, W).contiguous()
-
-        # scale after normalization
-        query_proj = query_proj * self.scale
-
-        # fold num_heads into batch
-        B, _, H, W = key_proj.shape
-        key_proj = key_proj.reshape(B * self.num_heads, -1, H, W)
-        B, _, H, W = value_proj.shape
-        value_proj = value_proj.reshape(B * self.num_heads, -1, H, W)
-        B, _, H, W = query_proj.shape
-        query_proj = query_proj.reshape(B * self.num_heads, -1, H, W)
-
-        # ---- 2. lat halo exchange ----
-        # key_proj/value_proj: [Bnh, C, H_in_local, W_in_local]
-        # Use differentiable halo exchange when there is an actual polar split;
-        # otherwise fall through to the identity (no-op).
-        if self.r_lat > 0 and self.comm_size_polar > 1:
-            key_halo = polar_halo_exchange(key_proj, self.r_lat)
-            value_halo = polar_halo_exchange(value_proj, self.r_lat)
-        else:
-            key_halo = key_proj
-            value_halo = value_proj
-
-        # global lat index of first halo row
-        lat_halo_start = self.lat_in_starts[self.comm_rank_polar] - self.r_lat
-
-        # ---- 3. ring attention ----
-        # Under autocast, cast k/v/q to the autocast dtype before .apply() —
-        # mirrors PyTorch's autocast-eligible-op dataflow. Upstream Linear
-        # projections under autocast already produce bf16, so this is usually
-        # a no-op; covers the case where upstream is fp32-producing.
-        key_halo, value_halo, query_proj = _cast_to_autocast_dtype(key_halo, value_halo, query_proj)
-        if self.upsample:
-            # Global pscale_out — the kernel must not infer this from local shapes,
-            # because kernel `nlon_out` is nlon_out_local which differs when az_size > 1.
-            pscale_out = self.nlon_out // self.nlon_in
-            out, _, _ = _RingNeighborhoodAttentionUpsampleFn.apply(
-                key_halo,
-                value_halo,
-                query_proj,
-                self.psi_col_idx_local,
-                self.psi_roff_idx_local,
-                self.quad_weights,
-                self.nlon_in,
-                self.nlon_out,
-                pscale_out,
-                self.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
-                self.lon_in_shapes,  # lon chunk sizes for kv
-                lat_halo_start,
-                self.nlat_out_local,
-                self.nlon_out_local,
-                self.r_lat,
-                azimuth_group(),
-                self.comm_rank_azimuth,
-                self.comm_size_azimuth,
-            )  # [Bnh, C_v, H_out_local, W_out_local]
-        else:
-            # Global pscale — the kernel must not infer this from local shapes,
-            # because kernel `nlon_out` is nlon_out_local which differs when az_size > 1.
-            pscale = self.nlon_in // self.nlon_out
-            out, _, _ = _RingNeighborhoodAttentionFn.apply(
-                key_halo,
-                value_halo,
-                query_proj,
-                self.psi_col_idx_local,
-                self.psi_roff_idx_local,
-                self.psi_row_idx_local,
-                self.quad_weights,
-                self.nlon_in,
-                pscale,
-                self.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
-                self.lon_in_shapes,  # lon chunk sizes for kv
-                lat_halo_start,
-                self.nlat_out_local,
-                self.nlon_out_local,
-                self.r_lat,
-                azimuth_group(),
-                self.comm_rank_azimuth,
-                self.comm_size_azimuth,
-                self.psi_n_long_rows,
-                self.psi_max_row_len,
-                self.psi_mid_row_len,
-            )  # [Bnh, C_v, H_out_local, W_out_local]
-
-        # unfold num_heads
-        B_nh, C_v, H_out, W_out = out.shape
-        B_orig = B_nh // self.num_heads
-        out = out.reshape(B_orig, self.num_heads * C_v, H_out, W_out)
-
-        # ---- 4. output projection ----
-        out = nn.functional.conv2d(out, self.proj_weights, bias=self.proj_bias)
-
-        return out

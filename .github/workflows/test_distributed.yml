@@ -92,6 +92,10 @@ jobs:
         python3 -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
         python3 -m pip install dist/*.whl parameterized scipy pytest pytest-cov coverage
 
+    # after the install: the step asks the installed torch how it uses the CPU
+    - name: Runner info
+      uses: ./.github/actions/runner-info
+
     - name: Run the distributed tests on ${{ matrix.grid_h }}x${{ matrix.grid_w }} ranks
       env:
         GRID_H: ${{ matrix.grid_h }}

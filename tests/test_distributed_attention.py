@@ -33,6 +33,7 @@ import os
 import unittest
 
 import torch
+import torch.distributed as dist
 from parameterized import parameterized
 from testutils import (
     compare_tensors,
@@ -49,9 +50,10 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
+from torch_harmonics.distributed.distributed_attention import _RING_GATHER_DEVICES, _RING_UPSAMPLE_DEVICES
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
-# shapes that exercise the long-row branch of the ring backward dispatch).
+# shapes, whose polar rows have the longest neighbourhoods).
 # Mirrors the TORCH_HARMONICS_RUN_PERF_TESTS pattern in tests/test_attention.py
 # and tests/test_convolution.py.
 _run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
@@ -81,16 +83,32 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
     """
     Compare serial NeighborhoodAttentionS2 against DistributedNeighborhoodAttentionS2.
 
-    CPU-only runs are skipped: distributed attention requires CUDA (NCCL + custom kernels).
+    The ring kernels exist for CUDA only. Nothing here is skipped for want of them: on
+    another device the comparisons assert that the layer refuses to run, and the tests
+    that never reach a kernel -- backend state, shape checks -- run as they are.
     """
 
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
         disable_tf32()
-        if not torch.cuda.is_available():
-            raise unittest.SkipTest("Distributed neighborhood attention requires CUDA")
-        disable_tf32()
+
+    def _refuses_device(self, attn_dist):
+        """
+        On a device without the ring kernels, assert that the layer refuses to run and
+        says why, rather than failing in the op dispatcher, and report that there is
+        nothing to compare. On a device with them, report that there is.
+        """
+        devices = _RING_UPSAMPLE_DEVICES if attn_dist.upsample else _RING_GATHER_DEVICES
+        if self.device.type in devices:
+            return False
+
+        C = attn_dist.in_channels
+        q = torch.randn(1, C, attn_dist.nlat_out_local, attn_dist.nlon_out_local, device=self.device)
+        k = torch.randn(1, C, attn_dist.nlat_in_local, attn_dist.nlon_in_local, device=self.device)
+        with self.assertRaisesRegex(RuntimeError, "ring kernels run on CUDA only"):
+            attn_dist(q, k, k)
+        return True
 
     def _split_helper(self, tensor):
         return split_tensor_hw(
@@ -135,19 +153,34 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             wgroup=self.w_group,
         )
 
+    def _allreduce_param_grad(self, tensor):
+        """
+        Sum a per-rank parameter gradient over the polar and azimuth groups.
+
+        The distributed layers leave parameter gradients partial: each rank's holds the
+        contribution of its own spatial chunk, and reducing them is the caller's job, as
+        for the distributed convolution (see test_distributed_convolution). Returns a
+        clone, since all_reduce is in place.
+        """
+        out = tensor.clone()
+        if self.grid_size_h > 1:
+            dist.all_reduce(out, group=self.h_group)
+        if self.grid_size_w > 1:
+            dist.all_reduce(out, group=self.w_group)
+        return out
+
     @parameterized.expand(
         [
-            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, dtype, atol, rtol
+            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, dtype, atol, rtol[, trainable_scale]
             # same shape tests
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
-            # Long-row coverage on realistic ERA5-like grids. With default theta_cutoff
-            # = pi/(nlat_out-1), wide nlon_in makes the kernel disk cover the full
-            # longitude ring near the poles, so pole rows exceed SPLIT_LONG_ROW_MIN_LEN
-            # (1024) while mid-latitude rows stay short -- exercising BOTH the long-row
-            # and short-row branches of the ring backward pass-2 dispatch. Memory note:
+            # Realistic ERA5-like grid with strongly unbalanced rows: near the poles the
+            # neighbourhood disk covers the whole longitude ring, so pole rows hold
+            # thousands of neighbours while mid-latitude rows hold tens, and pole arcs
+            # span several ring chunks of the azimuth split. Memory note:
             # 721x1440 x B=2 x C=16 fp32 ~250 MB per major tensor; expect a few GB
             # working-set including halos and gradient buffers. Splittable up to 2x4
             # (uneven polar shard for odd nlat is handled by the test framework).
@@ -171,11 +204,10 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # mixed grid: equiangular input -> legendre-gauss output
             [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
             [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
-            # Realistic ERA5-like downsample (equi -> LG, ~2x lat/lon). theta_cutoff =
-            # pi/359 gives a kernel band ~4 input lats deep, so pole rows hit several
-            # x nlon_in = O(5760) entries (long) while equator rows stay ~O(64) (short).
-            # Exercises long-row branch in combination with pscale>1 and a mixed grid.
-            # Same memory caveat as the 721x1440 same-shape case above.
+            # Realistic ERA5-like downsample (equi -> LG, ~2x lat/lon). The default cutoff
+            # spans a few input latitudes, so pole rows hold several x nlon_in entries
+            # while equator rows stay short -- the same imbalance as above, combined with
+            # pscale>1 and a mixed grid. Same memory caveat as the 721x1440 case above.
             [721, 1440, 360, 720, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32, 1e-5, 1e-4],
             # heads=4 with asymmetric channels (k=32, out=16; in=16)
             [64, 128, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
@@ -219,21 +251,14 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             [32, 64, 32, 64, 2, 1280, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # BDIM_X=256  (per-head 2049..4096)
             [16, 32, 16, 32, 2, 2560, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
-            # BDIM_X=512 and BDIM_X=1024 disabled until the LDG bwd pass1/pass2 launches
-            # call ``ensure_dyn_shmem``. The dynamic-shmem request for pass1/pass2 is
-            # ``sizeof(float4) * (nchans_in + nchans_out) * block.y``; at the BDIM_X=1024
-            # configuration (nchans=8704, float4 vec = 2176) that's ~69.6 KiB, exceeding the
-            # default 48 KiB per-CTA opt-in on every CUDA arch. Only the TMA branches
-            # currently call ensure_dyn_shmem; the LDG branches launch the kernel directly
-            # with the oversized shsize, which the driver rejects with cudaErrorInvalidValue.
-            # See attention_cuda_bwd_ring.cu (LDG pass1/pass2 dispatch) — fix is to mirror
-            # the ensure_dyn_shmem call already present in the TMA branches.
-            #
-            # # BDIM_X=512  (per-head 4097..8192)
-            # [16, 32, 16, 32, 2, 4608, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
-            # # BDIM_X=1024 (per-head 8193..16384). This also stresses the dynamic-shmem opt-in
-            # # (ensure_dyn_shmem) on the TMA path: ~5*nchans*4 B exceeds the default 48 KiB limit.
-            # [8, 16, 8, 16, 2, 8704, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # BDIM_X=512  (per-head 4097..8192)
+            [16, 32, 16, 32, 2, 4608, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
+            # top of the BDIM_X=512 bucket: the ring bwd pass-2 request,
+            # ``sizeof(float) * (nchans_in + nchans_out)``, is 64 KiB here, above the default
+            # 48 KiB, so this also covers the opt-in (launch_dyn_shmem). Per-head counts
+            # past 8192 take the generic kernels, whose pass-1 request (32 B per channel)
+            # exceeds every device's per-block maximum.
+            [8, 16, 8, 16, 2, 8192, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             # upsampling tests (scatter ring kernels), pscale_out=2 (lat+lon)
             [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
             [33, 64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4],
@@ -268,6 +293,12 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # multi-head same-resolution gather
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float16, 5e-2, 1e-2],
             [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.bfloat16, 3e-1, 5e-2],
+            # a trainable scale: its gradient is partial per rank like every other parameter's,
+            # on the gather (same-shape, downsample) and scatter (upsample) paths, and with QK norm
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4, True],
+            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4, True],
+            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, 1e-5, 1e-4, True],
+            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, torch.float32, 1e-5, 1e-4, True],
         ],
         skip_on_empty=True,
     )
@@ -288,10 +319,17 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         dtype,
         atol,
         rtol,
+        trainable_scale=False,
         verbose=True,
     ):
         if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_ATTN_SHAPES and not _run_slow_tests:
             self.skipTest("slow test; set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
+
+        # Without the ring kernels these cases only check the refusal, which the small ones
+        # already do; the large channel counts exist for the kernels' tiling, and building
+        # their layers on every rank of an 8-rank CPU run exhausts the runner's memory.
+        if in_channels > 64 and self.device.type not in _RING_GATHER_DEVICES & _RING_UPSAMPLE_DEVICES:
+            self.skipTest("large-channel case needs the ring kernels; the refusal is covered by the small cases")
 
         set_seed(333)
 
@@ -299,10 +337,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn_args = dict(
             in_channels=C,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             num_heads=num_heads,
             bias=True,
             use_qknorm=use_qknorm,
@@ -310,9 +346,19 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             out_channels=out_channels,
         )
 
+        # A trainable scale, one per layer, so the two backward passes do not accumulate into
+        # the same .grad; it starts at the default value, so only its gradient is new
+        def scale():
+            if not trainable_scale:
+                return {}
+            per_head = (C if k_channels is None else k_channels) // num_heads
+            return {"scale": torch.nn.Parameter(torch.tensor(per_head**-0.5))}
+
         # build serial and distributed modules with identical weights
-        attn_serial = th.NeighborhoodAttentionS2(**attn_args).to(self.device)
-        attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args).to(self.device)
+        attn_serial = th.NeighborhoodAttentionS2(**attn_args, **scale()).to(self.device)
+        attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args, **scale()).to(self.device)
+        if self._refuses_device(attn_dist):
+            return
 
         with torch.no_grad():
             attn_dist.k_weights.copy_(attn_serial.k_weights)
@@ -320,10 +366,11 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             attn_dist.q_weights.copy_(attn_serial.q_weights)
             attn_dist.proj_weights.copy_(attn_serial.proj_weights)
             if attn_args["bias"]:
-                attn_dist.k_bias.copy_(attn_serial.k_bias)
                 attn_dist.v_bias.copy_(attn_serial.v_bias)
                 attn_dist.q_bias.copy_(attn_serial.q_bias)
                 attn_dist.proj_bias.copy_(attn_serial.proj_bias)
+            if attn_args["bias"] and use_qknorm:
+                attn_dist.k_bias.copy_(attn_serial.k_bias)
             if use_qknorm:
                 attn_dist.q_norm_weights.copy_(attn_serial.q_norm_weights)
                 attn_dist.k_norm_weights.copy_(attn_serial.k_norm_weights)
@@ -391,6 +438,20 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             ok = compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose)
             self.assertTrue(reduce_success(ok, self.device), f"input gradient {inp}")
 
+        # ---- compare parameter gradients ----
+        # summed over the spatial ranks first, which is the caller's job (see
+        # _allreduce_param_grad). A parameter gradient sums over every point, so the two
+        # sides add the same terms in different orders: atol scales with the gradient.
+        named_serial = dict(attn_serial.named_parameters())
+        named_dist = dict(attn_dist.named_parameters())
+        self.assertEqual(sorted(named_serial), sorted(named_dist), "the two layers have different parameters")
+        self.assertEqual("scale" in named_dist, trainable_scale)
+        for name, p_serial in named_serial.items():
+            pgrad = self._allreduce_param_grad(named_dist[name].grad)
+            atol_p = atol * max(1.0, float(p_serial.grad.abs().max()))
+            ok = compare_tensors(f"parameter gradient {name}", p_serial.grad, pgrad, atol=atol_p, rtol=rtol, verbose=verbose)
+            self.assertTrue(reduce_success(ok, self.device), f"parameter gradient {name}")
+
     @parameterized.expand(
         [
             # (nlat_in, nlon_in, nlat_out, nlon_out, batch, in_chans, heads, k_chans, out_chans, grid_in, grid_out, frozen)
@@ -441,10 +502,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn_args = dict(
             in_channels=C,
-            in_shape=(nlat_in, nlon_in),
-            out_shape=(nlat_out, nlon_out),
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             num_heads=num_heads,
             bias=True,
             use_qknorm=False,
@@ -454,13 +513,14 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         attn_serial = th.NeighborhoodAttentionS2(**attn_args).to(self.device)
         attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args).to(self.device)
+        if self._refuses_device(attn_dist):
+            return
 
         with torch.no_grad():
             attn_dist.k_weights.copy_(attn_serial.k_weights)
             attn_dist.v_weights.copy_(attn_serial.v_weights)
             attn_dist.q_weights.copy_(attn_serial.q_weights)
             attn_dist.proj_weights.copy_(attn_serial.proj_weights)
-            attn_dist.k_bias.copy_(attn_serial.k_bias)
             attn_dist.v_bias.copy_(attn_serial.v_bias)
             attn_dist.q_bias.copy_(attn_serial.q_bias)
             attn_dist.proj_bias.copy_(attn_serial.proj_bias)
@@ -540,6 +600,68 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             )
             self.assertTrue(reduce_success(ok, self.device), f"input grad {n} (frozen={frozen})")
 
+    @parameterized.expand(
+        [
+            # nlat_in, nlon_in, nlat_out, nlon_out, backend
+            [64, 128, 64, 128, "ring-gather"],  # self-attention
+            [64, 128, 32, 64, "ring-gather"],  # downsampling
+            [32, 64, 64, 128, "ring-upsample"],  # upsampling
+        ],
+        skip_on_empty=True,
+    )
+    def test_backend_state(self, nlat_in, nlon_in, nlat_out, nlon_out, backend):
+        """
+        The layer selects the ring backend for its direction and holds exactly that
+        backend's state, sized to this rank's shard -- on construction and after a move.
+
+        Built on CPU and moved, as a model normally is: construction must not refuse for
+        want of a device, and the move reselects the backend and prepares its state on
+        the new device, rather than carrying the old one along.
+        """
+        attn = thd.DistributedNeighborhoodAttentionS2(
+            grid_in=th.as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
+            in_channels=8,
+            num_heads=2,
+            bias=False,
+        )
+
+        # the rows the ring kernels walk: this rank's output latitudes when gathering,
+        # its halo-padded input latitudes when scattering
+        nrows = attn.nlat_in_local + 2 * attn.r_lat if attn.upsample else attn.nlat_out_local
+
+        def check_state():
+            self.assertEqual(attn.backend.name, backend)
+            # exactly what the ring backend reads, as for every serial backend
+            self.assertEqual({name for name, _ in attn.named_buffers()}, {"ring_weights", "psi_seg", "psi_seg_off"})
+            self.assertEqual(set(attn._backend_state), {"ring_weights", "psi_seg", "psi_seg_off"})
+            self.assertEqual(attn.psi_seg_off.numel(), nrows + 1)
+            self.assertEqual(int(attn.psi_seg_off[-1]), attn.psi_seg.shape[0])
+            self.assertEqual(attn.psi_seg.device, attn.ring_weights.device)
+
+        check_state()
+
+        # .to() moves the module in place and reselects the backend on the new device
+        attn.to(self.device)
+        check_state()
+        self.assertEqual(attn.psi_seg.device.type, self.device.type)
+
+    def test_float64_is_refused(self):
+        """
+        The ring kernels compute in float32 and the layer has no reference to hand float64
+        to, so it refuses it, on any device and before anything else is checked.
+        """
+        attn = thd.DistributedNeighborhoodAttentionS2(
+            grid_in=th.as_grid("equiangular", nlat=32, nlon=64),
+            grid_out=th.as_grid("equiangular", nlat=32, nlon=64),
+            in_channels=8,
+            num_heads=1,
+        ).to(self.device, torch.float64)
+
+        x = torch.randn(1, 8, attn.nlat_in_local, attn.nlon_in_local, device=self.device, dtype=torch.float64)
+        with self.assertRaisesRegex(RuntimeError, "does not support float64"):
+            attn(x)
+
     def test_wrong_shape_assertions(self):
         """Verify that forward raises RuntimeError on spatial-shape mismatches."""
         B, C = 2, 16
@@ -547,11 +669,9 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         out_shape = (32, 64)
 
         attn = thd.DistributedNeighborhoodAttentionS2(
+            grid_in=th.as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+            grid_out=th.as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
             in_channels=C,
-            in_shape=in_shape,
-            out_shape=out_shape,
-            grid_in="equiangular",
-            grid_out="equiangular",
             num_heads=1,
             bias=False,
         ).to(self.device)
@@ -562,15 +682,17 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # 1. Self-attention on an up/downsampling module: a single tensor cannot
         #    simultaneously satisfy in_shape (for k/v) and out_shape (for q).
-        with self.assertRaises(RuntimeError):
+        # the regex keeps a missing ring kernel (NotImplementedError is a RuntimeError)
+        # from passing for a shape check
+        with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local)  # key defaults to query, but key must have in_shape
 
         # 2. q_shape == k_shape != v_shape: key carries out_shape instead of in_shape.
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local, q_local, k_local)
 
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local, k_local, q_local)
 
 
