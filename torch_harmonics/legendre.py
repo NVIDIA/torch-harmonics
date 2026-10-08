@@ -38,11 +38,6 @@ from torch_harmonics.cache import lru_cache
 from torch_harmonics.grid import GridS2
 
 
-def clm(l: int, m: int) -> float:
-    """Defines the normalization factor to orthonormalize the Spherical Harmonics."""
-    return math.sqrt((2 * l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l - m) / math.factorial(l + m))
-
-
 @torch.no_grad()
 def legpoly(
     mmax: int,
