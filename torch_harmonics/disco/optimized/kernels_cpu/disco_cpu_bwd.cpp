@@ -29,7 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // The transpose of the DISCO contraction on the CPU: backward_regular, a scatter, with psi
-// in arc form -- see torch_harmonics/disco/_psi.py and, for the CUDA counterpart,
+// in arc form -- see torch_harmonics/disco/_psi_layouts.py and, for the CUDA counterpart,
 // kernels_cuda/disco_cuda_bwd.cu.
 
 #include "disco_cpu.h"

@@ -29,7 +29,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // The DISCO contraction on the CPU: forward_regular, a gather, with psi in arc form -- see
-// torch_harmonics/disco/_psi.py and, for the CUDA counterpart, kernels_cuda/disco_cuda_fwd.cu.
+// torch_harmonics/disco/_psi_layouts.py and, for the CUDA counterpart,
+// kernels_cuda/disco_cuda_fwd.cu.
 
 #include "disco_cpu.h"
 

@@ -102,8 +102,8 @@ namespace disco_kernels
         return v;
     }
 
-    // psi in arc form as the kernels take it: raw pointers to the arrays of _psi.py, one
-    // set per launch
+    // psi in arc form as the kernels take it: raw pointers to the arrays of _psi_layouts.py,
+    // one set per launch
     struct ArcPsi {
         int64_t nrows;
         const int32_t *row_ker;

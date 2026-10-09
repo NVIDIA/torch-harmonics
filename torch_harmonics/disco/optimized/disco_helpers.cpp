@@ -29,8 +29,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // What this build of the DISCO extension contains, queryable before the extension itself
-// is loaded. psi is prepared in Python (torch_harmonics/disco/_psi.py), so the module holds
-// nothing else.
+// is loaded. psi is prepared in Python (torch_harmonics/disco/_psi_layouts.py), so the
+// module holds nothing else.
 
 #include <torch/extension.h>
 

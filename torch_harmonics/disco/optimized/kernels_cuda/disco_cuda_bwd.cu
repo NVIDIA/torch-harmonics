@@ -29,7 +29,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // The transpose of the DISCO contraction on CUDA: backward_regular, a scatter, with psi in
-// arc form -- see torch_harmonics/disco/_psi.py. The gather is in disco_cuda_fwd.cu.
+// arc form -- see torch_harmonics/disco/_psi_layouts.py. The gather is in
+// disco_cuda_fwd.cu.
 //
 // One block per (psi row, batch*channel). A row carries its basis function and latitude
 // once and walks arcs (ring, start, length) whose values lie consecutively; the longitude

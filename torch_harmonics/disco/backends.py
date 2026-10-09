@@ -42,9 +42,9 @@ The contraction of a DISCO layer can run three ways:
 * ``reference`` -- the torch implementation, in terms of a sparse COO psi. What a build
   without the kernels gets, or a layer with ``optimized_kernel=False``.
 
-The layouts are described, and built, in :mod:`torch_harmonics.disco._psi`. A backend
-registers the ones it reads and nothing else; see :mod:`torch_harmonics._backend` for how
-selection works.
+The layouts are described, and built, in :mod:`torch_harmonics.disco._psi_layouts`. A
+backend registers the ones it reads and nothing else; see :mod:`torch_harmonics._backend`
+for how selection works.
 
 A backend serves every DISCO layer, serial or distributed, forward or transpose. The
 layer describes its psi and leaves the kernels to the backend:
@@ -80,7 +80,7 @@ from disco_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import BackendS2
 
-from ._psi import build_arcs, build_kpacked, build_split
+from ._psi_layouts import build_arcs, build_kpacked, build_split
 from .kernels_torch.disco_torch import _disco_s2_contraction_regular_torch, _disco_s2_transpose_contraction_regular_torch
 from .optimized.disco_optimized import (
     _disco_s2_contraction_kpacked,

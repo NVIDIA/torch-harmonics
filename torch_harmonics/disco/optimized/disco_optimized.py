@@ -32,7 +32,8 @@
 # The operators behind the DISCO backends: fake kernels and autocast for the raw ops, the
 # contraction and its transpose as custom ops with autograd, and the autograd node that
 # fuses the contraction with the weight contraction. psi reaches them in the layouts
-# built by torch_harmonics.disco._psi; which ones a layer holds is its backend's choice.
+# built by torch_harmonics.disco._psi_layouts; which ones a layer holds is its backend's
+# choice.
 
 import functools
 from typing import Optional
@@ -257,9 +258,9 @@ def _check_kpacked_inputs(inp, pack_idx, pack_val, pack_offset, kernel_size, nla
     _check_size(pack_offset, 0, nlat_out + 1, "pack_offset, nlat_out + 1 offsets")
 
 
-# The operators take psi in arc form (see torch_harmonics.disco._psi): row_ker and row_lat
-# int32 per row, seg_off and val_off int64 row offsets into seg (int32 (nsegs, 3) arcs) and
-# vals, the values in the compute dtype of the activations.
+# The operators take psi in arc form (see torch_harmonics.disco._psi_layouts): row_ker and
+# row_lat int32 per row, seg_off and val_off int64 row offsets into seg (int32 (nsegs, 3)
+# arcs) and vals, the values in the compute dtype of the activations.
 if optimized_kernels_is_available():
 
     @torch.library.register_fake("disco_kernels::forward_regular")

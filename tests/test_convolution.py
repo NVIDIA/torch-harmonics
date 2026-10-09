@@ -39,7 +39,7 @@ from torch.library import opcheck
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, as_grid
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
-from torch_harmonics.disco._psi import arcs_to_coo, build_arcs, build_kpacked
+from torch_harmonics.disco._psi_layouts import arcs_to_coo, build_arcs, build_kpacked
 from torch_harmonics.disco.backends import OptimizedBackend, ReferenceBackend
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,

@@ -46,8 +46,8 @@ namespace disco_kernels
     using th_checks::check_same_device;
     using th_checks::compute_dtype;
 
-    // psi in arc form (torch_harmonics/disco/_psi.py): per row its basis function and
-    // latitude (int32), the row's range of arcs (seg_off, int64) and of values (val_off,
+    // psi in arc form (torch_harmonics/disco/_psi_layouts.py): per row its basis function
+    // and latitude (int32), the row's range of arcs (seg_off, int64) and of values (val_off,
     // int64); per arc (ring, start, length) (int32), with start in [0, ring length) and the
     // arc wrapping at the ring's end. The values are in arc order and in the compute dtype of
     // the activations, which the kernels read them as. Only metadata is checked: validating

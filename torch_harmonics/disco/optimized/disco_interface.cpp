@@ -58,7 +58,8 @@ namespace disco_kernels
     {
         // The contraction (a gather) and its transpose (a scatter), with psi in arc form:
         // rows carry their basis function and latitude once and walk (ring, start, length)
-        // arcs whose values are stored consecutively. See torch_harmonics/disco/_psi.py.
+        // arcs whose values are stored consecutively. See
+        // torch_harmonics/disco/_psi_layouts.py.
         m.def("forward_regular(Tensor inp, Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor seg, Tensor val_off, "
               "Tensor vals, int kernel_size, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
