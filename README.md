@@ -249,13 +249,13 @@ nodes sit: the quadrature weights, the node spacing localized operators take
 their default cutoff from, and the degree an SHT can be truncated to without
 losing orthogonality. Build one with `as_grid`:
 
-| grid type          | built with                                         | field shape    | accepted by                                              |
-| ------------------ | -------------------------------------------------- | -------------- | -------------------------------------------------------- |
-| `"equiangular"`    | `th.as_grid("equiangular", nlat=..., nlon=...)`    | `(nlat, nlon)` | every layer                                              |
-| `"legendre-gauss"` | `th.as_grid("legendre-gauss", nlat=..., nlon=...)` | `(nlat, nlon)` | every layer                                              |
-| `"lobatto"`        | `th.as_grid("lobatto", nlat=..., nlon=...)`        | `(nlat, nlon)` | every layer                                              |
-| `"trapezoidal"`    | `th.as_grid("trapezoidal", nlat=..., nlon=...)`    | `(nlat, nlon)` | every layer                                              |
-| `"healpix"`        | `th.as_grid("healpix", nside=...)`                 | `(npix,)`      | `AttentionS2`, `NeighborhoodAttentionS2`, `QuadratureS2` |
+| grid type          | built with                                         | field shape    | accepted by                                                                                                               |
+| ------------------ | -------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `"equiangular"`    | `th.as_grid("equiangular", nlat=..., nlon=...)`    | `(nlat, nlon)` | every layer                                                                                                               |
+| `"legendre-gauss"` | `th.as_grid("legendre-gauss", nlat=..., nlon=...)` | `(nlat, nlon)` | every layer                                                                                                               |
+| `"lobatto"`        | `th.as_grid("lobatto", nlat=..., nlon=...)`        | `(nlat, nlon)` | every layer                                                                                                               |
+| `"trapezoidal"`    | `th.as_grid("trapezoidal", nlat=..., nlon=...)`    | `(nlat, nlon)` | every layer                                                                                                               |
+| `"healpix"`        | `th.as_grid("healpix", nside=...)`                 | `(npix,)`      | `AttentionS2`, `NeighborhoodAttentionS2`, `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2`, `QuadratureS2` |
 
 Layers that map between two grids take `grid_in` and `grid_out`, which need not
 be of the same type -- attention can decode from HEALPix onto a latitude-longitude

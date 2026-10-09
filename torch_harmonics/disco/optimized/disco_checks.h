@@ -112,6 +112,43 @@ namespace disco_kernels
         check_arc_psi(inp, row_ker, row_lat, seg_off, seg, val_off, vals, K);
     }
 
+    // The ring tables of the ragged ops: one int64 entry per ring of the grid the arcs walk,
+    // the flat index of its first point and its length.
+    inline void check_ring_tables(const at::Tensor &inp, const at::Tensor &ring_base, const at::Tensor &ring_size)
+    {
+        check_same_device(ring_base, inp, "ring_base");
+        check_same_device(ring_size, inp, "ring_size");
+        check_index_vector(ring_base, at::kLong, "ring_base");
+        check_index_vector(ring_size, at::kLong, "ring_size");
+        TORCH_CHECK(ring_base.size(0) == ring_size.size(0), "ring_base and ring_size must hold one entry per ring, got ",
+                    ring_base.size(0), " and ", ring_size.size(0));
+    }
+
+    inline void check_ragged_forward_inputs(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_pt,
+                                            const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
+                                            const at::Tensor &vals, const at::Tensor &ring_base,
+                                            const at::Tensor &ring_size, int64_t K, int64_t No)
+    {
+        TORCH_CHECK(inp.dim() == 3, "inp must be (B, C, npoints_in), got shape ", inp.sizes());
+        TORCH_CHECK(No > 0, "npoints_out must be positive, got ", No);
+        check_dense(inp, "inp");
+        check_arc_psi(inp, row_ker, row_pt, seg_off, seg, val_off, vals, K);
+        check_ring_tables(inp, ring_base, ring_size);
+    }
+
+    inline void check_ragged_backward_inputs(const at::Tensor &inp, const at::Tensor &row_ker, const at::Tensor &row_pt,
+                                             const at::Tensor &seg_off, const at::Tensor &seg, const at::Tensor &val_off,
+                                             const at::Tensor &vals, const at::Tensor &ring_base,
+                                             const at::Tensor &ring_size, int64_t K, int64_t No)
+    {
+        TORCH_CHECK(inp.dim() == 4, "inp must be (B, C, K, npoints_in), got shape ", inp.sizes());
+        TORCH_CHECK(inp.size(2) == K, "inp must hold kernel_size (", K, ") basis-function planes, got ", inp.size(2));
+        TORCH_CHECK(No > 0, "npoints_out must be positive, got ", No);
+        check_dense(inp, "inp");
+        check_arc_psi(inp, row_ker, row_pt, seg_off, seg, val_off, vals, K);
+        check_ring_tables(inp, ring_base, ring_size);
+    }
+
     // forward_kpacked: the blocked-CSR layout of the tensor-core kernels. Every
     // neighbour carries (hi, wi) in pack_idx and all K_pad filter values in pack_val, and
     // pack_offset holds one row offset per output latitude plus the total.
