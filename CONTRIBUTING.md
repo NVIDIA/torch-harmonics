@@ -244,7 +244,15 @@ to the sequential implementation, assuming its correctness. To run the distribut
 ```bash
 bash tests/run_tests.sh -d --grid_size_lat 2 --grid_size_lon 2   # 2x2 = 4 ranks
 ```
-Tests pick up MASTER_ADDR, MASTER_PORT, WORLD_RANK, WORLD_SIZE from the environment (see tests/testutils.py). If you make any
+Alternatively, launch with `torchrun`, one process per grid cell:
+```bash
+GRID_H=2 GRID_W=2 torchrun --nproc-per-node 4 --master-addr 127.0.0.1 --master-port 29500 -m pytest tests/test_distributed_sht.py
+```
+Pass `--master-addr` and `--master-port` explicitly: on hosts whose hostname does not resolve, torchrun's default rendezvous
+never starts the workers.
+Tests read the rank from `WORLD_RANK`, or from `RANK` as torchrun sets it, the grid from `GRID_H` and `GRID_W`, and
+`MASTER_ADDR` and `MASTER_PORT` (see `world_rank` and `setup_distributed_context` in tests/testutils.py). If `WORLD_SIZE` is
+set, it must equal `GRID_H * GRID_W`. If you make any
 modifications to distributed routines, we kindly ask you to run these tests for various combinations of `grid_size_lat` and
 `grid_size_lon`.
 

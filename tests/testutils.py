@@ -128,13 +128,32 @@ def maybe_autocast(device_type, dtype):
         yield
 
 
+def world_rank() -> int:
+    """Rank of this test process.
+
+    Read from WORLD_RANK, which CI and tests/run_tests.sh set, or else from RANK, which
+    torchrun sets; 0 when neither is set, as in a serial run. The distributed setup below
+    and the output silencing in conftest.py both use this, so they always agree.
+    """
+    rank = os.getenv("WORLD_RANK")
+    if rank is None:
+        rank = os.getenv("RANK", 0)
+    return int(rank)
+
+
 def setup_distributed_context(ctx):
-    ctx.world_rank = int(os.getenv("WORLD_RANK", 0))
+    ctx.world_rank = world_rank()
     ctx.grid_size_h = int(os.getenv("GRID_H", 1))
     ctx.grid_size_w = int(os.getenv("GRID_W", 1))
     port = int(os.getenv("MASTER_PORT", "29501"))
     master_address = os.getenv("MASTER_ADDR", "localhost")
     ctx.world_size = ctx.grid_size_h * ctx.grid_size_w
+
+    # A launcher that sets WORLD_SIZE (torchrun, run_tests.sh) must start exactly one
+    # process per grid cell; otherwise the process group can never form.
+    launched = os.getenv("WORLD_SIZE")
+    if launched is not None and int(launched) != ctx.world_size:
+        raise RuntimeError(f"WORLD_SIZE={launched} processes were launched, but GRID_H * GRID_W = {ctx.world_size}")
 
     if torch.cuda.is_available():
         if ctx.world_rank == 0:
