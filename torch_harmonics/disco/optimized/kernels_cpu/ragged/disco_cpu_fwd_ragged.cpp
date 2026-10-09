@@ -29,8 +29,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // The DISCO contraction on a ragged grid, on the CPU: forward_ragged, a gather, with psi in
-// arc form keyed per output point -- see torch_harmonics/disco/_psi.py and, for the CUDA
-// counterpart, kernels_cuda/ragged/disco_cuda_fwd_ragged.cu.
+// arc form keyed per output point -- see torch_harmonics/disco/_psi_layouts.py and, for the
+// CUDA counterpart, kernels_cuda/ragged/disco_cuda_fwd_ragged.cu.
 
 #include "disco_cpu_ragged.h"
 

@@ -29,8 +29,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // The transpose of the DISCO contraction on a ragged grid, on CUDA: backward_ragged, a
-// scatter, with psi in arc form keyed per input point -- see torch_harmonics/disco/_psi.py
-// and disco_cuda_ragged.cuh for the thread layout. The gather is in disco_cuda_fwd_ragged.cu.
+// scatter, with psi in arc form keyed per input point -- see
+// torch_harmonics/disco/_psi_layouts.py and disco_cuda_ragged.cuh for the thread layout. The
+// gather is in disco_cuda_fwd_ragged.cu.
 
 #include "../../disco.h"
 #include "disco_cuda_ragged.cuh"
