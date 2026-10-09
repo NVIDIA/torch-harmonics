@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import check
@@ -55,6 +55,9 @@ class DistributedRealSHT(nn.Module):
     Distributed version of the forward (real-valued) SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last two dimensions of the input.
+
+    The endpoints ``grid_in`` and ``grid_out`` describe global domains; ``grid``
+    remains the global spatial descriptor.
 
     **Distribution scheme.**
     The input tensor has shape ``(B, C, nlat_local, nlon_local)`` where latitudes
@@ -213,6 +216,16 @@ class DistributedRealSHT(nn.Module):
     @property
     def lmmax(self) -> Optional[int]:
         return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> RegularGridS2:
+        """Global spatial domain of the input field."""
+        return self.grid
+
+    @property
+    def grid_out(self) -> SpectralGrid:
+        """Global spectral coefficient support of the output."""
+        return self._trunc
 
     def extra_repr(self):
         return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
@@ -423,6 +436,16 @@ class DistributedInverseRealSHT(nn.Module):
     def lmmax(self) -> Optional[int]:
         return self._trunc.lmmax
 
+    @property
+    def grid_in(self) -> SpectralGrid:
+        """Global spectral coefficient support of the input."""
+        return self._trunc
+
+    @property
+    def grid_out(self) -> RegularGridS2:
+        """Global spatial grid sampled by the output field."""
+        return self.grid
+
     def extra_repr(self):
         return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
@@ -628,6 +651,16 @@ class DistributedRealVectorSHT(nn.Module):
     def lmmax(self) -> Optional[int]:
         return self._trunc.lmmax
 
+    @property
+    def grid_in(self) -> RegularGridS2:
+        """Global spatial domain of the input field."""
+        return self.grid
+
+    @property
+    def grid_out(self) -> SpectralGrid:
+        """Global spectral coefficient support of the output."""
+        return self._trunc
+
     def extra_repr(self):
         return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
@@ -821,6 +854,16 @@ class DistributedInverseRealVectorSHT(nn.Module):
     @property
     def lmmax(self) -> Optional[int]:
         return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> SpectralGrid:
+        """Global spectral coefficient support of the input field."""
+        return self._trunc
+
+    @property
+    def grid_out(self) -> RegularGridS2:
+        """Global spatial domain of the output field."""
+        return self.grid
 
     def extra_repr(self):
         return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"

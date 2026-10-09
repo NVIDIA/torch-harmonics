@@ -490,6 +490,12 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             inv_local = th.InverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
             fwd_buf, inv_buf = "weights", "pct"
 
+        spectral_grid = th.truncate_sht(fwd_dist.grid, lmax, mmax, lmmax)
+        self.assertIs(fwd_dist.grid_in, fwd_dist.grid)
+        self.assertEqual(fwd_dist.grid_out, spectral_grid)
+        self.assertEqual(inv_dist.grid_in, spectral_grid)
+        self.assertIs(inv_dist.grid_out, inv_dist.grid)
+
         # offsets are recomputed here from the per-rank shape lists rather than read off the
         # transform, so a wrong offset in the construction is not masked by reusing it
         lat_off = sum(fwd_dist.lat_shapes[: self.hrank])

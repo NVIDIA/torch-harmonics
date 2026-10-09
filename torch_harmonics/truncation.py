@@ -31,10 +31,9 @@
 
 import math
 import warnings
-from numbers import Integral
-from typing import NamedTuple, Optional
+from typing import Optional
 
-from torch_harmonics.grid import PointSetS2, RegularGridS2, require_point_set, require_regular_grid
+from torch_harmonics.grid import PointSetS2, RegularGridS2, SpectralGrid, require_point_set, require_regular_grid
 
 
 def _warn_if_not_spectrally_accurate(grid: RegularGridS2) -> None:
@@ -62,13 +61,7 @@ def _warn_if_not_spectrally_accurate(grid: RegularGridS2) -> None:
     )
 
 
-class _SpectralTruncation(NamedTuple):
-    lmax: int
-    mmax: int
-    lmmax: Optional[int]
-
-
-def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, lmmax: Optional[int] = None) -> _SpectralTruncation:
+def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, lmmax: Optional[int] = None) -> SpectralGrid:
     r"""
     Resolve the three non-inclusive spectral bounds of a regular-grid SHT.
 
@@ -132,10 +125,9 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
 
     Returns
     -------
-    object
-        Resolved spectral bounds with ``lmax``, ``mmax``, and ``lmmax``
-        attributes. ``lmmax`` is ``None`` when the degree-minus-order
-        bandwidth is unrestricted.
+    SpectralGrid
+        Descriptor of the resolved coefficient support. ``lmmax`` is ``None``
+        when the degree-minus-order bandwidth is unrestricted.
 
     Examples
     --------
@@ -157,11 +149,12 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     # rather than letting an AttributeError surface from deeper in
     grid = require_regular_grid(grid)
 
-    for name, value in (("lmax", lmax), ("mmax", mmax)):
-        if value is not None and (not isinstance(value, Integral) or isinstance(value, bool) or value < 0):
-            raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
-    if lmmax is not None and (not isinstance(lmmax, Integral) or isinstance(lmmax, bool) or lmmax <= 0):
-        raise ValueError(f"lmmax must be a positive integer, got {lmmax!r}")
+    if lmax is not None:
+        lmax = SpectralGrid._normalize_bound("lmax", lmax, 0, "non-negative")
+    if mmax is not None:
+        mmax = SpectralGrid._normalize_bound("mmax", mmax, 0, "non-negative")
+    if lmmax is not None:
+        lmmax = SpectralGrid._normalize_bound("lmmax", lmmax, 1, "positive")
 
     # Resolve grid defaults without clamping any explicit spectral bound.
     default_lmax = grid.max_exact_degree
@@ -183,10 +176,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
         lmax = min(lmax, mmax)
         mmax = lmax
 
-    if mmax > lmax:
-        raise ValueError(f"mmax={mmax} exceeds lmax={lmax}; orders m >= lmax cannot be represented")
-
-    return _SpectralTruncation(lmax, mmax, lmmax)
+    return SpectralGrid(lmax, mmax, lmmax)
 
 
 def _warn_if_default_moved(grid: PointSetS2) -> None:
