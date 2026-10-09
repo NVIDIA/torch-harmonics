@@ -273,15 +273,25 @@ there, so run the tests on GPUs yourself when you change them.
 Each rank is a separate pytest process. Tests read `WORLD_RANK`, `GRID_H`, `GRID_W`,
 `MASTER_ADDR`, and `MASTER_PORT` from the environment; the world size is `GRID_H * GRID_W`
 (see `tests/testutils.py`). Set `WORLD_RANK` for every process: it defaults to 0, and `RANK`
-is not read in its place. To run one file on a 2x2 grid the way CI does:
+is not read in its place. To run one file on a 2x2 grid on CPU the way CI does:
 
 ```bash
-export GRID_H=2 GRID_W=2 MASTER_ADDR=localhost MASTER_PORT=29501
+export CUDA_VISIBLE_DEVICES="" GRID_H=2 GRID_W=2 MASTER_ADDR=localhost MASTER_PORT=29501
+pids=()
 for r in $(seq 0 $((GRID_H * GRID_W - 1))); do
   WORLD_RANK=$r python3 -m pytest -q tests/test_distributed_sht.py > rank$r.log 2>&1 &
+  pids+=($!)
 done
-wait
+status=0
+for r in "${!pids[@]}"; do
+  wait "${pids[$r]}" || { echo "rank $r failed:"; cat rank$r.log; status=1; }
+done
+echo "exit status: $status"
 ```
+
+Leaving out `CUDA_VISIBLE_DEVICES=""` runs the tests on GPUs with NCCL whenever CUDA is
+available. That needs one visible GPU per rank, since ranks are assigned to GPUs round-robin
+and NCCL does not support several ranks on one GPU.
 
 `tests/run_tests.sh -d --grid_size_lat 2 --grid_size_lon 2` launches the same through `mpirun`
 (Open MPI), but covers only the SHT, convolution, and resample suites. If you change distributed
