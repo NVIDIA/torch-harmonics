@@ -1297,7 +1297,7 @@ class TestKpackedPath(unittest.TestCase):
 
         set_seed(7)
         conv = self._make_conv(1, 8, (16, 32))
-        self.assertEqual(conv.backend.name, "kpacked")
+        self.assertEqual(conv.backend.name, "regular-kpacked")
         arcs = _arc_state(conv)
         kpacked = (conv.psi_kpacked_idx, conv.psi_kpacked_vals, conv.psi_kpacked_offset)
 

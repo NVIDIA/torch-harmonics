@@ -732,7 +732,7 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         grid = th.as_grid("equiangular", nlat=32, nlon=64)
         conv = thd.DistributedDiscreteContinuousConvS2(grid, grid, 4, 4, kernel_shape=(3, 3), fused=True, optimized_kernel=False)
         self.assertTrue(conv.fused)
-        self.assertEqual(conv.backend.name, "reference")
+        self.assertEqual(conv.backend.name, "regular-reference")
 
     def test_polar_mode_rejects_unknown_value(self):
         """An unrecognised mode is a typo, not a request for a default."""
