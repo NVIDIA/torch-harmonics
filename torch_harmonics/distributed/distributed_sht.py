@@ -128,7 +128,6 @@ class DistributedRealSHT(nn.Module):
         mmax: Optional[int] = None,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        *,
         lmmax: Optional[int] = None,
     ):
 
@@ -355,7 +354,6 @@ class DistributedInverseRealSHT(nn.Module):
         mmax: Optional[int] = None,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        *,
         lmmax: Optional[int] = None,
     ):
 
@@ -544,7 +542,6 @@ class DistributedRealVectorSHT(nn.Module):
         mmax: Optional[int] = None,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        *,
         lmmax: Optional[int] = None,
     ):
 
@@ -759,7 +756,6 @@ class DistributedInverseRealVectorSHT(nn.Module):
         mmax: Optional[int] = None,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        *,
         lmmax: Optional[int] = None,
     ):
 
