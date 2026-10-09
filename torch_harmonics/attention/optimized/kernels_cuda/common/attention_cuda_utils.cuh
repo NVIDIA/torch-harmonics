@@ -43,6 +43,7 @@
 
 #include "../../attention_checks.h"
 #include "../../attention_math.h"
+#include "../../../../csrc/cuda_launch.cuh"
 
 #define WARP_SIZE (32)
 #define FULL_MASK (0xFFFFFFFF)
@@ -89,15 +90,16 @@ namespace attention_kernels
 
     unsigned int next_pow2(unsigned int x);
 
-    void ensure_dyn_shmem(const void *kern, size_t shsize);
+    // Opt a kernel in to more than the default 48 KiB of dynamic shared memory, and launch
+    // it through that; see th_cuda::launch_dyn_shmem. The request grows with the channel
+    // count, so every launch with a channel-dependent shsize goes through here.
+    inline void ensure_dyn_shmem(const void *kern, size_t shsize)
+    {
+        th_cuda::ensure_dyn_shmem(kern, shsize, "attention kernel",
+                                  "the request grows with the per-head channel count, so use fewer channels per head "
+                                  "(more heads)");
+    }
 
-    // Launch a kernel that takes dynamic shared memory, opting in first when the request
-    // exceeds the default 48 KiB -- without the opt-in such a launch fails with
-    // cudaErrorInvalidValue. The request grows with the channel count, so every launch
-    // with a channel-dependent shsize goes through here. kern must be the fully
-    // specified instantiation; the launch arguments then have to convert to its
-    // parameters, so naming the wrong storage type fails to compile instead of opting
-    // in a kernel that is never launched.
     template <typename... KArgs, typename... Args>
     inline void launch_dyn_shmem(void (*kern)(KArgs...), dim3 grid, dim3 block, size_t shsize, cudaStream_t stream,
                                  Args &&...args)

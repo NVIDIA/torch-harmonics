@@ -39,6 +39,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 
+from torch_harmonics._backend import BackendSelectionMixin
 from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
@@ -391,7 +392,7 @@ class AttentionS2(nn.Module):
         return self._to_channels_first(out, self.grid_out)
 
 
-class NeighborhoodAttentionS2(nn.Module):
+class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
     r"""
     Neighborhood attention on the 2-sphere.
 
@@ -667,29 +668,11 @@ class NeighborhoodAttentionS2(nn.Module):
         """
         pass
 
-    def _select_backend(self) -> None:
-        """
-        Pick the backend for the current device and register exactly its state.
+    def _no_backend_message(self, device: torch.device) -> str:
+        return f"no attention backend serves {type(self.grid_in).__name__} -> {type(self.grid_out).__name__} on {device}"
 
-        The previous backend's buffers are removed first, so the module carries one
-        backend's tensors and never a union of them.
-        """
-        device = self.device
-        backend = next((b for b in self._backends if b.available(self, device)), None)
-        if backend is None:
-            raise RuntimeError(f"no attention backend serves {type(self.grid_in).__name__} -> {type(self.grid_out).__name__} on {device}")
-        backend = backend()
-
-        for name in self._backend_state:
-            delattr(self, name)
-
-        state = backend.prepare(self, device)
-        for name, tensor in state.items():
-            self.register_buffer(name, tensor, persistent=False)
-
-        self._backend_state = tuple(state)
-        self.backend = backend
-
+    def _on_backend_selected(self, backend, device: torch.device) -> None:
+        """Warn when the layer lands on the torch reference although the compiled kernels were asked for."""
         if backend.reference and self._optimized_kernel_requested:
             if not optimized_kernels_is_available():
                 reason = "torch_harmonics was built without the compiled attention kernels"
@@ -701,38 +684,6 @@ class NeighborhoodAttentionS2(nn.Module):
                 f"{type(self).__name__} on {device} falls back to the torch reference implementation ({backend.name}), because {reason}. "
                 "It is considerably slower. Pass optimized_kernel=False to select the reference explicitly and silence this warning."
             )
-
-    def _apply(self, fn, recurse: bool = True):
-        """
-        Reselect the backend when the module changes device, and restore its state when a
-        dtype change has cast it.
-
-        ``_apply`` rather than ``to``: ``.cuda()``, ``.cpu()``, ``.half()`` and
-        ``.double()`` never call ``to``, so it is the only hook that sees every move.
-
-        A dtype change casts every floating buffer, backend state included, but that state
-        has a dtype its backend fixes: the quadrature weights are float32 for the kernels,
-        which read them as such, and for the references float32 too unless the layer is
-        float64. A dtype change can also change the backend, since a float64 layer takes
-        the reference. So a dtype change is answered by selecting and preparing again, just
-        as a device move is -- which is also what keeps ``.half()`` from handing the
-        kernels a 16-bit buffer they would read as ``float``. The test is on what actually
-        changed, the device, the layer's dtype or the state's dtypes, not on the call.
-
-        The state of the outgoing backend is moved or cast by ``super()._apply`` and then
-        thrown away -- a few MB, once per move, against not having to know the target
-        device or dtype before anything has been touched.
-        """
-        device_before, dtype_before = self.device, self.dtype
-        dtypes_before = {name: getattr(self, name).dtype for name in self._backend_state}
-        out = super()._apply(fn, recurse)
-        state_cast = any(getattr(self, name).dtype != dtype for name, dtype in dtypes_before.items())
-        # the layer's own dtype decides the backend too (float64 takes the reference), and
-        # can change without casting the state: a reference backend's state may already
-        # be float32 when .float() brings the layer back from float64
-        if self.device != device_before or self.dtype != dtype_before or state_cast:
-            self._select_backend()
-        return out
 
     def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
         """

@@ -314,20 +314,13 @@ namespace disco_kernels
     torch::Tensor disco_cuda_fwd_kpacked_sm100(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
                                                torch::Tensor pack_offset, int64_t K, int64_t Ho, int64_t Wo)
     {
+        // validated, and the device guarded, by the dispatcher in disco_cuda_fwd_dense_kpacked_sm90.cu
         const auto inp_dtype = inp.scalar_type();
-        TORCH_CHECK(inp_dtype == at::ScalarType::BFloat16 || inp_dtype == at::ScalarType::Half,
-                    "disco_kernels::forward_kpacked (SM_100a) requires bf16 or fp16 input");
-
         const int64_t B = inp.size(0);
         const int64_t C = inp.size(1);
         const int64_t Hi = inp.size(2);
         const int64_t Wi = inp.size(3);
-
-        TORCH_CHECK(Wi % Wo == 0, "Wi (", Wi, ") must be divisible by Wo (", Wo, ")");
-        TORCH_CHECK(Wo % 8 == 0, "Wo (", Wo, ") must be divisible by 8");
-
         const int64_t K_PAD = pack_val.size(1); // pack_val is [nnz, K_PAD]
-        TORCH_CHECK(K_PAD == 8 || K_PAD == 16, "K_PAD must be 8 or 16, got ", K_PAD);
 
         constexpr int BC_TILE = 8;
         constexpr int WO_TILE = 8;
