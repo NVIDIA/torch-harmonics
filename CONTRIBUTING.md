@@ -270,9 +270,10 @@ serial ones are correct. CI runs every `tests/test_distributed_*.py` file on CPU
 backend, on process grids from 1x1 to 4x2 (up to 8 ranks). CUDA and NCCL paths are skipped
 there, so run the tests on GPUs yourself when you change them.
 
-Each rank is a separate pytest process. Tests read `WORLD_RANK` (or `RANK`), `GRID_H`,
-`GRID_W`, `MASTER_ADDR`, and `MASTER_PORT` from the environment; the world size is
-`GRID_H * GRID_W` (see `tests/testutils.py`). To run one file on a 2x2 grid the way CI does:
+Each rank is a separate pytest process. Tests read `WORLD_RANK`, `GRID_H`, `GRID_W`,
+`MASTER_ADDR`, and `MASTER_PORT` from the environment; the world size is `GRID_H * GRID_W`
+(see `tests/testutils.py`). Set `WORLD_RANK` for every process: it defaults to 0, and `RANK`
+is not read in its place. To run one file on a 2x2 grid the way CI does:
 
 ```bash
 export GRID_H=2 GRID_W=2 MASTER_ADDR=localhost MASTER_PORT=29501
