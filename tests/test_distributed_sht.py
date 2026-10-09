@@ -210,6 +210,10 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, None],
             [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, 6],
             [32, 64, 24, 1, 10, "legendre-gauss", True, 1e-5, 1e-6, 9, 6],
+            [96, 192, 85, 1, 2, "legendre-gauss", False, 1e-5, 1e-6, 43, 43],
+            [96, 192, 85, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
+            [96, 192, 64, 1, 2, "legendre-gauss", False, 1e-5, 1e-6, 43, 43],
+            [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
         ],
         skip_on_empty=True,
     )
@@ -352,6 +356,10 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, None],
             [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, 6],
             [32, 64, 24, 1, 10, "legendre-gauss", True, 1e-5, 1e-6, 9, 6],
+            [96, 192, 85, 1, 2, "legendre-gauss", False, 1e-5, 1e-6, 43, 43],
+            [96, 192, 85, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
+            [96, 192, 64, 1, 2, "legendre-gauss", False, 1e-5, 1e-6, 43, 43],
+            [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
         ],
         skip_on_empty=True,
     )
