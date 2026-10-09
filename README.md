@@ -94,15 +94,13 @@ Prebuilt Linux wheels with compiled CUDA extensions are available on [pypi.nvidi
 | 13.0 | `torch-harmonics-cu130` | 2.9.1 | `pip install torch-harmonics-cu130 --extra-index-url https://pypi.nvidia.com` |
 | 13.2 | `torch-harmonics-cu132` | 2.12.0 | `pip install torch-harmonics-cu132 --extra-index-url https://pypi.nvidia.com` |
 
-If you don't need a specific CUDA version, use one of the rolling aliases:
+If you don't need a specific CUDA version, use the rolling alias for the latest CUDA build:
 
 ```bash
-# latest CUDA build
 pip install torch-harmonics-cuda-latest --extra-index-url https://pypi.nvidia.com
-
-# CPU only
-pip install torch-harmonics-cpu-latest --extra-index-url https://pypi.nvidia.com
 ```
+
+For a CPU-only build, install the `torch-harmonics` package from [PyPI](#pypi).
 
 > **Tip:** Run `nvidia-smi` to check your driver's CUDA version.
 

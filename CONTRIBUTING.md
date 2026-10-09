@@ -166,8 +166,7 @@ to stubs and those GPUs fall back to the generic path.
 Most users install prebuilt wheels:
 
 - **NVIDIA PyPI** (CUDA): `torch-harmonics-cu126`, `cu128`, `cu129`, etc., or
-  `torch-harmonics-cuda-latest` / `torch-harmonics-cpu-latest`. See
-  [README.md](README.md#installation).
+  `torch-harmonics-cuda-latest`. See [README.md](README.md#installation).
 - **PyPI** (`torch-harmonics`): CPU-only wheel for the latest supported PyTorch release.
 
 Install PyTorch first, then the wheel that matches your CUDA toolkit (`nvidia-smi` for the
@@ -182,8 +181,9 @@ python3 -m build --wheel --no-isolation
 
 The version comes from the git tag through setuptools-scm, so a local build between releases
 is named like `torch_harmonics-0.9.4.dev5+g<hash>-cp311-cp311-linux_x86_64.whl`. Release
-wheels built in CI carry a `+torch<version>.<cuda>` local tag (e.g. `0.9.3+torch2.9.1.cu129`),
-which is stripped before they are published under the per-CUDA package names.
+wheels built in CI carry a `+torch<version>.<cuda>` local tag (e.g. `0.9.3+torch2.9.1.cu129`).
+The release scripts strip it when they repack the wheels under the per-CUDA package names, and
+pin each package to the torch minor version its wheel was built against.
 
 Sanity-check an install:
 
