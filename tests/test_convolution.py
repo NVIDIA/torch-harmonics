@@ -34,7 +34,7 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors, disable_tf32, maybe_autocast, set_seed
+from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors, disable_tf32, maybe_autocast, requires_torch_compile, set_seed
 from torch.library import opcheck
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, HealpixGrid, as_grid
@@ -1638,6 +1638,120 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
             op = torch.ops.disco_kernels._disco_s2_contraction_ragged_optimized
             inp = torch.randn(2, 3, conv.npoints_in, device=self.device, requires_grad=True)
         opcheck(op, (inp, *arcs, conv.kernel_size, conv.npoints_out))
+
+    @parameterized.expand(
+        [
+            # transpose, fused
+            [False, False],
+            [False, True],
+            [True, False],
+        ]
+    )
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    @requires_torch_compile
+    def test_ragged_pt2_compatibility(self, transpose, fused, verbose=False):
+        """The ragged convolution traces as a whole, forward and backward in one graph, and agrees with eager."""
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        fused_kwarg = {"fused": fused} if not transpose else {}
+        conv = self._make(transpose, ("healpix", 4), ("healpix", 2) if not transpose else ("healpix", 8), **fused_kwarg)
+        self.assertEqual(conv.backend.name, "ragged-optimized")
+
+        # aot_eager exercises the fake kernels and the joint graph without needing a codegen toolchain
+        compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
+        inp = _field(2, 4, conv.grid_in, torch.float32, self.device)
+        inp_eager = inp.clone().requires_grad_(True)
+        inp_compiled = inp.clone().requires_grad_(True)
+        out_eager = conv(inp_eager)
+        out_compiled = compiled(inp_compiled)
+        self.assertTrue(compare_tensors("output", out_compiled, out_eager, atol=1e-5, rtol=1e-5, verbose=verbose))
+        grad = torch.randn_like(out_eager)
+        out_eager.backward(grad)
+        weight_grad_eager = conv.weight.grad.clone()
+        conv.weight.grad = None
+        out_compiled.backward(grad)
+        self.assertTrue(compare_tensors("input grad", inp_compiled.grad, inp_eager.grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad, weight_grad_eager, atol=1e-5, rtol=1e-5, verbose=verbose))
+
+    @parameterized.expand([[False], [True]])
+    @unittest.skipUnless(optimized_kernels_is_available(), "skipping test because optimized kernels are not available")
+    def test_no_input_grad(self, transpose):
+        """With an input that does not require grad, backward leaves it alone and still reaches the weight."""
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        conv = self._make(transpose, ("healpix", 4), ("healpix", 4))
+        inp = _field(2, 4, conv.grid_in, torch.float32, self.device)
+        conv(inp).sum().backward()
+        self.assertIsNone(inp.grad)
+        self.assertIsNotNone(conv.weight.grad)
+        for name in conv._backend_state:
+            self.assertIsNone(getattr(conv, name).grad, f"buffer {name} should not accumulate a gradient")
+
+    @parameterized.expand(
+        [
+            # (grid_in, grid_out, in_channels, out_channels, groups, transpose, fused, optimized_kernel, contiguous)
+            # the optimized convolution: weight-first (4->4) and spatial-first (8->2) input
+            # gradient, saved and recomputed (fused) intermediate, groups, a strided input
+            [("healpix", 2), ("healpix", 2), 4, 4, 1, False, False, True, True],
+            [("healpix", 2), ("healpix", 2), 8, 2, 1, False, False, True, True],
+            [("healpix", 2), ("healpix", 2), 4, 4, 1, False, True, True, True],
+            [("healpix", 2), ("healpix", 2), 8, 2, 1, False, True, True, True],
+            [("healpix", 2), ("healpix", 2), 4, 6, 2, False, False, True, True],
+            [("healpix", 2), ("healpix", 2), 4, 4, 1, False, False, True, False],
+            # a regular grid on one side
+            [("equiangular", 9, 16), ("healpix", 2), 4, 4, 1, False, True, True, True],
+            # the torch reference, and the transpose convolution
+            [("healpix", 2), ("healpix", 2), 4, 4, 1, False, False, False, True],
+            [("healpix", 2), ("healpix", 2), 8, 2, 1, False, True, False, True],
+            [("healpix", 2), ("healpix", 2), 4, 4, 1, True, False, True, True],
+            [("healpix", 2), ("equiangular", 9, 16), 4, 4, 1, True, False, True, True],
+            [("healpix", 2), ("healpix", 2), 4, 4, 1, True, False, False, True],
+        ]
+    )
+    def test_double_backward(self, grid_in, grid_out, in_channels, out_channels, groups, transpose, fused, optimized_kernel, contiguous, verbose=False):
+        """Gradients taken with create_graph=True are differentiable, and equal the ordinary ones."""
+        if optimized_kernel and not optimized_kernels_is_available():
+            raise unittest.SkipTest("skipping test because optimized kernels are not available")
+        if optimized_kernel and (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+
+        fused_kwarg = {} if transpose else {"fused": fused}
+        conv = self._make(
+            transpose,
+            grid_in,
+            grid_out,
+            kernel_shape=(3),
+            optimized_kernel=optimized_kernel,
+            dtype=torch.float64,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            groups=groups,
+            **fused_kwarg,
+        )
+        self.assertTrue(conv.ragged)
+
+        inp = _field(1, in_channels, conv.grid_in, torch.float64, self.device)
+        if not contiguous:
+            inp = inp.transpose(1, -1).contiguous().transpose(1, -1)
+            self.assertFalse(inp.is_contiguous())
+        inp.requires_grad_(True)
+        weight = conv.weight.detach().clone().requires_grad_(True)
+
+        def fn(x, w):
+            return torch.func.functional_call(conv, {"weight": w}, (x,))
+
+        # the create_graph backward is a different code path: it must give the same gradients
+        grad = torch.randn_like(fn(inp, weight))
+        plain = torch.autograd.grad(fn(inp, weight), (inp, weight), grad)
+        graphed = torch.autograd.grad(fn(inp, weight), (inp, weight), grad, create_graph=True)
+        self.assertTrue(compare_tensors("input grad", graphed[0], plain[0], atol=1e-12, rtol=1e-10, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", graphed[1], plain[1], atol=1e-12, rtol=1e-10, verbose=verbose))
+
+        # the CUDA scatter kernel accumulates with atomics, so two backward passes differ
+        # in the last bits; gradcheck's reentrancy check wants them bit-identical otherwise
+        self.assertTrue(torch.autograd.gradgradcheck(fn, (inp, weight), nondet_tol=1e-12))
 
     def test_ragged_arcs_roundtrip(self):
         """build_arcs on ring tables is lossless: expanding the arcs gives back psi's entries."""

@@ -815,6 +815,11 @@ class _DiscoRaggedConvFn(torch.autograd.Function):
     things the node is for -- ``recompute`` and the spatial-first input gradient -- on the
     ragged gather and scatter. There is no tensor-core forward here, so the forward is the
     gather and the backward and the recompute the scatter and the gather.
+
+    As there, the backward calls the raw kernels, and under ``create_graph=True`` it is
+    built from the ragged contraction ops and einsums instead (see
+    :func:`_ragged_conv_backward_differentiable`), so double backward works. The input is
+    saved even when the K-expanded intermediate is, for that.
     """
 
     @staticmethod
@@ -839,11 +844,14 @@ class _DiscoRaggedConvFn(torch.autograd.Function):
         split_row_offsets,
     ):
         itype = inp.dtype
-        inp = inp.contiguous()
         vals_c = vals.to(_compute_dtype(itype))
-        x_expanded = disco_kernels.forward_ragged.default(inp, row_ker, row_pt, seg_off, seg, val_off, vals_c, ring_base, ring_size, kernel_size, npoints_out).to(itype)
+        x_expanded = disco_kernels.forward_ragged.default(inp.contiguous(), row_ker, row_pt, seg_off, seg, val_off, vals_c, ring_base, ring_size, kernel_size, npoints_out).to(
+            itype
+        )
 
-        ctx.save_for_backward(inp if recompute else x_expanded, weight, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, split_ker)
+        # the input as passed, not a contiguous copy made here: only the input carries its
+        # graph into a create_graph backward. Saving it only keeps a reference.
+        ctx.save_for_backward(inp, None if recompute else x_expanded, weight, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, split_ker)
         ctx.recompute = recompute
         ctx.kernel_size = kernel_size
         ctx.npoints_in = inp.shape[-1]
@@ -859,7 +867,7 @@ class _DiscoRaggedConvFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        saved, weight, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, split_ker = ctx.saved_tensors
+        inp, x_expanded, weight, row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, split_ker = ctx.saved_tensors
 
         itype = grad_output.dtype
         vals_c = vals.to(_compute_dtype(itype))
@@ -870,6 +878,16 @@ class _DiscoRaggedConvFn(torch.autograd.Function):
         Og = weight.shape[1]
         B = grad_output.shape[0]
         grad_output_r = grad_output.reshape(B, G, Og, N)
+
+        # inp, weight, then the eight ragged arc arrays, split_ker, kernel_size,
+        # npoints_out, groups, groupsize, recompute, split_row_offsets
+        nones = (None,) * 15
+
+        # create_graph=True: the gradients must be differentiable themselves. Eager only, a
+        # compiled backward rejects create_graph by itself.
+        if torch.is_grad_enabled() and not torch.compiler.is_compiling():
+            arcs = (row_ker, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size)
+            return _ragged_conv_backward_differentiable(ctx, grad_output_r, inp, weight, arcs) + nones
 
         grad_inp = None
         grad_weight = None
@@ -887,15 +905,37 @@ class _DiscoRaggedConvFn(torch.autograd.Function):
 
         if ctx.needs_input_grad[1]:
             if ctx.recompute:
-                x_expanded = disco_kernels.forward_ragged.default(saved, row_ker, row_pt, seg_off, seg, val_off, vals_c, ring_base, ring_size, K, N)
-            else:
-                x_expanded = saved
+                x_expanded = disco_kernels.forward_ragged.default(inp.contiguous(), row_ker, row_pt, seg_off, seg, val_off, vals_c, ring_base, ring_size, K, N)
             x_expanded = x_expanded.to(itype).reshape(B, G, Cg, K, N)
             grad_weight = torch.einsum("bgon,bgckn->gock", grad_output_r, x_expanded)
 
-        # inp, weight, then the eight ragged arc arrays, split_ker, kernel_size,
-        # npoints_out, groups, groupsize, recompute, split_row_offsets
-        return (grad_inp, grad_weight) + (None,) * 15
+        return (grad_inp, grad_weight) + nones
+
+
+def _ragged_conv_backward_differentiable(ctx, grad_output_r, inp, weight, arcs):
+    """
+    The backward of :class:`_DiscoRaggedConvFn` from ops autograd can see, for ``create_graph=True``.
+
+    The ragged counterpart of :func:`_conv_backward_differentiable`: the ragged contraction
+    op and its transpose are each other's backward, so the gradients built from them and
+    the two einsums are differentiable to any order.
+    """
+    B, G, Og, N = grad_output_r.shape
+    K, Cg = ctx.kernel_size, ctx.groupsize
+    itype = grad_output_r.dtype
+
+    grad_inp = None
+    grad_weight = None
+
+    if ctx.needs_input_grad[0]:
+        grad_x_expanded = torch.einsum("bgon,gock->bgckn", grad_output_r, weight.to(itype)).reshape(B, G * Cg, K, N)
+        grad_inp = _disco_s2_transpose_contraction_ragged_optimized(grad_x_expanded, *arcs, K, ctx.npoints_in)
+
+    if ctx.needs_input_grad[1]:
+        x_expanded = _disco_s2_contraction_ragged_optimized(inp.to(itype), *arcs, K, N).reshape(B, G, Cg, K, N)
+        grad_weight = torch.einsum("bgon,bgckn->gock", grad_output_r, x_expanded)
+
+    return grad_inp, grad_weight
 
 
 def _disco_s2_conv_ragged_optimized(inp, weight, arcs, split, kernel_size, npoints_out, groups, groupsize, recompute=False):
