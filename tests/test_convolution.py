@@ -31,6 +31,7 @@
 
 import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
@@ -38,9 +39,10 @@ from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors
 from torch.library import opcheck
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, HealpixGrid, as_grid
+from torch_harmonics.disco import backends as disco_backends
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 from torch_harmonics.disco._psi_layouts import arcs_to_coo, build_arcs, build_kpacked
-from torch_harmonics.disco.backends import RegularOptimizedBackend, RegularReferenceBackend
+from torch_harmonics.disco.backends import RaggedOptimizedBackend, RaggedReferenceBackend, RegularOptimizedBackend, RegularReferenceBackend
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
@@ -1504,6 +1506,28 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
         conv = self._make(False, ("equiangular", 9, 16), ("equiangular", 9, 16))
         self.assertFalse(conv.ragged)
         self.assertTrue(conv.backend.name.startswith("regular-"))
+
+    @parameterized.expand([["regular"], ["ragged"]])
+    def test_optimized_only_on_devices_with_a_kernel(self, family):
+        """
+        The compiled backend accepts only a device this build has a kernel for, so a layer
+        moved to MPS, or to CUDA under a CPU-only build, takes the reference instead of
+        failing in the dispatcher on its first forward. A build without a kernel for this
+        device is simulated by emptying the backend's device set.
+        """
+        grid = ("healpix", 4) if family == "ragged" else ("equiangular", 9, 16)
+        optimized, reference = (RaggedOptimizedBackend, RaggedReferenceBackend) if family == "ragged" else (RegularOptimizedBackend, RegularReferenceBackend)
+        conv = self._make(False, grid, grid)
+
+        self.assertFalse(optimized.available(conv, torch.device("mps")))
+        self.assertEqual(optimized.available(conv, torch.device("cuda")), optimized_kernels_is_available() and cuda_kernels_is_available())
+        self.assertEqual(optimized.available(conv, torch.device("cpu")), optimized_kernels_is_available())
+        self.assertTrue(reference.available(conv, torch.device("mps")))
+
+        devices = "_RAGGED_DEVICES" if family == "ragged" else "_REGULAR_DEVICES"
+        with mock.patch.object(disco_backends, devices, frozenset()):
+            conv = self._make(False, grid, grid)
+        self.assertEqual(conv.backend.name, reference.name)
 
     @parameterized.expand(
         [

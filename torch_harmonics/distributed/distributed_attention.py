@@ -35,8 +35,9 @@ import torch
 import torch.distributed as dist
 from attention_helpers import optimized_kernels_is_available
 
+from torch_harmonics._backend import _kernel_device_types
 from torch_harmonics.attention import attention_kernels
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim, _kernel_device_types, _reciprocal_or_zero
+from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim, _reciprocal_or_zero
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context

@@ -91,7 +91,7 @@ from typing import TYPE_CHECKING
 import torch
 from disco_helpers import optimized_kernels_is_available
 
-from torch_harmonics._backend import BackendS2
+from torch_harmonics._backend import BackendS2, _kernel_device_types
 
 from ._psi_layouts import build_arcs, build_kpacked, build_split
 from .kernels_torch.disco_ragged_torch import _disco_s2_contraction_ragged_torch, _disco_s2_transpose_contraction_ragged_torch
@@ -122,6 +122,12 @@ _ARC_STATE = ("psi_row_ker", "psi_row_lat", "psi_seg_off", "psi_seg", "psi_val_o
 
 #: the same on a ragged layer, where a row is a point, followed by the ring tables
 _RAGGED_ARC_STATE = ("psi_row_ker", "psi_row_pt", "psi_seg_off", "psi_seg", "psi_val_off", "psi_vals", "psi_ring_base", "psi_ring_size")
+
+#: the device types each compiled forward has a kernel for: CPU, and CUDA when built with
+#: it. A CUDA layer under a CPU-only build falls through to the reference instead of
+#: failing in forward.
+_REGULAR_DEVICES = _kernel_device_types("disco_kernels::forward_regular")
+_RAGGED_DEVICES = _kernel_device_types("disco_kernels::forward_ragged")
 
 _HALF_DTYPES = (torch.float16, torch.bfloat16)
 
@@ -203,15 +209,16 @@ class RegularOptimizedBackend(DiscoBackendS2):
     The compiled gather and scatter kernels, CPU or CUDA, on psi in arc form.
 
     The operators are registered for both devices, so the dispatcher picks the kernel
-    and this one backend serves either -- the device is not a condition here, only
-    whether the kernels were built and the layer wants them.
+    and this one backend serves either. The device test is only whether this build has a
+    kernel for the device at all: MPS, XPU, or CUDA under a CPU-only build fall through
+    to the reference.
     """
 
     name = "regular-optimized"
 
     @classmethod
     def available(cls, layer, device):
-        return not layer.ragged and layer.optimized_kernel and optimized_kernels_is_available()
+        return not layer.ragged and layer.optimized_kernel and device.type in _REGULAR_DEVICES
 
     def prepare(self, layer, device):
         return self._arc_state(layer, device)
@@ -324,7 +331,7 @@ class RaggedOptimizedBackend(DiscoBackendS2):
 
     @classmethod
     def available(cls, layer, device):
-        return layer.ragged and layer.optimized_kernel and optimized_kernels_is_available()
+        return layer.ragged and layer.optimized_kernel and device.type in _RAGGED_DEVICES
 
     def prepare(self, layer, device):
         grid = layer._psi_col_grid
