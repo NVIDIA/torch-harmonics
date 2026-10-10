@@ -50,12 +50,12 @@ def _extended_cc_analysis(grid: RegularGridS2, spectral_grid: SpectralGrid) -> b
 
 
 def _precompute_cc_resampling(nlat: int, mmax: int, vector: bool = False) -> dict[str, torch.Tensor]:
-    """Small real buffers for the runtime fold, including the longitude scale."""
+    """Small real construction buffers for folding, including the longitude scale."""
     dense_weights = 2.0 * torch.pi * EquiangularGrid(nlat=2 * nlat - 1, nlon=1).colat_weights
     midpoint_weights = dense_weights[1::2]
     frequencies = torch.fft.fftfreq(2 * (nlat - 1), dtype=torch.float64)
     angle = torch.pi * frequencies
-    # Store real components so Module.to(dtype=...) preserves the phase.
+    # Encode the phase as real float64 components for complex reconstruction below.
     phase = torch.stack((angle.cos(), angle.sin()), dim=0)
     # The unpaired Nyquist sample represents a cosine, with equal +/- frequencies.
     # At half-grid positions their phases cancel. Suppressing this bin preserves
@@ -212,14 +212,14 @@ class RealSHT(nn.Module):
     where :math:`\tilde{f}_m` are the Fourier modes and :math:`q_k` are the
     quadrature weights.
 
-    On equiangular grids, ``lmax > grid.max_exact_degree`` selects precomputed
-    folded Clenshaw--Curtis analysis following :cite:`Reinecke2023`, Appendix A,
-    when the resolved exclusive bounds satisfy ``lmax <= nlat - 1`` and
-    ``mmax <= (nlon + 1) // 2``. These are the accurate band-limited recovery
-    limits. Oversized dimensions retain legacy direct quadrature without
-    implying accurate recovery. The default truncation is unchanged. Extended analysis
-    is intended for float32 and float64; its precomputation latitude FFT has length
-    ``2 * (nlat - 1)``.
+    On equiangular grids, explicit ``lmax > grid.max_exact_degree`` selects
+    precomputed folded Clenshaw--Curtis analysis following :cite:`Reinecke2023`,
+    Appendix A, when the resolved exclusive bounds satisfy
+    ``lmax <= nlat - 1`` and ``mmax <= (nlon + 1) // 2``. These are the
+    accurate band-limited recovery limits. Oversized dimensions retain legacy
+    direct quadrature without implying accurate recovery. The default
+    truncation is unchanged. Extended analysis is intended for float32 and
+    float64; its precomputation latitude FFT has length ``2 * (nlat - 1)``.
 
     .. seealso::
         :doc:`/guide/spherical_harmonic_transforms`
@@ -569,14 +569,14 @@ class RealVectorSHT(nn.Module):
     :math:`\hat{s}_l^m` and :math:`\hat{t}_l^m` using the derivatives of the
     associated Legendre polynomials.
 
-    On equiangular grids, ``lmax > grid.max_exact_degree`` selects precomputed
-    folded Clenshaw--Curtis analysis following :cite:`Reinecke2023`, Appendix A,
-    when the resolved exclusive bounds satisfy ``lmax <= nlat - 1`` and
-    ``mmax <= (nlon + 1) // 2``. These are the accurate band-limited recovery
-    limits. Oversized dimensions retain legacy direct quadrature without
-    implying accurate recovery. The default truncation is unchanged. Extended analysis
-    is intended for float32 and float64; its precomputation latitude FFT has length
-    ``2 * (nlat - 1)``.
+    On equiangular grids, explicit ``lmax > grid.max_exact_degree`` selects
+    precomputed folded Clenshaw--Curtis analysis following :cite:`Reinecke2023`,
+    Appendix A, when the resolved exclusive bounds satisfy
+    ``lmax <= nlat - 1`` and ``mmax <= (nlon + 1) // 2``. These are the
+    accurate band-limited recovery limits. Oversized dimensions retain legacy
+    direct quadrature without implying accurate recovery. The default
+    truncation is unchanged. Extended analysis is intended for float32 and
+    float64; its precomputation latitude FFT has length ``2 * (nlat - 1)``.
 
     .. seealso::
         :doc:`/guide/spherical_harmonic_transforms`

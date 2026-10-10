@@ -44,6 +44,64 @@ Clenshaw-Curtis quadrature. This is the layout of most reanalysis and climate
 data, for example ERA5 at 0.25 degrees (`nlat=721, nlon=1440`). Its default SHT
 truncation is `lmax = (nlat + 1) // 2`.
 
+`RealSHT`, `RealVectorSHT`, `DistributedRealSHT` and
+`DistributedRealVectorSHT` also support extended analysis when an explicit
+`lmax` exceeds `grid.max_exact_degree`. They fold quadrature from a doubled
+Clenshaw-Curtis grid onto effective Legendre projection weights during
+construction, following Appendix A of {cite}`Reinecke2023`. For a
+band-limited field the exclusive limits are `lmax <= nlat - 1` and
+`mmax <= (nlon + 1) // 2`; the even-longitude Nyquist order is excluded because
+it cannot recover a complex coefficient. Extended analysis is selected only
+within these recovery limits. Larger requested dimensions, including an
+inferred `mmax` beyond the recovery limit, retain legacy direct quadrature
+without clamping `lmax`, `mmax` or `lmmax`. Accepted spectral dimensions do not
+imply accurate recovery. Invalid `SpectralGrid` bounds still raise `ValueError`.
+Independent `lmax`, `mmax` and `lmmax` support is preserved.
+
+Writing the folded latitude operator as $U_m = Q_e + A_m^* Q_o A_m$, analysis
+is $P_m^T U_m x_m = W_m^T x_m$ with $W_m = U_m^T P_m$. Half-grid interpolation
+suppresses the unpaired meridional Nyquist cosine in the shifted $Q_o$ term; the
+original-grid cosine in $Q_e$ is unchanged. This makes $U_m$ real and symmetric.
+Scalar continuation uses $(-1)^m$ and tangential vector continuation
+uses $(-1)^{m+1}$. Both derivative components use the same vector parity.
+Precomputation runs in float64 degree/order blocks; modules retain only real,
+nonpersistent weights and cast them when requested. A two-entry cache can retain
+up to two completed float64 projection tables in host memory, in addition to the
+independent projection buffers owned by each module.
+
+This increases construction time while removing meridional FFTs from every
+analysis call. Persistent storage remains one scalar projection table or two
+vector projection tables. Distributed ranks generate their local global-order
+range on the full meridian, then retain their latitude shard. Polar ranks repeat
+that initialization work, but forward communication remains the existing two
+azimuth redistributions and polar reduce-scatter. There is no latitude gather.
+
+For even `nlon`, the inferred azimuthal bound can include the Nyquist order and
+disable extended analysis for the whole transform. For example, `mmax` is
+inferred as 33 below, including order 32, so the transform uses direct quadrature
+even though `lmax=70` is within the latitude recovery limit. Set `mmax=32` to
+exclude Nyquist and select extended analysis:
+
+```python
+grid = th.as_grid("equiangular", nlat=129, nlon=64)
+direct = th.RealSHT(grid, lmax=70)  # inferred mmax=33 includes the Nyquist order
+extended = th.RealSHT(grid, lmax=70, mmax=32)
+```
+
+```python
+grid = th.as_grid("equiangular", nlat=73, nlon=144)
+sht = th.RealSHT(grid, lmax=72, mmax=72)
+isht = th.InverseRealSHT(grid, lmax=72, mmax=72)
+# Degrees and orders through 71; sht.grid_out == th.SpectralGrid(72, 72).
+```
+
+The default remains degree/order limits of 37 on this grid. Its
+`max_exact_degree` continues to describe the native direct quadrature limit.
+Analysis within that limit uses the original direct path, and synthesis
+continues to evaluate harmonics directly on the requested grid. The extended
+analysis paths are intended for float32 and float64. Their constructor
+precomputation uses a latitude FFT of length `2 * (nlat - 1)`.
+
 **Legendre-Gauss.** Rings at the Gauss-Legendre nodes, which exclude the poles.
 The quadrature is exact up to degree `2 * nlat - 1`, the best achievable with
 `nlat` rings, so it supports the highest truncation, `lmax = nlat`. This is the
