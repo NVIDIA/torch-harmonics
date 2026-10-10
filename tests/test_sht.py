@@ -39,6 +39,7 @@ from testutils import compare_tensors, disable_tf32, requires_torch_compile, set
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
+from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import precompute_latitudes
 
 _devices = [(torch.device("cpu"),)]
@@ -279,6 +280,136 @@ class TestLegendrePolynomials(unittest.TestCase):
                 self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
                 ok = compare_tensors(case, block, ref.contiguous(), atol=0.0, rtol=0.0, verbose=verbose)
                 self.assertTrue(ok, msg=f"values differ from the full-table slice: {case}")
+
+
+@parameterized_class(("device"), _devices)
+class TestSpectralLegendreMask(unittest.TestCase):
+    @parameterized.expand(
+        [
+            ("scalar_forward_zero_offsets", _precompute_legpoly, False, 0, 0),
+            ("scalar_forward_order_offset", _precompute_legpoly, False, 3, 0),
+            ("scalar_forward_order_degree_offsets", _precompute_legpoly, False, 3, 5),
+            ("scalar_inverse_zero_offsets", _precompute_legpoly, True, 0, 0),
+            ("scalar_inverse_order_offset", _precompute_legpoly, True, 3, 0),
+            ("scalar_inverse_order_degree_offsets", _precompute_legpoly, True, 3, 5),
+            ("derivative_forward_zero_offsets", _precompute_dlegpoly, False, 0, 0),
+            ("derivative_forward_order_offset", _precompute_dlegpoly, False, 3, 0),
+            ("derivative_forward_order_degree_offsets", _precompute_dlegpoly, False, 3, 5),
+            ("derivative_inverse_zero_offsets", _precompute_dlegpoly, True, 0, 0),
+            ("derivative_inverse_order_offset", _precompute_dlegpoly, True, 3, 0),
+            ("derivative_inverse_order_degree_offsets", _precompute_dlegpoly, True, 3, 5),
+        ]
+    )
+    def test_global_offset_blocks(self, case, builder, inverse, mmin, lmin):
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        trunc = th.truncate_sht(grid, lmax=20, mmax=9, lmmax=6)
+        args = (9, 16, grid)
+        kwargs = dict(mmin=mmin, lmin=lmin, inverse=inverse)
+        original = builder(*args, **kwargs).to(self.device)
+        masked = builder(*args, truncation=trunc, **kwargs).to(self.device)
+        m = torch.arange(mmin, 9, device=self.device)[:, None]
+        l = torch.arange(lmin, 16, device=self.device)[None, :]
+        keep = (m <= l) & (l - m < 6)
+        if builder is _precompute_legpoly:
+            self.assertTrue(torch.equal(masked[keep], original[keep]))
+            self.assertTrue(torch.equal(masked[~keep], torch.zeros_like(masked[~keep])))
+        else:
+            self.assertTrue(torch.equal(masked[:, keep], original[:, keep]))
+            self.assertTrue(torch.equal(masked[:, ~keep], torch.zeros_like(masked[:, ~keep])))
+        self.assertTrue((original[..., (l - m == 6), :].abs() > 0).any())
+
+    @parameterized.expand([("scalar", _precompute_legpoly), ("derivative", _precompute_dlegpoly)])
+    def test_cached_tables_distinguish_lmmax(self, case, builder):
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        args = (9, 16, grid)
+        narrow = builder(*args, truncation=th.SpectralGrid(16, 9, 6)).to(self.device)
+        wide = builder(*args, truncation=th.SpectralGrid(16, 9, 7)).to(self.device)
+
+        narrow_edge = narrow[..., 0, 6, :]
+        wide_edge = wide[..., 0, 6, :]
+        self.assertTrue(torch.equal(narrow_edge, torch.zeros_like(narrow_edge)))
+        self.assertTrue((wide_edge.abs() > 0).any())
+        self.assertTrue(torch.equal(narrow[..., 0, 5, :], wide[..., 0, 5, :]))
+
+    def test_r42_noninclusive_edge(self):
+        grid = th.as_grid("legendre-gauss", nlat=96, nlon=192)
+        trunc = th.truncate_sht(grid, lmax=85, mmax=43, lmmax=43)
+        unmasked = _precompute_legpoly(43, 85, grid, mmin=41, lmin=82)
+        masked = _precompute_legpoly(43, 85, grid, mmin=41, lmin=82, truncation=trunc)
+        self.assertTrue(torch.equal(masked[0, 1], unmasked[0, 1]))  # (m, l) = (41, 83)
+        self.assertTrue(torch.equal(masked[0, 2], torch.zeros_like(masked[0, 2])))  # (41, 84): l-m=43
+        self.assertTrue(torch.equal(masked[1, 2], unmasked[1, 2]))  # (42, 84): l-m=42
+        self.assertTrue((unmasked[0, 2].abs() > 0).any())
+
+
+@parameterized_class(("device"), _devices)
+class TestPentagonalSHT(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        disable_tf32()
+
+    @parameterized.expand(
+        [
+            (f"{truncation}_{dtype_name}_{'vector' if vector else 'scalar'}", lmax, mmax, lmmax, dtype, vector)
+            for truncation, lmax, mmax, lmmax in [
+                ("triangular", 16, 16, None),
+                ("trapezoidal", 20, 9, None),
+                ("rhomboidal", 17, 9, 9),
+                ("rhomboidal_capped", 12, 9, 9),
+                ("pentagonal", 14, 9, 6),
+                ("r42", 85, 43, 43),
+                ("r42_capped", 64, 43, 43),
+            ]
+            for dtype_name, dtype in (("fp32", torch.float32), ("fp64", torch.float64))
+            for vector in (False, True)
+        ]
+    )
+    def test_scalar_and_vector_forward_inverse(self, case, lmax, mmax, lmmax, dtype, vector, verbose=False):
+        set_seed(333)
+        nlat = max(32, lmax + 1)
+        grid = th.as_grid("legendre-gauss", nlat=nlat, nlon=2 * nlat)
+        kwargs = dict(lmax=lmax, mmax=mmax, lmmax=lmmax)
+        l = torch.arange(lmax, device=self.device)[:, None]
+        m = torch.arange(mmax, device=self.device)[None, :]
+        keep = m <= l
+        if lmmax is not None:
+            keep &= l - m < lmmax
+        complex_dtype = torch.complex128 if dtype == torch.float64 else torch.complex64
+        tol = 1e-7 if dtype == torch.float64 else 1e-5
+
+        forward_cls, inverse_cls = (th.RealVectorSHT, th.InverseRealVectorSHT) if vector else (th.RealSHT, th.InverseRealSHT)
+        forward = forward_cls(grid, **kwargs).to(device=self.device, dtype=dtype)
+        inverse = inverse_cls(grid, **kwargs).to(device=self.device, dtype=dtype)
+        forward_ref = forward_cls(grid, lmax=lmax, mmax=mmax).to(device=self.device, dtype=dtype)
+        inverse_ref = inverse_cls(grid, lmax=lmax, mmax=mmax).to(device=self.device, dtype=dtype)
+        shape = (1, 2, lmax, mmax) if vector else (1, lmax, mmax)
+        coeffs = torch.randn(shape, dtype=complex_dtype, device=self.device)
+        coeffs[..., 0] = coeffs[..., 0].real
+        if vector:
+            coeffs[..., 0, :] = 0
+        expected = coeffs * keep
+        coeffs.requires_grad_(True)
+        ref_coeffs = coeffs.detach().clone().requires_grad_(True)
+        signal = inverse(coeffs)
+        ref_signal = inverse_ref(ref_coeffs * keep)
+        self.assertTrue(compare_tensors("inverse", ref_signal, signal, atol=tol, rtol=tol, verbose=verbose))
+        recovered = forward(signal)
+        self.assertTrue(compare_tensors("round trip", expected, recovered, atol=tol, rtol=tol, verbose=verbose))
+        self.assertTrue(torch.equal(recovered[..., ~keep], torch.zeros_like(recovered[..., ~keep])))
+        spatial_grad = torch.randn_like(signal)
+        signal.backward(spatial_grad)
+        ref_signal.backward(spatial_grad)
+        self.assertTrue(compare_tensors("inverse gradient", ref_coeffs.grad, coeffs.grad, atol=tol, rtol=tol, verbose=verbose))
+
+        inp = torch.randn_like(signal, requires_grad=True)
+        ref_inp = inp.detach().clone().requires_grad_(True)
+        output = forward(inp)
+        ref_output = forward_ref(ref_inp) * keep
+        self.assertTrue(compare_tensors("forward", ref_output, output, atol=tol, rtol=tol, verbose=verbose))
+        spectral_grad = torch.randn_like(output)
+        output.backward(spectral_grad)
+        ref_output.backward(spectral_grad)
+        self.assertTrue(compare_tensors("forward gradient", ref_inp.grad, inp.grad, atol=tol, rtol=tol, verbose=verbose))
 
 
 @parameterized_class(("device"), _devices)

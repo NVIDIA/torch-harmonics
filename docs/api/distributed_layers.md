@@ -25,6 +25,10 @@ which do not.
 
 ## Layer reference
 
+Distributed SHT endpoint properties describe global domains; rank-local blocks
+continue to follow the process-grid partitioning. `.grid` remains the global
+spatial descriptor.
+
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.distributed
 

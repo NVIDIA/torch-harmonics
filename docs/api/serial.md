@@ -2,6 +2,9 @@
 
 ## Spherical harmonic transforms
 
+SHTs expose their input and output domains as `grid_in` and `grid_out`; `.grid`
+remains the spatial descriptor.
+
 ```{eval-rst}
 .. currentmodule:: torch_harmonics
 

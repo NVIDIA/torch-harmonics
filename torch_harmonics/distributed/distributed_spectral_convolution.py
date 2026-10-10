@@ -158,12 +158,12 @@ class DistributedSpectralConvS2(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # compute truncation
-        lmax_in, mmax_in = truncate_sht(self.grid_in)
-        lmax_out, mmax_out = truncate_sht(self.grid_out)
+        trunc_in = truncate_sht(self.grid_in)
+        trunc_out = truncate_sht(self.grid_out)
 
         # compute lmax and lmin
-        lmax = min(lmax_in, lmax_out)
-        mmax = min(mmax_in, mmax_out)
+        lmax = min(trunc_in.lmax, trunc_out.lmax)
+        mmax = min(trunc_in.mmax, trunc_out.mmax)
         self.lmax = min(lmax, mmax)
         self.mmax = self.lmax
 

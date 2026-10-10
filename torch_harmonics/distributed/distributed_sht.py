@@ -35,7 +35,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import check
@@ -55,6 +55,9 @@ class DistributedRealSHT(nn.Module):
     Distributed version of the forward (real-valued) SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last two dimensions of the input.
+
+    The endpoints ``grid_in`` and ``grid_out`` describe global domains; ``grid``
+    remains the global spatial descriptor.
 
     **Distribution scheme.**
     The input tensor has shape ``(B, C, nlat_local, nlon_local)`` where latitudes
@@ -95,14 +98,17 @@ class DistributedRealSHT(nn.Module):
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
         The grid is the *global* one; the local shard is derived from it.
-    lmax : int
-        Maximum spherical harmonic degree
-    mmax : int
-        Maximum spherical harmonic order
+    lmax : int, optional
+        Non-inclusive maximum spherical harmonic degree.
+    mmax : int, optional
+        Non-inclusive maximum spherical harmonic order.
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
 
     Returns
     -------
@@ -118,7 +124,15 @@ class DistributedRealSHT(nn.Module):
         'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
         grid=("nlat", "nlon"),
     )
-    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(
+        self,
+        grid: RegularGridS2,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        norm: Optional[str] = "ortho",
+        csphase: Optional[bool] = True,
+        lmmax: Optional[int] = None,
+    ):
 
         super().__init__()
 
@@ -142,8 +156,7 @@ class DistributedRealSHT(nn.Module):
         # descriptor and reads them itself, which is also what keys its cache.
         weights = self.grid.colat_weights
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
+        self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
         # compute splits
         # the grid decomposes itself in space; the spectral split below stays manual,
@@ -182,6 +195,7 @@ class DistributedRealSHT(nn.Module):
             self.grid,
             norm=self.norm,
             csphase=self.csphase,
+            truncation=self._trunc,
             mmin=self.mmax_offset,
             kmin=self.lat_offset,
             kmax=self.lat_offset + self.nlat_local,
@@ -191,8 +205,30 @@ class DistributedRealSHT(nn.Module):
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> RegularGridS2:
+        """Global spatial domain of the input field."""
+        return self.grid
+
+    @property
+    def grid_out(self) -> SpectralGrid:
+        """Global spectral coefficient support of the output."""
+        return self._trunc
+
     def extra_repr(self):
-        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -298,14 +334,17 @@ class DistributedInverseRealSHT(nn.Module):
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
         The grid is the *global* one; the local shard is derived from it.
-    lmax : int
-        Maximum spherical harmonic degree
-    mmax : int
-        Maximum spherical harmonic order
+    lmax : int, optional
+        Non-inclusive maximum spherical harmonic degree.
+    mmax : int, optional
+        Non-inclusive maximum spherical harmonic order.
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
 
     Returns
     -------
@@ -321,7 +360,15 @@ class DistributedInverseRealSHT(nn.Module):
         'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
         grid=("nlat", "nlon"),
     )
-    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(
+        self,
+        grid: RegularGridS2,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        norm: Optional[str] = "ortho",
+        csphase: Optional[bool] = True,
+        lmmax: Optional[int] = None,
+    ):
 
         super().__init__()
 
@@ -337,8 +384,7 @@ class DistributedInverseRealSHT(nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
+        self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
         # compute splits
         # the grid decomposes itself in space; the spectral split below stays manual,
@@ -369,6 +415,7 @@ class DistributedInverseRealSHT(nn.Module):
             norm=self.norm,
             inverse=True,
             csphase=self.csphase,
+            truncation=self._trunc,
             mmin=self.mmax_offset,
             lmin=self.lmax_offset,
         )
@@ -377,8 +424,30 @@ class DistributedInverseRealSHT(nn.Module):
         # register
         self.register_buffer("pct", pct, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> SpectralGrid:
+        """Global spectral coefficient support of the input."""
+        return self._trunc
+
+    @property
+    def grid_out(self) -> RegularGridS2:
+        """Global spatial grid sampled by the output field."""
+        return self.grid
+
     def extra_repr(self):
-        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -463,14 +532,17 @@ class DistributedRealVectorSHT(nn.Module):
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
         The grid is the *global* one; the local shard is derived from it.
-    lmax : int
-        Maximum spherical harmonic degree
-    mmax : int
-        Maximum spherical harmonic order
+    lmax : int, optional
+        Non-inclusive maximum spherical harmonic degree.
+    mmax : int, optional
+        Non-inclusive maximum spherical harmonic order.
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
 
     Returns
     -------
@@ -486,7 +558,15 @@ class DistributedRealVectorSHT(nn.Module):
         'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
         grid=("nlat", "nlon"),
     )
-    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(
+        self,
+        grid: RegularGridS2,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        norm: Optional[str] = "ortho",
+        csphase: Optional[bool] = True,
+        lmmax: Optional[int] = None,
+    ):
 
         super().__init__()
 
@@ -508,8 +588,7 @@ class DistributedRealVectorSHT(nn.Module):
         # descriptor and reads them itself, which is also what keys its cache.
         weights = self.grid.colat_weights
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
+        self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
         # compute splits
         # the grid decomposes itself in space; the spectral split below stays manual,
@@ -539,6 +618,7 @@ class DistributedRealVectorSHT(nn.Module):
             self.grid,
             norm=self.norm,
             csphase=self.csphase,
+            truncation=self._trunc,
             mmin=self.mmax_offset,
             kmin=self.lat_offset,
             kmax=self.lat_offset + self.nlat_local,
@@ -559,8 +639,30 @@ class DistributedRealVectorSHT(nn.Module):
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> RegularGridS2:
+        """Global spatial domain of the input field."""
+        return self.grid
+
+    @property
+    def grid_out(self) -> SpectralGrid:
+        """Global spectral coefficient support of the output."""
+        return self._trunc
+
     def extra_repr(self):
-        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -654,14 +756,17 @@ class DistributedInverseRealVectorSHT(nn.Module):
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
         The grid is the *global* one; the local shard is derived from it.
-    lmax : int
-        Maximum spherical harmonic degree
-    mmax : int
-        Maximum spherical harmonic order
+    lmax : int, optional
+        Non-inclusive maximum spherical harmonic degree.
+    mmax : int, optional
+        Non-inclusive maximum spherical harmonic order.
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
 
     Returns
     -------
@@ -677,7 +782,15 @@ class DistributedInverseRealVectorSHT(nn.Module):
         'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
         grid=("nlat", "nlon"),
     )
-    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(
+        self,
+        grid: RegularGridS2,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        norm: Optional[str] = "ortho",
+        csphase: Optional[bool] = True,
+        lmmax: Optional[int] = None,
+    ):
 
         super().__init__()
 
@@ -692,8 +805,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
+        self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
         # compute splits
         # the grid decomposes itself in space; the spectral split below stays manual,
@@ -722,6 +834,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
             norm=self.norm,
             inverse=True,
             csphase=self.csphase,
+            truncation=self._trunc,
             mmin=self.mmax_offset,
             lmin=self.lmax_offset,
         )
@@ -730,8 +843,30 @@ class DistributedInverseRealVectorSHT(nn.Module):
         # register buffer
         self.register_buffer("dpct", dpct, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> SpectralGrid:
+        """Global spectral coefficient support of the input field."""
+        return self._trunc
+
+    @property
+    def grid_out(self) -> RegularGridS2:
+        """Global spatial domain of the output field."""
+        return self.grid
+
     def extra_repr(self):
-        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at

@@ -1,11 +1,9 @@
 # Grids
 
-Every layer in torch-harmonics takes a *grid descriptor*: a small, immutable
-object that says where the sample points sit on the sphere and which quadrature
-weights go with them. Everything that depends on the sampling -- the default
-truncation of an SHT, the default support radius of a DISCO convolution or
-neighborhood attention, the shape of a field -- is derived from it, so the
-resolution and the grid type are always passed together.
+Layers that operate on sampled fields take a *spatial grid descriptor*: a small,
+immutable object that says where the sample points sit on the sphere and which
+quadrature weights go with them. The SHTs also expose the spectral coefficient
+domain at their input or output through a `SpectralGrid`.
 
 ## Building a grid
 
@@ -96,6 +94,33 @@ ring colatitudes in radians and `grid.lats` the geographic latitudes. Two kinds
 of quadrature weights are available, and they are not interchangeable:
 `grid.quad_weights` has one entry per point and sums to `4*pi`, while
 `grid.colat_weights` has one entry per ring and sums to 2.
+
+## Spatial and spectral domains
+
+A spatial grid describes physical sample locations and quadrature weights. A
+`SpectralGrid` describes the spherical harmonic modes an SHT retains. It is
+independent of the spatial grid hierarchy and stores only the exclusive bounds
+`lmax`, `mmax`, and optional `lmmax`.
+
+`SpectralGrid.shape` is the dense coefficient shape `(lmax, mmax)`. When
+`lmmax` is set, it masks modes inside that rectangle using the exclusive bound
+`l - m < lmmax`; it does not change the storage shape. For example,
+`SpectralGrid(lmax=85, mmax=43, lmmax=43)` is R42 and retains modes satisfying
+`0 <= m < 43`, `m <= l < 85`, and `l - m < 43`.
+
+Forward SHTs map from a spatial grid to a spectral grid. Inverse SHTs map back
+to the spatial grid. The `.grid` attribute is the spatial descriptor in both
+directions; `grid_in` and `grid_out` identify the
+actual input and output domains:
+
+```python
+grid = th.as_grid("legendre-gauss", nlat=128, nlon=256)
+sht = th.RealSHT(grid, lmax=85, mmax=43, lmmax=43)
+isht = th.InverseRealSHT(grid, lmax=85, mmax=43, lmmax=43)
+
+assert sht.grid_out == isht.grid_in
+assert sht.grid_in == isht.grid_out
+```
 
 ## Mapping between grids
 
