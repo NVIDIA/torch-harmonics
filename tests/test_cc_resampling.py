@@ -163,12 +163,7 @@ class TestExtendedCCAnalysis(unittest.TestCase):
         disable_tf32()
 
     @parameterized.expand(
-        [
-            (vector, nlat, 2 * nlat - 1, nlat - 1, lmmax)
-            for vector in (False, True)
-            for nlat in (8, 9, 34)
-            for lmmax in (None, 3)
-        ]
+        [(vector, nlat, 2 * nlat - 1, nlat - 1, lmmax) for vector in (False, True) for nlat in (8, 9, 34) for lmmax in (None, 3)]
         + [(vector, 257, 33, 16, None) for vector in (False, True)],
         skip_on_empty=True,
     )
