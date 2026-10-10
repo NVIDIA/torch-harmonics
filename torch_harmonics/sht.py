@@ -34,11 +34,161 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from torch_harmonics.cache import lru_cache
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
-from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
+from torch_harmonics.grid import EquiangularGrid, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.legendre import _mask_spectral_block, _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import check
+
+
+def _extended_cc_analysis(grid: RegularGridS2, spectral_grid: SpectralGrid) -> bool:
+    """Select extended analysis after the usual spectral support resolution."""
+    # Oversized dimensions retain legacy direct quadrature for spectral upsampling.
+    # Accurate folded recovery requires both latitude and longitude bandwidth limits.
+    return isinstance(grid, EquiangularGrid) and grid.max_exact_degree < spectral_grid.lmax <= grid.nlat - 1 and spectral_grid.mmax <= (grid.nlon + 1) // 2
+
+
+def _precompute_cc_resampling(nlat: int, mmax: int, vector: bool = False) -> dict[str, torch.Tensor]:
+    """Small real buffers for the runtime fold, including the longitude scale."""
+    dense_weights = 2.0 * torch.pi * EquiangularGrid(nlat=2 * nlat - 1, nlon=1).colat_weights
+    midpoint_weights = dense_weights[1::2]
+    frequencies = torch.fft.fftfreq(2 * (nlat - 1), dtype=torch.float64)
+    angle = torch.pi * frequencies
+    # Store real components so Module.to(dtype=...) preserves the phase.
+    phase = torch.stack((angle.cos(), angle.sin()), dim=0)
+    # The unpaired Nyquist sample represents a cosine, with equal +/- frequencies.
+    # At half-grid positions their phases cancel. Suppressing this bin preserves
+    # conjugation for arbitrary inputs; the supported harmonic band has no such mode.
+    phase[:, nlat - 1] = 0.0
+    signs = torch.ones(mmax, 1, dtype=torch.int8)
+    signs[1::2] = -1
+    if vector:
+        signs = -signs
+    return {
+        "_cc_weights": dense_weights[::2].contiguous(),
+        "_cc_midpoint_weights": torch.cat((midpoint_weights, torch.zeros_like(midpoint_weights))),
+        "_cc_phase": phase,
+        "_cc_parity": signs,
+    }
+
+
+def _periodic_latitude_extension(x: torch.Tensor, signs: torch.Tensor) -> torch.Tensor:
+    r"""Extend ``(..., m, nlat)`` modes, reversing only interior rings.
+
+    ``signs`` has shape ``(m, 1)``: scalar parity is :math:`(-1)^m`,
+    tangential vector parity is :math:`(-1)^{m+1}`. Each pole occurs once.
+    The caller supplies signs for the actual spectral orders being processed.
+    """
+    return torch.cat((x, signs * x[..., 1:-1].flip(-1)), dim=-1)
+
+
+def _periodic_latitude_extension_adjoint(x: torch.Tensor, signs: torch.Tensor) -> torch.Tensor:
+    """Fold a periodic meridian, adding mirrored interiors without doubling poles."""
+    nlat = x.shape[-1] // 2 + 1
+    interior = x[..., 1 : nlat - 1] + signs * x[..., nlat:].flip(-1)
+    return torch.cat((x[..., :1], interior, x[..., nlat - 1 : nlat]), dim=-1)
+
+
+def _fourier_shift_latitude(x: torch.Tensor, phase: torch.Tensor) -> torch.Tensor:
+    """Half-grid interpolation; its Hilbert adjoint uses the conjugate phase."""
+    return torch.fft.ifft(torch.fft.fft(x, dim=-1) * phase, dim=-1)
+
+
+def _fold_resampled_latitude(
+    x: torch.Tensor,
+    signs: torch.Tensor,
+    quadrature_weights: torch.Tensor,
+    midpoint_weights: torch.Tensor,
+    phase: torch.Tensor,
+) -> torch.Tensor:
+    r"""Apply :math:`U = Q_e + A^* Q_o A` to complex longitude modes.
+
+    ``A`` periodically extends the meridian, shifts it by half a latitude step,
+    and selects the first ``nlat - 1`` midpoint rings. Zero-padded midpoint
+    weights implement this selection and its adjoint. Both quadratures come
+    from the doubled CC grid; neither is the native CC quadrature.
+    """
+    # FFT backends reject empty batches; an empty order axis has no midpoint contribution.
+    if x.shape[-2] == 0:
+        return quadrature_weights * x
+    shifted = _fourier_shift_latitude(_periodic_latitude_extension(x, signs), phase)
+    folded = _fourier_shift_latitude(shifted * midpoint_weights, phase.conj())
+    return quadrature_weights * x + _periodic_latitude_extension_adjoint(folded, signs)
+
+
+@lru_cache(maxsize=2, typed=True, copy=True)
+@torch.no_grad()
+def _precompute_cc_projection(
+    grid: EquiangularGrid,
+    truncation: SpectralGrid,
+    norm: str,
+    csphase: bool,
+    vector: bool = False,
+    *,
+    mmin: int = 0,
+    mmax: Optional[int] = None,
+    kmin: int = 0,
+    kmax: Optional[int] = None,
+) -> torch.Tensor:
+    r"""Fold doubled-grid quadrature onto real projection rows in bounded blocks.
+
+    Half-grid interpolation with the unpaired Nyquist bin suppressed is real.
+    Thus ``U = Q_e + A* Q_o A`` is both real and symmetric, and the bilinear
+    coefficient contraction ``P.T @ U @ x`` uses ``W = U.T @ P = U @ P``.
+    This also applies to complex longitude modes: no conjugation of ``x`` is
+    involved. Both vector derivative rows have parity ``(-1)**(m+1)``.
+
+    Only local orders are generated, on the full meridian; only the requested
+    latitude shard is retained. Recurrence and FFT temporaries are bounded by
+    order/degree chunks, without caching unfolded tables or dense operators.
+    A two-entry cache reuses completed projections; copying keeps module buffers
+    independent. Computation and storage use float64 until explicitly cast.
+    """
+    mmax = truncation.mmax if mmax is None else mmax
+    kmax = grid.nlat if kmax is None else kmax
+    shape = (mmax - mmin, truncation.lmax, kmax - kmin)
+    weights = torch.empty((2, *shape) if vector else shape, dtype=torch.float64)
+    if mmax == mmin or truncation.lmax == 0 or kmax == kmin:
+        return weights
+
+    buffers = _precompute_cc_resampling(grid.nlat, mmax, vector)
+    phase = torch.complex(*buffers["_cc_phase"])
+    # At most ~8 MiB of real basis data per block (FFT workspaces are larger).
+    order_chunk = min(16, mmax - mmin)
+    degree_limit = max(1, 2**20 // (grid.nlat * order_chunk * (2 if vector else 1)))
+    # Balance the chunks: a tiny final block would still walk the entire degree
+    # recurrence. Equal-sized blocks minimize those repeated recurrence steps.
+    degree_chunks = (truncation.lmax + degree_limit - 1) // degree_limit
+    degree_chunk = (truncation.lmax + degree_chunks - 1) // degree_chunks
+    colats = grid.colats
+    for ms in range(mmin, mmax, order_chunk):
+        me = min(ms + order_chunk, mmax)
+        for ls in range(0, truncation.lmax, degree_chunk):
+            le = min(ls + degree_chunk, truncation.lmax)
+            if ms >= le:
+                # This entire block lies outside the triangular harmonic support.
+                weights[..., ms - mmin : me - mmin, ls:le, :].zero_()
+                continue
+            if vector:
+                basis = dlegpoly(me, le, colats, norm=norm, csphase=csphase, mmin=ms, lmin=ls)
+                degrees = torch.arange(ls, le, dtype=torch.float64)
+                factor = 1.0 / (degrees * (degrees + 1)).clamp(min=1)
+                basis *= factor[None, None, :, None]
+                basis[1].neg_()
+            else:
+                basis = legpoly(me, le, colats.cos(), norm=norm, csphase=csphase, mmin=ms, lmin=ls)
+            _mask_spectral_block(basis, truncation, ms, ls)
+            # The fold expects (..., m, latitude); degree is a batch dimension.
+            folded = _fold_resampled_latitude(
+                basis.transpose(-3, -2),
+                buffers["_cc_parity"][ms:me],
+                buffers["_cc_weights"],
+                buffers["_cc_midpoint_weights"],
+                phase,
+            )
+            weights[..., ms - mmin : me - mmin, ls:le, :] = folded.real.transpose(-3, -2)[..., kmin:kmax]
+    return weights
 
 
 class RealSHT(nn.Module):
@@ -61,6 +211,15 @@ class RealSHT(nn.Module):
 
     where :math:`\tilde{f}_m` are the Fourier modes and :math:`q_k` are the
     quadrature weights.
+
+    On equiangular grids, ``lmax > grid.max_exact_degree`` selects precomputed
+    folded Clenshaw--Curtis analysis following :cite:`Reinecke2023`, Appendix A,
+    when the resolved exclusive bounds satisfy ``lmax <= nlat - 1`` and
+    ``mmax <= (nlon + 1) // 2``. These are the accurate band-limited recovery
+    limits. Oversized dimensions retain legacy direct quadrature without
+    implying accurate recovery. The default truncation is unchanged. Extended analysis
+    is intended for float32 and float64; its precomputation latitude FFT has length
+    ``2 * (nlat - 1)``.
 
     .. seealso::
         :doc:`/guide/spherical_harmonic_transforms`
@@ -113,7 +272,7 @@ class RealSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang2018`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`, :cite:`Reinecke2023`
     """
 
     @_rejects_legacy_signature(
@@ -147,15 +306,13 @@ class RealSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
-
-        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
-        # quadrature weights. It is a constant prefactor of a linear transform, so folding it
-        # here is exact and saves a pointwise multiply on a complex tensor in every forward.
-        weights = 2.0 * torch.pi * weights
-
-        # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
-        weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
+        self._extended_cc = _extended_cc_analysis(self.grid, self._trunc)
+        if self._extended_cc:
+            weights = _precompute_cc_projection(self.grid, self._trunc, self.norm, self.csphase)
+        else:
+            # Include the longitude scale of the forward-normalized FFT.
+            pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
+            weights = torch.einsum("mlk,k->mlk", pct, 2.0 * torch.pi * weights).contiguous()
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
@@ -412,6 +569,15 @@ class RealVectorSHT(nn.Module):
     :math:`\hat{s}_l^m` and :math:`\hat{t}_l^m` using the derivatives of the
     associated Legendre polynomials.
 
+    On equiangular grids, ``lmax > grid.max_exact_degree`` selects precomputed
+    folded Clenshaw--Curtis analysis following :cite:`Reinecke2023`, Appendix A,
+    when the resolved exclusive bounds satisfy ``lmax <= nlat - 1`` and
+    ``mmax <= (nlon + 1) // 2``. These are the accurate band-limited recovery
+    limits. Oversized dimensions retain legacy direct quadrature without
+    implying accurate recovery. The default truncation is unchanged. Extended analysis
+    is intended for float32 and float64; its precomputation latitude FFT has length
+    ``2 * (nlat - 1)``.
+
     .. seealso::
         :doc:`/guide/spherical_harmonic_transforms`
             User guide with the full mathematical derivation of the vector SHT
@@ -463,7 +629,7 @@ class RealVectorSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang2018`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`, :cite:`Reinecke2023`
     """
 
     @_rejects_legacy_signature(
@@ -492,21 +658,18 @@ class RealVectorSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
-
-        # precompute associated Legendre polynomials
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
-
-        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
-        # quadrature weights (see RealSHT.__init__)
-        weights = 2.0 * torch.pi * weights
-
-        # combine integration weights, normalization factor in to one:
-        l = torch.arange(0, self.lmax)
-        norm_factor = 1.0 / l / (l + 1)
-        norm_factor[0] = 1.0
-        weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor).contiguous()
-        # since the second component is imaginary, we need to take complex conjugation into account
-        weights[1] = -1 * weights[1]
+        self._extended_cc = _extended_cc_analysis(self.grid, self._trunc)
+        if self._extended_cc:
+            weights = _precompute_cc_projection(self.grid, self._trunc, self.norm, self.csphase, vector=True)
+        else:
+            dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
+            l = torch.arange(0, self.lmax)
+            norm_factor = 1.0 / l / (l + 1)
+            if self.lmax:
+                norm_factor[0] = 1.0
+            weights = torch.einsum("dmlk,k,l->dmlk", dpct, 2.0 * torch.pi * weights, norm_factor).contiguous()
+            # Conjugate the imaginary derivative component.
+            weights[1] = -1 * weights[1]
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)

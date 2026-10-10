@@ -77,6 +77,11 @@ def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> 
     if n is None:
         n = 2 * (x.size(dim) - 1)
 
+    # An explicitly sized empty spectrum synthesizes zero, retaining autograd.
+    # FFT backends require at least one input bin even when n is provided.
+    if x.size(dim) == 0 and n > 0:
+        x = _pad_dim_right(x, dim, 1)
+
     # Zero the imaginary part of the DC bin (and Nyquist bin if present) to
     # enforce Hermitian symmetry. We do this functionally via torch.complex()
     # rather than in-place assignment (x[..., k].imag = 0.0) because the
