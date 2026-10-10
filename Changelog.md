@@ -4,6 +4,11 @@
 
 ### v1.0.0rc1 (unreleased)
 
+* Serial and distributed scalar and vector forward transforms use precomputed folded Clenshaw-Curtis projection weights when explicit `lmax` exceeds `grid.max_exact_degree` and the resolved exclusive bounds satisfy `lmax <= nlat - 1` and `mmax <= (nlon + 1) // 2`; these are band-limited recovery limits. Oversized dimensions retain legacy direct quadrature without clamping bounds, and accepted dimensions do not imply accurate recovery. Defaults and inverse transforms are unchanged. Half-grid interpolation suppresses the unpaired Nyquist bin to preserve zero-order reality for arbitrary real inputs.
+
+* SHT transforms support independent non-inclusive `lmax`, `mmax`, and optional `lmmax` bounds for trapezoidal, rhomboidal, and pentagonal spectral truncation. The no-argument default remains triangular; `SpectralConvS2` and `DistributedSpectralConvS2` retain their square spectral dimensions and weight layouts.
+* New public, immutable `SpectralGrid` describes SHT coefficient support; forward and inverse transforms expose their input and output domains through `grid_in` and `grid_out`.
+* **Breaking**: Explicit SHT bounds now retain independent degree/order limits (including `mmax`-only calls), and `truncate_sht()` returns `SpectralGrid` instead of a `NamedTuple`.
 * `polar_halo_exchange` and `polar_halo_reduce` take a `lat_dim` argument, so channels-last tensors can be exchanged directly.
 * **Breaking**: layers take a grid descriptor instead of a resolution and a grid name, e.g. `RealSHT(as_grid("legendre-gauss", nlat=n, nlon=2*n))`, and `grid_in`/`grid_out` when mapping between grids; the old arguments raise a `TypeError`.
 * **Breaking**: renamed or moved since v0.9.3: `lats_in`/`lats_out` are now `colats_in`/`colats_out` (`ResampleS2`, `DistributedResampleS2`, `latitude_support_band`, `compute_polar_halo_radius`); `QuadratureS2` moved from `torch_harmonics.quadrature` to `torch_harmonics.integration`; `NeighborhoodAttentionS2.quad_weights` became the backend buffer `ring_weights`; `AttentionS2.log_quad_weights` is now `log_point_weights`; the shallow-water example's `quad_weights` buffer is per-point and no longer checkpointed.

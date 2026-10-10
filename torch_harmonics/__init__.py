@@ -49,6 +49,7 @@ from .grid import (
     PointSetS2,
     RegularGridS2,
     RegularGridShardS2,
+    SpectralGrid,
     TrapezoidalGrid,
     as_grid,
     grid_params,

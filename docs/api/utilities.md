@@ -21,6 +21,8 @@ are arranged:
 
 Today `QuadratureS2` accepts any `PointSetS2`, `AttentionS2` and
 `NeighborhoodAttentionS2` any `GridS2`, and all other layers a `RegularGridS2`.
+`SpectralGrid` is separate from this spatial hierarchy: it describes the
+coefficient support of an SHT.
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.grid
@@ -38,6 +40,7 @@ Today `QuadratureS2` accepts any `PointSetS2`, `AttentionS2` and
    PointSetS2
    GridS2
    RegularGridS2
+   SpectralGrid
    GridShardS2
    RegularGridShardS2
    EquiangularGrid
@@ -148,6 +151,8 @@ one is given, and warns when the default it picks differs from a previous
 release's. The grid descriptor states the facts these decisions rest on --
 `max_exact_degree`, `max_azimuthal_order`, `max_node_spacing` -- and makes no
 decisions itself.
+
+`truncate_sht` returns the resolved bounds as a `SpectralGrid`.
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics
