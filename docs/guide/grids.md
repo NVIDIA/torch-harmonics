@@ -66,9 +66,10 @@ before v1.0.0.
 **HEALPix.** The HEALPix pixelization in RING order: equal-area pixels on rings
 whose length grows from 4 at the poles to `4 * nside` at the equator. Its
 quadrature integrates only constants exactly, so it does not support an SHT.
-It is accepted by `AttentionS2`, `NeighborhoodAttentionS2` and `QuadratureS2`;
-the SHTs, spectral and DISCO convolutions, resampling, random fields and the
-distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
+It is accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
+`DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and
+`QuadratureS2`; the SHTs, spectral convolutions, resampling, random fields and
+the distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
 ## Field shapes

@@ -61,8 +61,7 @@ from typing import TYPE_CHECKING, Dict
 
 import torch
 
-from torch_harmonics._backend import BackendS2
-from torch_harmonics.attention._attention_utils import _kernel_device_types
+from torch_harmonics._backend import BackendS2, _kernel_device_types
 from torch_harmonics.attention.kernels_torch.attention_ragged_torch import _neighborhood_s2_attention_ragged_torch
 from torch_harmonics.attention.kernels_torch.attention_regular_torch import _neighborhood_s2_attention_regular_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_ragged_optimized, _neighborhood_s2_attention_regular_optimized

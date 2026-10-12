@@ -30,8 +30,8 @@
 
 #pragma once
 
-#include "../disco.h"
-#include "../disco_checks.h"
+#include "../../disco.h"
+#include "../../disco_checks.h"
 
 #include <cuda_runtime.h>
 #include <ATen/cuda/CUDAContext.h>

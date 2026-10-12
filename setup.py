@@ -167,20 +167,26 @@ def get_ext_modules():
     # Create a single extension that includes both CPU and CUDA code
     disco_sources = [
         "torch_harmonics/disco/optimized/disco_interface.cpp",
-        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_fwd.cpp",
-        "torch_harmonics/disco/optimized/kernels_cpu/disco_cpu_bwd.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/regular/disco_cpu_fwd.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/regular/disco_cpu_bwd.cpp",
+        # ragged (HEALPix and other non-product grids); mirrors kernels_cuda/ragged/
+        "torch_harmonics/disco/optimized/kernels_cpu/ragged/disco_cpu_fwd_ragged.cpp",
+        "torch_harmonics/disco/optimized/kernels_cpu/ragged/disco_cpu_bwd_ragged.cpp",
     ]
 
     if BUILD_CUDA:
         print("Compiling custom CUDA kernels for torch-harmonics.")
         disco_sources.extend(
             [
-                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd.cu",
-                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_bwd.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_bwd.cu",
                 # the tensor-core forward; each file compiles to a stub unless its
                 # architecture (9.0a, 10.0a/10.3a) is in TORCH_CUDA_ARCH_LIST
-                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm90.cu",
-                "torch_harmonics/disco/optimized/kernels_cuda/disco_cuda_fwd_dense_kpacked_sm100.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm90.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm100.cu",
+                # ragged (HEALPix and other non-product grids); see kernels_cuda/ragged/
+                "torch_harmonics/disco/optimized/kernels_cuda/ragged/disco_cuda_fwd_ragged.cu",
+                "torch_harmonics/disco/optimized/kernels_cuda/ragged/disco_cuda_bwd_ragged.cu",
             ]
         )
         ext_modules.append(CUDAExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))

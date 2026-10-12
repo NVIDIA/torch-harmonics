@@ -30,9 +30,9 @@
 
 // The transpose of the DISCO contraction on the CPU: backward_regular, a scatter, with psi
 // in arc form -- see torch_harmonics/disco/_psi_layouts.py and, for the CUDA counterpart,
-// kernels_cuda/disco_cuda_bwd.cu.
+// kernels_cuda/regular/disco_cuda_bwd.cu.
 
-#include "disco_cpu.h"
+#include "../common/disco_cpu.h"
 
 namespace disco_kernels
 {

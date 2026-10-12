@@ -37,7 +37,7 @@ from typing import Any, Callable, Optional
 import torch
 import torch.nn as nn
 
-from torch_harmonics import as_grid
+from torch_harmonics import HealpixGrid, as_grid
 
 # ------------------------------------------------------------------------------
 # Grids
@@ -51,6 +51,7 @@ from torch_harmonics import as_grid
 EQUIANGULAR_GRID_1DEG = as_grid("equiangular", nlat=180, nlon=360)
 EQUIANGULAR_GRID_HDEG = as_grid("equiangular", nlat=360, nlon=720)
 EQUIANGULAR_GRID_QDEG = as_grid("equiangular", nlat=721, nlon=1440)
+HEALPIX_GRID_NSIDE128 = HealpixGrid(nside=128)
 
 # ------------------------------------------------------------------------------
 # Precision contexts
