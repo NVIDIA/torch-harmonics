@@ -38,8 +38,8 @@ from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
 from .shallow_water_equations import ShallowWaterSolver
 
 
-class PdeDataset(torch.utils.data.Dataset):
-    """Custom Dataset class for PDE training data
+class ShallowWaterDataset(torch.utils.data.Dataset):
+    """Custom Dataset class for shallow water training data
 
     Parameters
     ----------
@@ -49,8 +49,6 @@ class PdeDataset(torch.utils.data.Dataset):
         Number of solver steps
     grid : RegularGridS2
         Grid the samples are generated on, e.g. ``as_grid("equiangular", nlat=384, nlon=768)``.
-    pde : str, optional
-        PDE type, by default "shallow water equations"
     initial_condition : str, optional
         Initial condition type, by default "random"
     num_examples : int, optional
@@ -82,7 +80,6 @@ class PdeDataset(torch.utils.data.Dataset):
         dt,
         nsteps,
         grid,
-        pde="shallow water equations",
         initial_condition="random",
         num_examples=32,
         device=torch.device("cpu"),
@@ -101,15 +98,12 @@ class PdeDataset(torch.utils.data.Dataset):
         self.nsteps = nsteps
         self.normalize = normalize
 
-        if pde == "shallow water equations":
-            lmax = ceil(self.nlat / 3)
-            mmax = lmax
-            dt_solver = dt / float(self.nsteps)
-            self.solver = ShallowWaterSolver(self.grid, dt_solver, lmax=lmax, mmax=mmax).to(self.device).float()
-            if compile:
-                self.solver.compile()
-        else:
-            raise NotImplementedError
+        lmax = ceil(self.nlat / 3)
+        mmax = lmax
+        dt_solver = dt / float(self.nsteps)
+        self.solver = ShallowWaterSolver(self.grid, dt_solver, lmax=lmax, mmax=mmax).to(self.device).float()
+        if compile:
+            self.solver.compile()
 
         self.set_initial_condition(ictype=initial_condition)
 

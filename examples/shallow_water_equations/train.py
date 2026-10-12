@@ -40,7 +40,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from torch_harmonics import RealSHT, as_grid
-from torch_harmonics.examples import PdeDataset
+from torch_harmonics.examples import ShallowWaterDataset
 from torch_harmonics.examples.losses import L1LossS2, L2LossS2, SquaredL2LossS2, W11LossS2
 from torch_harmonics.plotting import plot_sphere
 
@@ -366,7 +366,7 @@ def main(root_path, pretrain_epochs=100, finetune_epochs=10, batch_size=1, learn
     dt_solver = 150
     nsteps = dt // dt_solver
     grid = as_grid("legendre-gauss", nlat=128, nlon=256)
-    dataset = PdeDataset(dt=dt, nsteps=nsteps, grid=grid, device=device, normalize=True)
+    dataset = ShallowWaterDataset(dt=dt, nsteps=nsteps, grid=grid, device=device, normalize=True)
     dataset.sht = RealSHT(grid).to(device=device)
     # There is still an issue with parallel dataloading. Do NOT use it at the moment
     # dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, persistent_workers=True)
