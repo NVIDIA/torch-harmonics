@@ -7,6 +7,9 @@ truncation of an SHT, the default support radius of a DISCO convolution or
 neighborhood attention, the shape of a field -- is derived from it, so the
 resolution and the grid type are always passed together.
 
+The {doc}`grid descriptors tutorial <../tutorials/grid_descriptors>` walks
+through building descriptors, what they know, and how layers use them.
+
 ## Building a grid
 
 Build a grid by name with `as_grid`, passing the parameters that grid type takes
