@@ -39,7 +39,7 @@ the suite is launched in distributed mode (GRID_H or GRID_W > 1):
     `test_distributed_neighborhood_attention_00[h=2,w=4]`).
 
 It also keeps rank 0 the single source of console output:
-  * `pytest_configure`: on any non-zero WORLD_RANK, unregisters pytest's terminal
+  * `pytest_configure`: on any non-zero rank (see testutils.world_rank), unregisters pytest's terminal
     reporter so only rank 0 prints the session header, progress, per-test results
     and summary. This is safe because distributed comparisons all-reduce their
     verdict (see testutils.reduce_success), so rank 0 fails whenever any rank does
@@ -60,21 +60,13 @@ import os
 
 import pytest
 import torch
+from testutils import world_rank
 
 from torch_harmonics.utils import torch_compile_supported
 
 
 def _grid():
     return int(os.getenv("GRID_H", 1)), int(os.getenv("GRID_W", 1))
-
-
-def _world_rank():
-    # Prefer WORLD_RANK; fall back to RANK (both are exported by the launch
-    # scripts, but RANK is the more common convention for torchrun-style launches).
-    rank = os.getenv("WORLD_RANK")
-    if rank is None:
-        rank = os.getenv("RANK", 0)
-    return int(rank)
 
 
 @pytest.hookimpl(trylast=True)
@@ -86,7 +78,7 @@ def pytest_configure(config):
     # plugin is not registered yet and get_plugin() returns None -- letting every
     # rank keep reporting (the duplicate-output bug). Running last ensures the
     # reporter exists by the time we unregister it.
-    if _world_rank() == 0:
+    if world_rank() == 0:
         return
     reporter = config.pluginmanager.get_plugin("terminalreporter")
     if reporter is not None:
