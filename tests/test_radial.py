@@ -191,6 +191,26 @@ class TestSphericalProductGrid(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "same radial grid"):
                 th.ResampleS2(grid_in, grid_out)
 
+    @parameterized.expand([["regular", as_grid("legendre-gauss", nlat=8, nlon=16)], ["healpix", HealpixGrid(nside=2)]])
+    def test_volume_quadrature(self, _, angular):
+        grid = SphericalProductGrid(angular, self.radial)
+        quad = th.QuadratureVolume(grid)
+        # the shell volume, and the integral of r, which the radial rule integrates exactly
+        self.assertAlmostEqual(quad(torch.ones(grid.shape)).item(), 4.0 / 3.0 * math.pi * 7.0, places=4)
+        r = self.radial.r.to(torch.float32).reshape(-1, *([1] * len(angular.shape)))
+        self.assertAlmostEqual(quad(r.expand(grid.shape)).item(), math.pi * 15.0, places=4)
+        self.assertAlmostEqual(th.QuadratureVolume(grid, normalize=True)(torch.ones(2, *grid.shape))[1].item(), 1.0, places=6)
+
+    def test_volume_quadrature_sums_the_shells(self):
+        x = torch.randn(2, 5, *self.grid.shape)
+        shells = th.QuadratureS2(self.grid)(x)
+        expected = (shells * self.radial.volume_weights.to(torch.float32)).sum(-1)
+        self.assertTrue(torch.allclose(th.QuadratureVolume(self.grid)(x), expected, rtol=1e-5, atol=1e-5))
+
+    def test_volume_quadrature_needs_a_product(self):
+        with self.assertRaisesRegex(TypeError, "SphericalProductGrid"):
+            th.QuadratureVolume(self.angular)
+
     def test_fold_round_trip_copies_once(self):
         x = torch.randn(2, 4, 3, 8, 16)
         folded = fold_radius(x)

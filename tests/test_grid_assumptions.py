@@ -159,6 +159,9 @@ def _grid_taking_constructors():
             # shards are obtained from grid.shard(), never constructed by a caller
             if issubclass(obj, (GridShardS2,)) or obj.__name__.endswith("ShardS2"):
                 continue
+            # layers added in v1.0 have no old signature to reject, and say so by name
+            if "_legacy_signature_exempt" in vars(obj):
+                continue
             try:
                 params = inspect.signature(obj.__init__).parameters
             except (ValueError, TypeError):

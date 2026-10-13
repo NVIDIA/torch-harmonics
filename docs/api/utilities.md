@@ -62,7 +62,8 @@ sphere. A `SphericalProductGrid` pairs a `RadialGrid` with any of the grids abov
 field on it is laid out `(..., nr, *angular.shape)`, the `(D, H, W)` order of volumetric
 data on a regular angular grid. Every layer above accepts a product in place of its
 angular grid and acts on each shell alike, with the radius as one more batch axis; a layer
-with an input and an output grid needs both on the same radial grid. Radial rules have a
+with an input and an output grid needs both on the same radial grid. `QuadratureS2` on a
+product integrates each shell over the sphere; `QuadratureVolume` integrates over the volume. Radial rules have a
 registry of their own, so `as_radial_grid("legendre-gauss", ...)` is the radial rule and
 `as_grid("legendre-gauss", ...)` the angular grid.
 

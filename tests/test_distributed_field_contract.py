@@ -108,6 +108,11 @@ def _quadrature(radial):
     return layer, (*_r(radial), *layer.shard.shape), lambda lead: (*lead, *_r(radial)), torch.float32, (*_r(radial), *_GRID.shape)
 
 
+def _quadrature_volume(radial):
+    layer = thd.DistributedQuadratureVolume(_on(_GRID, radial))
+    return layer, (*_r(radial), *layer.shard.shape), lambda lead: lead, torch.float32, (*_r(radial), *_GRID.shape)
+
+
 def _resample(radial):
     layer = thd.DistributedResampleS2(_on(_GRID, radial), _on(_GRID_OUT, radial))
     return layer, (*_r(radial), *layer.shard_in.shape), lambda lead: (*lead, *_r(radial), *layer.shard_out.shape), torch.float32, (*_r(radial), *_GRID.shape)
@@ -165,6 +170,8 @@ _CASES = [
 # name, factory, radial grid, leading contract, free extent, needs CUDA: every case on the
 # angular grid alone and again on its product with a radial grid
 _CASES = [[name, factory, None, *rest] for name, factory, *rest in _CASES] + [[f"{name}_product", factory, _RADIAL, *rest] for name, factory, *rest in _CASES]
+# and the layers that exist only on a product grid
+_CASES += [["quadrature_volume", _quadrature_volume, _RADIAL, (...,), 1, False]]
 
 
 def _free(free):

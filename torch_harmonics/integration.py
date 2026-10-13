@@ -46,7 +46,7 @@ import torch.nn as nn
 
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import PointSetS2, _rejects_legacy_signature, require_point_set
-from torch_harmonics.radial import split_radial
+from torch_harmonics.radial import SphericalProductGrid, split_radial
 
 
 class QuadratureS2(nn.Module):
@@ -192,7 +192,85 @@ class QuadratureS2(nn.Module):
         # the weights broadcast against x, so a size-1 spatial axis would integrate silently
         check_field(x, self.grid, radial=self.radial)
 
-        # reduce over the spatial axes only, however many the grid has
-        quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)
+        return self._integrate(x)
 
-        return quad
+    def _integrate(self, x: torch.Tensor) -> torch.Tensor:
+        """The sum over the angular axes, unchecked; shared with :class:`QuadratureVolume`."""
+        # reduce over the spatial axes only, however many the grid has
+        return torch.sum(x * self.quad_weight, dim=self.spatial_dims)
+
+
+class QuadratureVolume(QuadratureS2):
+    r"""
+    Volume integral of a signal on a :class:`~torch_harmonics.SphericalProductGrid`.
+
+    .. math::
+
+        \int_V f \, dV = \int \left( \int_{S^2} f(r, \theta, \lambda) \, d\Omega \right) r^2 \, dr
+            \approx \sum_k r_k^2 \, w_k \sum_i \omega_i \, f(r_k, x_i)
+
+    The radial sum runs first, against the radial grid's
+    :attr:`~torch_harmonics.RadialGrid.volume_weights`, and :class:`QuadratureS2` then
+    integrates the result over the sphere. The volume element is separable, so the order
+    does not change the result, but radial-first leaves the angular reduction, and on the
+    distributed layer its collectives, with nr times less to reduce.
+
+    The radial rule integrates over its nodes' range only; on an unbounded domain, or with
+    nodes kept off the boundary, the rest of the domain is not sampled (see
+    :class:`~torch_harmonics.GeometricRadialGrid`).
+
+    Parameters
+    ----------
+    grid : SphericalProductGrid
+        The product of the angular grid and the radial grid to integrate on.
+    normalize : bool, optional
+        If ``True``, divides by the volume the weights integrate, :math:`4\pi \sum_k r_k^2 w_k`,
+        to return the volume average instead of the integral, by default ``False``.
+
+    Examples
+    --------
+    The volume of the spherical shell between radii 1 and 2:
+
+    >>> import math, torch
+    >>> import torch_harmonics as th
+    >>> grid = th.SphericalProductGrid(th.as_grid("legendre-gauss", nlat=8, nlon=16), th.as_radial_grid("legendre-gauss", nr=4, r_inner=1.0, r_outer=2.0))
+    >>> volume = th.QuadratureVolume(grid)(torch.ones(grid.shape))
+    >>> math.isclose(volume.item(), 4.0 / 3.0 * math.pi * 7.0, rel_tol=1e-6)
+    True
+    """
+
+    #: no pre-v1.0.0 signature to reject; see test_every_grid_taking_constructor_rejects_the_old_signature
+    _legacy_signature_exempt = "new in v1.0.0rc1"
+
+    def __init__(self, grid: SphericalProductGrid, normalize: Optional[bool] = False):
+        if not isinstance(grid, SphericalProductGrid):
+            raise TypeError(f"grid must be a SphericalProductGrid; for the integral over the sphere alone use QuadratureS2. Got {grid!r}.")
+
+        # the angular weights, normalized to the sphere's mean if asked; the radial weights
+        # below then complete either the integral or the volume average
+        super().__init__(grid, normalize=normalize)
+
+        radial_weight = self.radial.volume_weights
+        if normalize:
+            radial_weight = radial_weight / radial_weight.sum()
+        self.register_buffer("radial_weight", radial_weight.to(torch.float32).contiguous(), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Integrate a signal over the volume.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input signal of shape ``(..., nr, *angular.shape)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Integral of shape ``(...)``.
+        """
+        check_field(x, self.grid, radial=self.radial)
+
+        # the radial sum first, then QuadratureS2's angular one on what is left
+        x = torch.sum(x * self.radial_weight.reshape(-1, *([1] * len(self.grid.shape))), dim=-1 - len(self.grid.shape))
+        return self._integrate(x)

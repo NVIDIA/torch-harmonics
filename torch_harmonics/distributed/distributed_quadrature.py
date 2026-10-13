@@ -35,7 +35,7 @@ import torch
 
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
-from torch_harmonics.radial import split_radial
+from torch_harmonics.radial import SphericalProductGrid, split_radial
 
 from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -124,6 +124,10 @@ class DistributedQuadratureS2(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         check_field(x, self.shard, radial=self.radial)
 
+        return self._integrate(x)
+
+    def _integrate(self, x: torch.Tensor) -> torch.Tensor:
+        """The sum over the local angular block and across the ranks, unchecked; shared with :class:`DistributedQuadratureVolume`."""
         # integrate over the spatial axes only, however many the grid has
         quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)
         if self.comm_size_polar > 1:
@@ -132,3 +136,47 @@ class DistributedQuadratureS2(torch.nn.Module):
             quad = reduce_from_azimuth_region(quad)
 
         return quad
+
+
+class DistributedQuadratureVolume(DistributedQuadratureS2):
+    r"""
+    Distributed volume integral on a :class:`~torch_harmonics.SphericalProductGrid`.
+
+    The radial axis is not sharded, so every rank sums its shells first, locally, and only
+    then integrates its angular block and joins the reductions across the ranks. Those
+    then carry one value per leading index rather than one per shell: nr times less than
+    summing the radius after them.
+
+    .. seealso::
+        :class:`torch_harmonics.QuadratureVolume`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
+
+    Parameters
+    ----------
+    grid : SphericalProductGrid
+        The product of the *global* angular grid and the radial grid.
+    normalize : bool, optional
+        If ``True``, returns the volume average instead of the integral, by default ``False``.
+    """
+
+    #: no pre-v1.0.0 signature to reject; see test_every_grid_taking_constructor_rejects_the_old_signature
+    _legacy_signature_exempt = "new in v1.0.0rc1"
+
+    def __init__(self, grid: SphericalProductGrid, normalize: Optional[bool] = False):
+        if not isinstance(grid, SphericalProductGrid):
+            raise TypeError(f"grid must be a SphericalProductGrid; for the integral over the sphere alone use DistributedQuadratureS2. Got {grid!r}.")
+
+        super().__init__(grid, normalize=normalize)
+
+        radial_weight = self.radial.volume_weights
+        if normalize:
+            radial_weight = radial_weight / radial_weight.sum()
+        self.register_buffer("radial_weight", radial_weight.to(torch.float32).contiguous(), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        check_field(x, self.shard, radial=self.radial)
+
+        # the radial sum first and locally, so the collectives below reduce (...) rather than (..., nr)
+        x = torch.sum(x * self.radial_weight.reshape(-1, *([1] * len(self.shard.shape))), dim=-1 - len(self.shard.shape))
+        return self._integrate(x)

@@ -96,6 +96,11 @@ def _quadrature(grid):
     return th.QuadratureS2(grid), grid.shape, lambda lead: (*lead, *_radial(grid)), torch.float32
 
 
+def _quadrature_volume(grid):
+    # the radial and the angular axes are reduced and nothing else
+    return th.QuadratureVolume(grid), grid.shape, lambda lead: lead, torch.float32
+
+
 def _resample(grid):
     angular = _angular(grid)
     grid_out = as_grid("equiangular", nlat=angular.nlat + 2, nlon=angular.nlon)
@@ -154,6 +159,12 @@ _CASES = [
 
 # and every one of them again on the product of its grid with a radial grid
 _CASES += [[f"{name}_product", factory, _product(grid), spec] for name, factory, grid, spec in _CASES]
+
+# and the layers that exist only on a product grid
+_CASES += [
+    ["quadrature_volume", _quadrature_volume, _product(_REGULAR), (...,)],
+    ["quadrature_volume_healpix", _quadrature_volume, _product(_HEALPIX), (...,)],
+]
 
 
 _SHAPE_CASES = [[f"{name}_{shape_name(leading)}", factory, grid, leading] for name, factory, grid, spec in _CASES for leading in accepted_leadings(spec)]

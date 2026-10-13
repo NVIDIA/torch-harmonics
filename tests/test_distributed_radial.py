@@ -30,6 +30,7 @@
 #
 
 
+import math
 import unittest
 
 import torch
@@ -145,6 +146,21 @@ class TestDistributedLayersOnProductGrids(unittest.TestCase):
             _loss(expected).backward()
             self.assertTrue(_close(f"{name} output on shell {k}", out.detach().select(rdim_out, k), expected.detach()))
             self.assertTrue(_close(f"{name} input gradient on shell {k}", x.grad.select(rdim_in, k), xk.grad))
+
+    def test_volume_quadrature_sums_the_shells(self):
+        grid = SphericalProductGrid(_GRID, _RADIAL)
+        quad = thd.DistributedQuadratureVolume(grid).to(self.device)
+        shells = thd.DistributedQuadratureS2(grid).to(self.device)
+        x = torch.randn(2, _RADIAL.nr, *quad.shard.shape, device=self.device)
+        expected = (shells(x) * _RADIAL.volume_weights.to(device=self.device, dtype=torch.float32)).sum(-1)
+        self.assertTrue(_close("volume integral", quad(x), expected))
+
+    def test_volume_quadrature_of_one_is_the_volume(self):
+        grid = SphericalProductGrid(_GRID, _RADIAL)
+        quad = thd.DistributedQuadratureVolume(grid).to(self.device)
+        x = torch.ones(_RADIAL.nr, *quad.shard.shape, device=self.device)
+        self.assertAlmostEqual(quad(x).item(), 4.0 / 3.0 * math.pi * 7.0, places=3)
+        self.assertAlmostEqual(thd.DistributedQuadratureVolume(grid, normalize=True).to(self.device)(x).item(), 1.0, places=5)
 
 
 if __name__ == "__main__":
