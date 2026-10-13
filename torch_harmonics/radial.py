@@ -83,6 +83,14 @@ def _as_float(owner: Any, name: str) -> None:
         object.__setattr__(owner, name, float(value))
 
 
+def _single_radius_message(lower: str, upper: str, radius: float) -> str:
+    """The rejection of a radial grid that has collapsed onto one sphere, pointing at what to use instead."""
+    return (
+        f"{lower} == {upper} == {radius} leaves a single sphere, not a radial extent. A field on one sphere is a field on "
+        f"the angular grid alone: pass the PointSetS2 itself (e.g. as_grid(...)) rather than a SphericalProductGrid over it."
+    )
+
+
 # Built once per descriptor and cached on its key, as the angular grids do; copy=True so a
 # caller writing into the result cannot change it for the next one.
 @lru_cache(typed=True, copy=True)
@@ -141,6 +149,8 @@ class RadialGrid:
             raise ValueError(f"nr must be positive, got {self.nr}")
         for name in ("r_inner", "r_outer"):
             _as_float(self, name)
+        if self.r_inner == self.r_outer:
+            raise ValueError(_single_radius_message("r_inner", "r_outer", self.r_inner))
         if not 0.0 <= self.r_inner < self.r_outer:
             raise ValueError(f"expected 0 <= r_inner < r_outer, got r_inner={self.r_inner}, r_outer={self.r_outer}")
 
@@ -271,6 +281,8 @@ class GeometricRadialGrid(RadialGrid):
             # nodes, unlike the domain bound r_outer, must be finite
             if math.isinf(getattr(self, name)):
                 raise ValueError(f"{name} must be finite, got {getattr(self, name)}; only the domain bound r_outer may be infinite")
+        if self.r_min == self.r_max:
+            raise ValueError(_single_radius_message("r_min", "r_max", self.r_min))
         if not self.r_inner < self.r_min < self.r_max <= self.r_outer:
             raise ValueError(f"expected r_inner < r_min < r_max <= r_outer, got r_inner={self.r_inner}, r_min={self.r_min}, r_max={self.r_max}, r_outer={self.r_outer}")
 

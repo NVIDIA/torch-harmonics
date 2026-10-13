@@ -125,6 +125,18 @@ class TestRadialGrid(unittest.TestCase):
         with self.assertRaises(ValueError):
             build()
 
+    @parameterized.expand(
+        [
+            ["geometric_nodes", lambda: GeometricRadialGrid(nr=4, r_min=2.0, r_max=2.0)],
+            ["gauss_domain", lambda: LegendreGaussRadialGrid(nr=4, r_inner=1.0, r_outer=1.0)],
+            ["geometric_domain", lambda: GeometricRadialGrid(nr=4, r_min=1.5, r_max=2.0, r_inner=1.0, r_outer=1.0)],
+        ]
+    )
+    def test_single_sphere_points_at_the_angular_grid(self, _, build):
+        """A radial grid collapsed onto one radius is rejected with a pointer to the angular grid, not just an ordering error."""
+        with self.assertRaisesRegex(ValueError, "single sphere.*angular grid alone"):
+            build()
+
     def test_identity(self):
         a = GeometricRadialGrid(nr=8, r_min=0.1, r_max=10)
         b = as_radial_grid("geometric", nr=8, r_min=0.1, r_max=10.0)
