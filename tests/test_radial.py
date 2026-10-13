@@ -114,6 +114,7 @@ class TestRadialGrid(unittest.TestCase):
             ["r_max_below_r_min", lambda: GeometricRadialGrid(nr=4, r_min=2.0, r_max=1.0)],
             ["r_max_outside_domain", lambda: GeometricRadialGrid(nr=4, r_min=1.0, r_max=3.0, r_outer=2.0)],
             ["one_geometric_node", lambda: GeometricRadialGrid(nr=1, r_min=1.0, r_max=2.0)],
+            ["infinite_r_max", lambda: GeometricRadialGrid(nr=4, r_min=1.0, r_max=math.inf)],
             ["negative_bound", lambda: LegendreGaussRadialGrid(nr=4, r_inner=-1.0, r_outer=1.0)],
             ["unbounded_gauss", lambda: LegendreGaussRadialGrid(nr=4, r_inner=0.0, r_outer=math.inf)],
             ["no_nodes", lambda: LegendreGaussRadialGrid(nr=0, r_inner=0.0, r_outer=1.0)],
@@ -200,6 +201,36 @@ class TestSphericalProductGrid(unittest.TestCase):
         r = self.radial.r.to(torch.float32).reshape(-1, *([1] * len(angular.shape)))
         self.assertAlmostEqual(quad(r.expand(grid.shape)).item(), math.pi * 15.0, places=4)
         self.assertAlmostEqual(th.QuadratureVolume(grid, normalize=True)(torch.ones(2, *grid.shape))[1].item(), 1.0, places=6)
+
+    @parameterized.expand([["tiny", 1e-16], ["huge", 1e20]])
+    def test_volume_quadrature_keeps_the_weights_range(self, _, scale):
+        """r^2 w scales like r^3, outside float32's range at both ends; a float64 field integrates in float64."""
+        grid = SphericalProductGrid(self.angular, LegendreGaussRadialGrid(nr=3, r_inner=0.0, r_outer=scale))
+        volume = th.QuadratureVolume(grid)(torch.ones(grid.shape, dtype=torch.float64))
+        self.assertEqual(volume.dtype, torch.float64)
+        # the angular weights are QuadratureS2's float32 buffer, which bounds the agreement at
+        # float32 roundoff; the range is what this is about
+        self.assertAlmostEqual(volume.item() / (4.0 / 3.0 * math.pi * scale**3), 1.0, places=6)
+
+    @parameterized.expand(
+        [
+            [f"{domain}_{name}", angular, r_inner, r_outer]
+            for domain, r_inner, r_outer in [("ball", 0.0, 1.0), ("shell", 1.0, 2.0), ("thin_shell", 10.0, 10.5)]
+            for name, angular in [
+                ("legendre_gauss", as_grid("legendre-gauss", nlat=8, nlon=16)),
+                ("equiangular", as_grid("equiangular", nlat=9, nlon=16)),
+                ("healpix", HealpixGrid(nside=2)),
+            ]
+        ]
+    )
+    def test_volume_of_the_domain(self, _, angular, r_inner, r_outer):
+        """The volume of ones is 4/3 pi (r_outer^3 - r_inner^3); Gauss with nr >= 2 integrates the r^2 exactly."""
+        grid = SphericalProductGrid(angular, LegendreGaussRadialGrid(nr=2, r_inner=r_inner, r_outer=r_outer))
+        volume = th.QuadratureVolume(grid)(torch.ones(grid.shape, dtype=torch.float64))
+        expected = 4.0 / 3.0 * math.pi * (r_outer**3 - r_inner**3)
+        self.assertAlmostEqual(volume.item() / expected, 1.0, places=6)
+        # and the descriptor's volume weights, without the layer
+        self.assertAlmostEqual(grid.quad_weights.sum().item() / expected, 1.0, places=12)
 
     def test_volume_quadrature_sums_the_shells(self):
         x = torch.randn(2, 5, *self.grid.shape)

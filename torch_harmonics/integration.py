@@ -104,10 +104,10 @@ class QuadratureS2(nn.Module):
         accepted: integration needs points and weights, not ring structure. The
         descriptor carries both the resolution and the quadrature rule, so no separate
         shape argument is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
-        On a :class:`~torch_harmonics.SphericalProductGrid` every shell is integrated
+        On a :class:`~torch_harmonics.radial.SphericalProductGrid` every shell is integrated
         over the sphere alone, giving one integral per radial node; the volume integral
         takes :attr:`SphericalProductGrid.quad_weights
-        <torch_harmonics.SphericalProductGrid.quad_weights>` instead.
+        <torch_harmonics.radial.SphericalProductGrid.quad_weights>` instead.
     normalize : bool, optional
         If ``True``, divides weights by :math:`4\pi` to return a spherical mean
         instead of an integral, by default ``False``.
@@ -202,7 +202,7 @@ class QuadratureS2(nn.Module):
 
 class QuadratureVolume(QuadratureS2):
     r"""
-    Volume integral of a signal on a :class:`~torch_harmonics.SphericalProductGrid`.
+    Volume integral of a signal on a :class:`~torch_harmonics.radial.SphericalProductGrid`.
 
     .. math::
 
@@ -210,14 +210,15 @@ class QuadratureVolume(QuadratureS2):
             \approx \sum_k r_k^2 \, w_k \sum_i \omega_i \, f(r_k, x_i)
 
     The radial sum runs first, against the radial grid's
-    :attr:`~torch_harmonics.RadialGrid.volume_weights`, and :class:`QuadratureS2` then
+    :attr:`~torch_harmonics.radial.RadialGrid.volume_weights`, and :class:`QuadratureS2` then
     integrates the result over the sphere. The volume element is separable, so the order
     does not change the result, but radial-first leaves the angular reduction, and on the
     distributed layer its collectives, with nr times less to reduce.
 
-    The radial rule integrates over its nodes' range only; on an unbounded domain, or with
-    nodes kept off the boundary, the rest of the domain is not sampled (see
-    :class:`~torch_harmonics.GeometricRadialGrid`).
+    The domain covered is the radial rule's: :class:`~torch_harmonics.radial.LegendreGaussRadialGrid`
+    integrates over the whole of ``[r_inner, r_outer]``, while
+    :class:`~torch_harmonics.radial.GeometricRadialGrid` integrates over its nodes' range
+    ``[r_min, r_max]`` only, leaving the rest of an unbounded or exterior domain unsampled.
 
     Parameters
     ----------
@@ -253,7 +254,10 @@ class QuadratureVolume(QuadratureS2):
         radial_weight = self.radial.volume_weights
         if normalize:
             radial_weight = radial_weight / radial_weight.sum()
-        self.register_buffer("radial_weight", radial_weight.to(torch.float32).contiguous(), persistent=False)
+        # kept in float64: r^2 w spans the cube of the radial range, which leaves float32's
+        # range on astrophysical radii in SI units, and in the other direction on tiny ones.
+        # Cast at use, so a float64 field integrates in float64
+        self.register_buffer("radial_weight", radial_weight.contiguous(), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -272,5 +276,6 @@ class QuadratureVolume(QuadratureS2):
         check_field(x, self.grid, radial=self.radial)
 
         # the radial sum first, then QuadratureS2's angular one on what is left
-        x = torch.sum(x * self.radial_weight.reshape(-1, *([1] * len(self.grid.shape))), dim=-1 - len(self.grid.shape))
+        weight = self.radial_weight.to(torch.promote_types(x.dtype, torch.float32))
+        x = torch.sum(x * weight.reshape(-1, *([1] * len(self.grid.shape))), dim=-1 - len(self.grid.shape))
         return self._integrate(x)

@@ -140,7 +140,7 @@ class DistributedQuadratureS2(torch.nn.Module):
 
 class DistributedQuadratureVolume(DistributedQuadratureS2):
     r"""
-    Distributed volume integral on a :class:`~torch_harmonics.SphericalProductGrid`.
+    Distributed volume integral on a :class:`~torch_harmonics.radial.SphericalProductGrid`.
 
     The radial axis is not sharded, so every rank sums its shells first, locally, and only
     then integrates its angular block and joins the reductions across the ranks. Those
@@ -172,11 +172,15 @@ class DistributedQuadratureVolume(DistributedQuadratureS2):
         radial_weight = self.radial.volume_weights
         if normalize:
             radial_weight = radial_weight / radial_weight.sum()
-        self.register_buffer("radial_weight", radial_weight.to(torch.float32).contiguous(), persistent=False)
+        # kept in float64: r^2 w spans the cube of the radial range, which leaves float32's
+        # range on astrophysical radii in SI units, and in the other direction on tiny ones.
+        # Cast at use, so a float64 field integrates in float64
+        self.register_buffer("radial_weight", radial_weight.contiguous(), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         check_field(x, self.shard, radial=self.radial)
 
         # the radial sum first and locally, so the collectives below reduce (...) rather than (..., nr)
-        x = torch.sum(x * self.radial_weight.reshape(-1, *([1] * len(self.shard.shape))), dim=-1 - len(self.shard.shape))
+        weight = self.radial_weight.to(torch.promote_types(x.dtype, torch.float32))
+        x = torch.sum(x * weight.reshape(-1, *([1] * len(self.shard.shape))), dim=-1 - len(self.shard.shape))
         return self._integrate(x)
