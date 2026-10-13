@@ -14,16 +14,15 @@ CUDA toolkit:
 pip install torch-harmonics-cu<CUDA> --extra-index-url https://pypi.nvidia.com
 ```
 
-If you don't need a specific CUDA version, use one of the rolling aliases, which
-always track the newest build:
+If you don't need a specific CUDA version, use the rolling alias, which always
+tracks the newest CUDA build:
 
 ```bash
-# latest CUDA build
 pip install torch-harmonics-cuda-latest --extra-index-url https://pypi.nvidia.com
-
-# CPU only
-pip install torch-harmonics-cpu-latest --extra-index-url https://pypi.nvidia.com
 ```
+
+For a CPU-only build, install the `torch-harmonics` package; see "PyPI (CPU
+only)" below.
 
 ```{tip}
 Run `nvidia-smi` to check the CUDA version supported by your driver.
