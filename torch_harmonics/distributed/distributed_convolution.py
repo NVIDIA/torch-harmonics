@@ -33,6 +33,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.disco._disco_utils import _get_psi
 from torch_harmonics.disco.convolution import DiscreteContinuousConv, _precompute_convolution_tensor_s2
 from torch_harmonics.disco.optimized.disco_optimized import _use_spatial_first_dgrad
@@ -430,6 +431,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # this rank's block, with every channel: the a2a splits the channels itself
+        check_field(x, self.shard_in, leading=(None, self.in_channels))
+
         # reordered a2a: einsum-first on the local channel shard, K-expanded recomputed in
         # backward; standard a2a: contraction, collectives, then the einsum
         if self.fused:
@@ -579,6 +583,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        check_field(x, self.shard_in, leading=(None, self.in_channels))
 
         # extract shape
         B, C, H, W = x.shape

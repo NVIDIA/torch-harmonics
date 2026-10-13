@@ -36,8 +36,9 @@ import torch.distributed as dist
 from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import _kernel_device_types
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.attention import attention_kernels
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim, _reciprocal_or_zero
+from torch_harmonics.attention._attention_utils import _check_dtypes_match, _reciprocal_or_zero
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
@@ -1277,13 +1278,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
 
     def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
         """The serial contract, against this rank's shard rather than the global grid."""
-        _check_ndim(query, 4, "query")
-        _check_ndim(key, 4, "key")
-        _check_ndim(value, 4, "value")
+        check_field(query, self.shard_out, leading=(None, self.in_channels), name="query")
+        check_field(key, self.shard_in, leading=(None, self.in_channels), name="key")
+        check_field(value, self.shard_in, leading=(None, self.in_channels), name="value")
         _check_dtypes_match((query, key, value))
-        _check_extent(query, -2, self.nlat_out_local, "query latitudes")
-        _check_extent(query, -1, self.nlon_out_local, "query longitudes")
-        _check_extent(key, -2, self.nlat_in_local, "key latitudes")
-        _check_extent(key, -1, self.nlon_in_local, "key longitudes")
-        _check_extent(value, -2, self.nlat_in_local, "value latitudes")
-        _check_extent(value, -1, self.nlon_in_local, "value longitudes")

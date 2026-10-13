@@ -34,11 +34,11 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from torch_harmonics._field_contract import check_coeffs, check_field
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
-from torch_harmonics.utils import check
 
 
 class RealSHT(nn.Module):
@@ -165,9 +165,7 @@ class RealSHT(nn.Module):
             Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
         """
 
-        check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
-        check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
+        check_field(x, self.grid)
 
         # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
         # the quadrature weights, so no scaling of the complex output is needed here.
@@ -309,9 +307,7 @@ class InverseRealSHT(nn.Module):
             Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
         """
 
-        check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
-        check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.mmax, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax}, got {x.shape[-1]}")
+        check_coeffs(x, self.lmax, self.mmax)
 
         # transpose to put the contraction dim (lmax) on the fast axis
         x = x.transpose(-1, -2)
@@ -454,10 +450,7 @@ class RealVectorSHT(nn.Module):
             size-2 dimension holds the spheroidal and toroidal components.
         """
 
-        check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-        check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
-        check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
+        check_field(x, self.grid, leading=(..., 2))
 
         # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
         # the quadrature weights, so no scaling of the complex output is needed here.
@@ -604,10 +597,7 @@ class InverseRealVectorSHT(nn.Module):
             size-2 dimension holds the two tangential (colatitude, longitude) components.
         """
 
-        check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-        check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
-        check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.mmax, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax}, got {x.shape[-1]}")
+        check_coeffs(x, self.lmax, self.mmax, leading=(..., 2))
 
         # transpose to put the contraction dim (lmax) on the fast axis
         x = x.transpose(-1, -2)

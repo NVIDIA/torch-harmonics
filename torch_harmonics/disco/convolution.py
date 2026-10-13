@@ -39,13 +39,13 @@ import torch.nn as nn
 from disco_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import BackendSelectionMixin
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid, require_regular_grid
 from torch_harmonics.neighborhood import _row_chunks, precompute_neighborhood_csr_s2
 from torch_harmonics.quadrature import THETA_CUTOFF_EPS, effective_theta_cutoff, latitude_support_band
 from torch_harmonics.truncation import truncate_support
-from torch_harmonics.utils import check
 
 from ._disco_utils import _get_psi, _get_psi_ragged
 from .backends import BACKENDS
@@ -662,12 +662,12 @@ def _to_flat(layer: "DiscreteContinuousConv", x: torch.Tensor) -> torch.Tensor:
     """The input as the computation takes it: unchanged on the regular path, ``(..., npoints_in)`` on the ragged one."""
     if not layer.ragged:
         return x
+    # forward has checked x against grid_in, so the flat extent is npoints_in, which the
+    # ragged kernels rely on: they read the field by flat index
     if not layer.ragged_in:
         # A regular grid entering the ragged path. Its two spatial axes collapse into the
         # one flat axis psi's columns index, and ring-major order is already that flat order.
         x = x.flatten(-2, -1)
-    # the ragged kernels read the field by flat index, so a wrong extent would read out of bounds
-    check(x.shape[-1] == layer.npoints_in, lambda: f"Expected {layer.npoints_in} input points, got {x.shape[-1]} (shape {tuple(x.shape)})")
     return x
 
 
@@ -751,6 +751,7 @@ class DiscreteContinuousConv(BackendSelectionMixin, nn.Module, metaclass=abc.ABC
             raise ValueError("Error, the number of input channels has to be an integer multiple of the group size")
         if out_channels % self.groups != 0:
             raise ValueError("Error, the number of output channels has to be an integer multiple of the group size")
+        self.in_channels = in_channels
         self.groupsize = in_channels // self.groups
         self.out_per_group = out_channels // self.groups
         scale = math.sqrt(1.0 / self.groupsize) * self.filter_basis.get_init_factors().reshape(1, 1, -1)
@@ -959,6 +960,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             :class:`~torch_harmonics.grid.RegularGridS2`, ``(batch, out_channels, npoints_out)``
             on any other grid.
         """
+        check_field(x, self.grid_in, leading=(None, self.in_channels))
+
         x = _to_flat(self, x)
 
         # the backend is fixed before tracing, see torch_harmonics._backend
@@ -1105,6 +1108,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             :class:`~torch_harmonics.grid.RegularGridS2`, ``(batch, out_channels, npoints_out)``
             on any other grid.
         """
+        check_field(x, self.grid_in, leading=(None, self.in_channels))
+
         x = _to_flat(self, x)
 
         # extract shape; one spatial axis on a ragged layer, two on a regular one

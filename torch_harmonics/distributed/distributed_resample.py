@@ -35,6 +35,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.resample import _slerp_shortest_arc
 
@@ -232,6 +233,8 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
+        # a channel axis is required: the transposes split it across the ranks
+        check_field(x, self.shard_in, leading=(..., None))
 
         if self.skip_resampling:
             return x

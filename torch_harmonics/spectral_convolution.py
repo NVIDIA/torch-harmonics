@@ -36,6 +36,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.truncation import truncate_sht
@@ -220,6 +221,8 @@ class SpectralConvS2(nn.Module):
         torch.Tensor
             Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``.
         """
+        check_field(x, self.grid_in, leading=(None, self.in_channels))
+
         dtype = x.dtype
 
         with torch.amp.autocast(device_type=x.device.type, enabled=False):

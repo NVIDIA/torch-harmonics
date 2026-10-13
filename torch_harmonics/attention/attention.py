@@ -40,7 +40,8 @@ import torch.nn.functional as F
 from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import BackendSelectionMixin
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _check_extent, _check_ndim
+from torch_harmonics._field_contract import check_field
+from torch_harmonics.attention._attention_utils import _check_dtypes_match
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
@@ -266,14 +267,13 @@ class AttentionS2(nn.Module):
 
     def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
         """
-        Shape and dtype contract of the three inputs: ``(batch, channels, *grid.shape)``,
+        Shape and dtype contract of the three inputs: ``(batch, in_channels, *grid.shape)``,
         query on the output grid and key/value on the input grid, each checked against
         its own grid since a mixed pair gives the two sides different ranks.
         """
-        for tensor, name, grid in ((query, "query", self.grid_out), (key, "key", self.grid_in), (value, "value", self.grid_in)):
-            _check_ndim(tensor, 2 + len(grid.shape), name)
-            for axis, extent in enumerate(grid.shape, start=-len(grid.shape)):
-                _check_extent(tensor, axis, extent, f"{name} spatial axis {axis}")
+        check_field(query, self.grid_out, leading=(None, self.in_channels), name="query")
+        check_field(key, self.grid_in, leading=(None, self.in_channels), name="key")
+        check_field(value, self.grid_in, leading=(None, self.in_channels), name="value")
         _check_dtypes_match((query, key, value))
 
     @staticmethod
@@ -687,35 +687,16 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
 
     def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
         """
-        Shape and dtype contract of the three inputs, for whichever grid kind this is.
+        Shape and dtype contract of the three inputs: ``(batch, in_channels, *grid.shape)``.
 
         query is sampled on the output grid and key/value on the input grid, so a mixed
         pair gives the two sides different ranks; each is checked against its own grid
         rather than against one rank for the layer.
-
-        The branches are on Python bools fixed at construction, so dynamo specialises on
-        them rather than breaking the graph, and the checks themselves are the same
-        traceable helpers the regular path has always used.
         """
-        _check_ndim(query, 3 if self.ragged_out else 4, "query")
-        for tensor, name in ((key, "key"), (value, "value")):
-            _check_ndim(tensor, 3 if self.ragged_in else 4, name)
+        check_field(query, self.grid_out, leading=(None, self.in_channels), name="query")
+        check_field(key, self.grid_in, leading=(None, self.in_channels), name="key")
+        check_field(value, self.grid_in, leading=(None, self.in_channels), name="value")
         _check_dtypes_match((query, key, value))
-
-        if self.ragged_out:
-            _check_extent(query, -1, self.npoints_out, "query points")
-        else:
-            _check_extent(query, -2, self.nlat_out, "query latitudes")
-            _check_extent(query, -1, self.nlon_out, "query longitudes")
-
-        if self.ragged_in:
-            _check_extent(key, -1, self.npoints_in, "key points")
-            _check_extent(value, -1, self.npoints_in, "value points")
-        else:
-            _check_extent(key, -2, self.nlat_in, "key latitudes")
-            _check_extent(key, -1, self.nlon_in, "key longitudes")
-            _check_extent(value, -2, self.nlat_in, "value latitudes")
-            _check_extent(value, -1, self.nlon_in, "value longitudes")
 
     def _to_channels_last(self, tensor: torch.Tensor, ragged_layout: bool) -> torch.Tensor:
         """

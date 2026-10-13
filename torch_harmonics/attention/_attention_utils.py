@@ -47,35 +47,8 @@ def _reciprocal_or_zero(alpha_sum: torch.Tensor) -> torch.Tensor:
     return torch.where(alpha_sum > 0, alpha_sum.reciprocal(), torch.zeros_like(alpha_sum))
 
 
-# Input validation helpers.
-#
-# These exist because torch._check messages have to survive dynamo. A *callable*
-# message never traces -- not even one returning a constant -- which is why the
-# codebase routes these through torch_harmonics.utils.check, and why a message
-# that has to interpolate a runtime value cannot simply be inlined here.
-#
-# The two cases differ in what can be reported:
-#   - rank is static under dynamo, so the actual value is safe to interpolate
-#   - an extent may be a SymInt under dynamic shapes, so it can be compared but
-#     not put in the message; only the expected value (a plain int) can be
-
-
-def _check_ndim(tensor: torch.Tensor, ndim: int, name: str) -> None:
-    """Check a tensor's rank, with a dynamo-traceable error message."""
-
-    # hoisted to a local int so the closure below captures a constant
-    actual = tensor.dim()
-    check(actual == ndim, lambda: f"Expected {ndim}-dimensional {name} tensor, got {actual} dimensions")
-
-
-def _check_extent(tensor: torch.Tensor, dim: int, expected: int, name: str) -> None:
-    """Check one dimension of a tensor, with a dynamo-traceable error message."""
-
-    # int() pins expected to a constant even when it arrives as a tensor-derived
-    # value; the actual extent is deliberately absent from the message, since it
-    # is a SymInt whenever shapes are dynamic
-    expected = int(expected)
-    check(tensor.shape[dim] == expected, lambda: f"Expected {name} shape[{dim}] == {expected}")
+# Input validation. The shape contract is checked by torch_harmonics._field_contract,
+# like every other layer's; only the dtype check is particular to attention.
 
 
 def _check_dtypes_match(tensors) -> None:

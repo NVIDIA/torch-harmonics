@@ -33,6 +33,7 @@ from typing import Optional
 
 import torch
 
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 
 from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
@@ -118,6 +119,8 @@ class DistributedQuadratureS2(torch.nn.Module):
         return f"grid={self.grid!r},\nnormalize={self.normalize}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        check_field(x, self.shard)
+
         # integrate over the spatial axes only, however many the grid has
         quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)
         if self.comm_size_polar > 1:

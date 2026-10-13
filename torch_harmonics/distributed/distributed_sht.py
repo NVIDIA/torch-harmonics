@@ -34,11 +34,11 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from torch_harmonics._field_contract import check_coeffs, check_field
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
-from torch_harmonics.utils import check
 
 from .primitives import (
     compute_split_shapes,
@@ -204,9 +204,8 @@ class DistributedRealSHT(nn.Module):
     @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
-        check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-        check(x.shape[-2] == self.nlat_local, lambda: f"Expected latitudes shape[-2]=={self.nlat_local}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.nlon_local, lambda: f"Expected longitudes shape[-1]=={self.nlon_local}, got {x.shape[-1]}")
+        # a channel axis is required: the transposes split it across the ranks
+        check_field(x, self.shard, leading=(..., None))
 
         # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
         # must be at least as large as the azimuth group. Flatten all leading dims into that
@@ -390,9 +389,7 @@ class DistributedInverseRealSHT(nn.Module):
     @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
-        check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-        check(x.shape[-2] == self.lmax_local, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax_local}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.mmax_local, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax_local}, got {x.shape[-1]}")
+        check_coeffs(x, self.lmax_local, self.mmax_local, leading=(..., None))
 
         # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
         # must be at least as large as the azimuth group. Flatten all leading dims into that
@@ -572,10 +569,7 @@ class DistributedRealVectorSHT(nn.Module):
     @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
-        check(x.dim() >= 4, lambda: f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
-        check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
-        check(x.shape[-2] == self.nlat_local, lambda: f"Expected latitudes shape[-2]=={self.nlat_local}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.nlon_local, lambda: f"Expected longitudes shape[-1]=={self.nlon_local}, got {x.shape[-1]}")
+        check_field(x, self.shard, leading=(..., None, 2))
 
         # the transposes below redistribute the leading (channel/batch) axis across the
         # process grid, so it must be at least as large as the larger comm group. Flatten
@@ -743,10 +737,7 @@ class DistributedInverseRealVectorSHT(nn.Module):
     @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
-        check(x.dim() >= 4, lambda: f"Expected tensor with at least 4 dimensions but got {x.dim()} instead")
-        check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
-        check(x.shape[-2] == self.lmax_local, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax_local}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.mmax_local, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax_local}, got {x.shape[-1]}")
+        check_coeffs(x, self.lmax_local, self.mmax_local, leading=(..., None, 2))
 
         # the transposes below redistribute the leading (channel/batch) axis across the
         # process grid, so it must be at least as large as the larger comm group. Flatten
