@@ -35,6 +35,7 @@ import torch
 
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.radial import split_radial
 
 from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -75,7 +76,8 @@ class DistributedQuadratureS2(torch.nn.Module):
     def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
         super().__init__()
 
-        # copy input
+        # copy input; on a product grid each shell is integrated alike, the radial axis kept
+        grid, self.radial = split_radial(grid)
         self.grid = require_regular_grid(grid)
         self.normalize = normalize
 
@@ -116,10 +118,11 @@ class DistributedQuadratureS2(torch.nn.Module):
         self.register_buffer("quad_weight", quad_weight, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\nnormalize={self.normalize}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nnormalize={self.normalize}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        check_field(x, self.shard)
+        check_field(x, self.shard, radial=self.radial)
 
         # integrate over the spatial axes only, however many the grid has
         quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)

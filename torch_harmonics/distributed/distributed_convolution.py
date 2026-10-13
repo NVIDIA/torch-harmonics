@@ -39,6 +39,7 @@ from torch_harmonics.disco.convolution import DiscreteContinuousConv, _precomput
 from torch_harmonics.disco.optimized.disco_optimized import _use_spatial_first_dgrad
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.quadrature import effective_theta_cutoff
+from torch_harmonics.radial import fold_radius, split_radial_pair, unfold_radius
 from torch_harmonics.truncation import truncate_support
 
 # a2a forward orchestration: standard (fused=False) and reordered (fused=True).
@@ -337,6 +338,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.fused = bool(fused)
         self.basis_norm_mode = basis_norm_mode
 
+        # on a pair of product grids every shell is convolved alike, with the radius folded
+        # into the batch; the channels the a2a splits are unchanged
+        grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
         self.grid_in = require_regular_grid(grid_in, "grid_in")
         self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
@@ -439,9 +443,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         return _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local + 2 * self.r_lat, self.nlat_out_local)
 
     def extra_repr(self):
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return (
             f"grid_in={self.grid_in!r},\n"
-            f"grid_out={self.grid_out!r},\n"
+            f"grid_out={self.grid_out!r}{radial},\n"
             f"in_channels={self.groupsize * self.groups}, "
             f"out_channels={self.weight.shape[0]}, "
             f"filter_basis={self.filter_basis}, "
@@ -452,7 +457,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # this rank's block, with every channel: the a2a splits the channels itself
-        check_field(x, self.shard_in, leading=(None, self.in_channels))
+        check_field(x, self.shard_in, leading=(None, self.in_channels), radial=self.radial)
+
+        if self.radial is not None:
+            x = fold_radius(x)
 
         # reordered a2a: einsum-first on the local channel shard, K-expanded recomputed in
         # backward; standard a2a: contraction, collectives, then the einsum
@@ -463,6 +471,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
+
+        if self.radial is not None:
+            out = unfold_radius(out, self.radial.nr)
+
         return out
 
 
@@ -538,6 +550,9 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
         self.basis_norm_mode = basis_norm_mode
+        # on a pair of product grids every shell is convolved alike, with the radius folded
+        # into the batch; the channels the a2a splits are unchanged
+        grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
         self.grid_in = require_regular_grid(grid_in, "grid_in")
         self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
@@ -604,10 +619,14 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, self.nlat_in_local, self.nlat_out_local, semi_transposed=True)
 
     def extra_repr(self):
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        check_field(x, self.shard_in, leading=(None, self.in_channels))
+        check_field(x, self.shard_in, leading=(None, self.in_channels), radial=self.radial)
+
+        if self.radial is not None:
+            x = fold_radius(x)
 
         # extract shape
         B, C, H, W = x.shape
@@ -641,5 +660,8 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], 1, 1)
+
+        if self.radial is not None:
+            out = unfold_radius(out, self.radial.nr)
 
         return out
