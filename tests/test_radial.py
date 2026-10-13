@@ -208,9 +208,7 @@ class TestSphericalProductGrid(unittest.TestCase):
         grid = SphericalProductGrid(self.angular, LegendreGaussRadialGrid(nr=3, r_inner=0.0, r_outer=scale))
         volume = th.QuadratureVolume(grid)(torch.ones(grid.shape, dtype=torch.float64))
         self.assertEqual(volume.dtype, torch.float64)
-        # the angular weights are QuadratureS2's float32 buffer, which bounds the agreement at
-        # float32 roundoff; the range is what this is about
-        self.assertAlmostEqual(volume.item() / (4.0 / 3.0 * math.pi * scale**3), 1.0, places=6)
+        self.assertAlmostEqual(volume.item() / (4.0 / 3.0 * math.pi * scale**3), 1.0, places=12)
 
     @parameterized.expand(
         [
@@ -228,7 +226,7 @@ class TestSphericalProductGrid(unittest.TestCase):
         grid = SphericalProductGrid(angular, LegendreGaussRadialGrid(nr=2, r_inner=r_inner, r_outer=r_outer))
         volume = th.QuadratureVolume(grid)(torch.ones(grid.shape, dtype=torch.float64))
         expected = 4.0 / 3.0 * math.pi * (r_outer**3 - r_inner**3)
-        self.assertAlmostEqual(volume.item() / expected, 1.0, places=6)
+        self.assertAlmostEqual(volume.item() / expected, 1.0, places=12)
         # and the descriptor's volume weights, without the layer
         self.assertAlmostEqual(grid.quad_weights.sum().item() / expected, 1.0, places=12)
 

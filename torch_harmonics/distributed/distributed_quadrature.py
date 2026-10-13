@@ -108,7 +108,9 @@ class DistributedQuadratureS2(torch.nn.Module):
 
         # lay the weights out like the local block they multiply, with no leading singleton
         # axes, which broadcasting would add to inputs with fewer leading dims
-        quad_weight = quad_weight.reshape(*self.shard.shape).to(torch.float32).contiguous()
+        # kept in float64 and cast at use, as the SHTs keep their Legendre weights: a float64
+        # field integrates in float64, and every other dtype exactly as with float32 weights
+        quad_weight = quad_weight.reshape(*self.shard.shape).to(torch.float64).contiguous()
 
         # how many trailing axes `forward` reduces over, derived from the same shape as
         # the buffer so the two cannot disagree
@@ -129,7 +131,7 @@ class DistributedQuadratureS2(torch.nn.Module):
     def _integrate(self, x: torch.Tensor) -> torch.Tensor:
         """The sum over the local angular block and across the ranks, unchecked; shared with :class:`DistributedQuadratureVolume`."""
         # integrate over the spatial axes only, however many the grid has
-        quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)
+        quad = torch.sum(x * self.quad_weight.to(torch.promote_types(x.dtype, torch.float32)), dim=self.spatial_dims)
         if self.comm_size_polar > 1:
             quad = reduce_from_polar_region(quad)
         if self.comm_size_azimuth > 1:

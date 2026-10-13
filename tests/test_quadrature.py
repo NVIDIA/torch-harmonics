@@ -275,6 +275,25 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
                 self.assertTrue(compare_tensors(f"integral {leading}", out, amplitudes * expected_integral, atol=1e-5, rtol=1e-5))
 
 
+@parameterized_class(("device",), _devices)
+class TestQuadratureS2Dtypes(unittest.TestCase):
+    """The weights are kept in float64 and cast at use, as the SHTs keep their Legendre weights."""
+
+    def test_float64_field_integrates_in_float64(self):
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        area = th.QuadratureS2(grid).to(self.device)(torch.ones(grid.shape, dtype=torch.float64, device=self.device))
+        self.assertEqual(area.dtype, torch.float64)
+        # float32 weights would hold this to about 1e-7
+        self.assertAlmostEqual(area.item() / (4.0 * math.pi), 1.0, places=13)
+
+    @parameterized.expand([[torch.float32, torch.float32], [torch.float16, torch.float32], [torch.bfloat16, torch.float32]])
+    def test_lower_precision_promotes_as_before(self, dtype, expected):
+        """Exactly the promotion a float32 weight buffer gave: lower-precision fields integrate in float32."""
+        grid = th.as_grid("equiangular", nlat=9, nlon=16)
+        quad = th.QuadratureS2(grid).to(self.device)
+        self.assertEqual(quad(torch.ones(grid.shape, dtype=dtype, device=self.device)).dtype, expected)
+
+
 class TestQuadratureWeightPrecision(unittest.TestCase):
     """Every quadrature rule must carry its weights in the same precision as its nodes."""
 

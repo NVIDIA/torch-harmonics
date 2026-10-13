@@ -160,7 +160,9 @@ class QuadratureS2(nn.Module):
         # flat (npoints,) otherwise. `grid.shape` is what a field on this grid looks like,
         # so this stays correct for both without branching on the family. No leading
         # singleton axes: broadcasting would add them to inputs with fewer leading dims.
-        quad_weight = quad_weight.reshape(*self.grid.shape).to(torch.float32).contiguous()
+        # kept in float64 and cast at use, as the SHTs keep their Legendre weights: a float64
+        # field integrates in float64, and every other dtype exactly as with float32 weights
+        quad_weight = quad_weight.reshape(*self.grid.shape).to(torch.float64).contiguous()
 
         # how many trailing axes `forward` reduces over; 2 for a regular grid, 1 for a
         # ragged one. Derived from the same `grid.shape`, so it cannot disagree with the
@@ -197,7 +199,7 @@ class QuadratureS2(nn.Module):
     def _integrate(self, x: torch.Tensor) -> torch.Tensor:
         """The sum over the angular axes, unchecked; shared with :class:`QuadratureVolume`."""
         # reduce over the spatial axes only, however many the grid has
-        return torch.sum(x * self.quad_weight, dim=self.spatial_dims)
+        return torch.sum(x * self.quad_weight.to(torch.promote_types(x.dtype, torch.float32)), dim=self.spatial_dims)
 
 
 class QuadratureVolume(QuadratureS2):
