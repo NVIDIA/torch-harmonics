@@ -34,6 +34,7 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
+from testutils import requires_torch_compile
 
 import torch_harmonics as th
 from torch_harmonics import HealpixGrid, as_grid
@@ -241,6 +242,7 @@ class TestFieldContractHelper(unittest.TestCase):
             check_field(torch.zeros(1, *_HEALPIX.shape), _HEALPIX, leading=())
 
     @parameterized.expand([[False], [True]])
+    @requires_torch_compile
     def test_traces_under_full_graph_compile(self, dynamic):
         """The check is a guard or a runtime assert, never a graph break, with static or symbolic extents."""
         quad = th.QuadratureS2(_REGULAR, normalize=True)
