@@ -347,6 +347,20 @@ class TestFloat64BuffersOnDevicesWithout(unittest.TestCase):
             torch.set_default_dtype(default)
         self.assertEqual(seen, [torch.float32])
 
+    def test_probe_ignores_the_default_device(self):
+        """The probe starts on CPU whatever the default device, so a dtype-only conversion never touches another device."""
+        seen = []
+
+        def fn(t):
+            seen.append(t.device.type)
+            return t
+
+        layer = th.QuadratureS2(th.as_grid("legendre-gauss", nlat=8, nlon=16))
+        # meta stands in for MPS: any default device but the layer's own
+        with torch.device("meta"):
+            recast_buffers_for(layer, fn)
+        self.assertEqual(seen, ["cpu"])
+
     @unittest.skipUnless(torch.backends.mps.is_available(), "needs an MPS device")
     def test_quadrature_moves_to_mps(self):
         grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
