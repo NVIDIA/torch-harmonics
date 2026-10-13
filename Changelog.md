@@ -12,6 +12,7 @@
 * `as_grid(descriptor, **params)` accepts only the descriptor type's own parameters and raises on anything else.
 * Grid descriptors form a hierarchy of `PointSetS2` (points and weights), `GridS2` (isolatitude rings) and `RegularGridS2` (rings of equal length), with matching `GridShardS2`/`RegularGridShardS2`.
 * New `require_point_set`, `require_grid` and `require_regular_grid` guards state which of these levels each routine needs, so an unsupported grid fails at construction.
+* Added standardized input shape checks to every layer, with tests verifying each layer's shape contract.
 * New `HealpixGrid(nside)` (also `as_grid("healpix", nside=...)`), the HEALPix pixelization in RING order, accepted today by `QuadratureS2`, `AttentionS2`, `NeighborhoodAttentionS2`, `DiscreteContinuousConvS2` and `DiscreteContinuousConvTransposeS2`.
 * New `HealpixGrid.from_level(level)` builds the grid at refinement level `level`, i.e. `nside = 2**level`.
 * New `PointSetS2.is_equal_area`, `True` for HEALPix and `False` for every latitude-longitude grid.

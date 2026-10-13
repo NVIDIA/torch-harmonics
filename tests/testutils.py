@@ -521,3 +521,56 @@ class _ProductGridAsRagged(GridS2):
 # it has no business being discoverable, so it is withdrawn immediately -- the class object
 # keeps working, only as_grid("test-product-as-ragged") stops resolving.
 _GRID_REGISTRY.pop(_ProductGridAsRagged.grid_type, None)
+
+
+# Shape contracts of the layers, see torch_harmonics._field_contract. A contract is a
+# tuple of exact extents (int) and free ones (None), optionally led by `...`. Both the
+# serial and the distributed contract tests derive the shapes they feed from it.
+
+
+def accepted_leadings(spec, free=1):
+    """
+    Leading shapes the contract admits: the minimum first, then expansions of it.
+
+    The minimum fills every free extent with ``free`` and adds no optional axes. A ``...``
+    contract then grows by one, two and three leading axes, one of them of size 1; an
+    exact-rank contract instead grows its free extents.
+    """
+    variadic = spec[0] is Ellipsis
+    fixed = spec[1:] if variadic else spec
+    minimum = tuple(free if d is None else d for d in fixed)
+    if variadic:
+        return [minimum, (3, *minimum), (2, 3, *minimum), (2, 1, 3, *minimum)]
+    grown = tuple(max(free, 3) if d is None else d for d in fixed)
+    return [minimum] if grown == minimum else [minimum, grown]
+
+
+def rejected_shapes(spec, leading, trailing):
+    """Shapes around an accepted one that break the contract, each with how it breaks it."""
+    variadic = spec[0] is Ellipsis
+    fixed = spec[1:] if variadic else spec
+    offset = len(leading) - len(fixed)
+    bad = []
+    for i, extent in enumerate(trailing):
+        wrong = list(trailing)
+        wrong[i] = extent + 1
+        bad.append((f"trailing axis {i} too long", (*leading, *wrong)))
+        # the broadcast trap: a size-1 axis that a weight buffer would silently expand
+        if extent != 1:
+            wrong[i] = 1
+            bad.append((f"trailing axis {i} of size 1", (*leading, *wrong)))
+    for i, extent in enumerate(fixed):
+        if extent is not None:
+            wrong = list(leading)
+            wrong[offset + i] = extent + 1
+            bad.append((f"leading axis {offset + i} wrong", (*wrong, *trailing)))
+    # fewer axes than any reading of the contract admits
+    bad.append(("too few axes", tuple(trailing[1:])))
+    if not variadic:
+        bad.append(("extra axis", (1, *leading, *trailing)))
+    return bad
+
+
+def shape_name(shape):
+    """A shape as a test-name suffix, e.g. ``2x3``."""
+    return "x".join(str(d) for d in shape) or "none"

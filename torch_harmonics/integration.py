@@ -44,6 +44,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import PointSetS2, _rejects_legacy_signature, require_point_set
 
 
@@ -180,6 +181,9 @@ class QuadratureS2(nn.Module):
         torch.Tensor
             Integral of shape ``(...)`` (the input with its spatial axes reduced).
         """
+        # the weights broadcast against x, so a size-1 spatial axis would integrate silently
+        check_field(x, self.grid)
+
         # reduce over the spatial axes only, however many the grid has
         quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)
 

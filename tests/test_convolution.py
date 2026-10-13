@@ -978,6 +978,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         skip_on_empty=True,
     )
     @unittest.skipUnless((optimized_kernels_is_available()), "skipping test because optimized kernels are not available")
+    @requires_torch_compile
     def test_optimized_pt2_compatibility(
         self,
         batch_size,

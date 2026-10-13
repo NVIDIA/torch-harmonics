@@ -36,6 +36,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 
 
@@ -316,6 +317,8 @@ class ResampleS2(nn.Module):
         torch.Tensor
             Resampled signal of shape ``(..., nlat_out, nlon_out)``.
         """
+        check_field(x, self.grid_in)
+
         if self.skip_resampling:
             return x
 

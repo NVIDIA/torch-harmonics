@@ -33,6 +33,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.disco._disco_utils import _get_psi
 from torch_harmonics.disco.convolution import DiscreteContinuousConv, _precompute_convolution_tensor_s2
 from torch_harmonics.disco.optimized.disco_optimized import _use_spatial_first_dgrad
@@ -217,6 +218,22 @@ def nlat_in_local_padded(in_shapes, rank: int, r_lat: int) -> int:
     return in_shapes[rank] + 2 * r_lat
 
 
+def _check_channel_split(channels: int, name: str, comm_size_azimuth: int) -> None:
+    """
+    Reject a channel count the azimuth all-to-all cannot split.
+
+    The a2a hands each azimuth rank a share of the channels in exchange for the full
+    longitude range, and a share may be uneven but not empty. The distributed SHT pads
+    its leading axis to get around this; the convolutions do not (yet), so a layer with
+    fewer channels than azimuth ranks fails here rather than inside the collective.
+    """
+    if channels < comm_size_azimuth:
+        raise ValueError(
+            f"{name}={channels} cannot be split across {comm_size_azimuth} azimuth ranks: the distributed convolution "
+            f"exchanges longitudes for channels, so it needs at least one channel per azimuth rank."
+        )
+
+
 class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     """
     Distributed version of Discrete-continuous convolutions (DISCO) on the 2-Sphere as described in :cite:`Ocampo2023`.
@@ -331,6 +348,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
+        # the azimuth a2a trades the longitude split for a split of the input channels, and
+        # unlike the SHT this path does not pad, so every azimuth rank needs a channel
+        _check_channel_split(in_channels, "in_channels", self.comm_size_azimuth)
+
         # each grid decomposes itself. Only the shape lists come from the shards: the
         # local extents below deliberately keep one side global, since psi is split
         # along a single latitude axis rather than both.
@@ -430,6 +451,9 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # this rank's block, with every channel: the a2a splits the channels itself
+        check_field(x, self.shard_in, leading=(None, self.in_channels))
+
         # reordered a2a: einsum-first on the local channel shard, K-expanded recomputed in
         # backward; standard a2a: contraction, collectives, then the einsum
         if self.fused:
@@ -525,6 +549,10 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
+        # the azimuth a2a runs after the weight contraction, so it splits the output
+        # channels; as in the forward convolution, every azimuth rank needs one
+        _check_channel_split(out_channels, "out_channels", self.comm_size_azimuth)
+
         # each grid decomposes itself. Only the shape lists come from the shards: the
         # local extents below deliberately keep one side global, since psi is split
         # along a single latitude axis rather than both.
@@ -579,6 +607,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        check_field(x, self.shard_in, leading=(None, self.in_channels))
 
         # extract shape
         B, C, H, W = x.shape

@@ -35,6 +35,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.utils import compile_if_supported
@@ -199,6 +200,8 @@ class DistributedSpectralConvS2(nn.Module):
         return resc
 
     def forward(self, x):
+        check_field(x, self.sht.shard, leading=(None, self.in_channels))
+
         dtype = x.dtype
 
         # compute integral in case if bias is used
