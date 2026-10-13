@@ -574,6 +574,10 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         set_seed(333)
 
+        # psi does not depend on the channels, but the layer has to be buildable: its azimuth
+        # all-to-all needs at least one channel per azimuth rank
+        C = self.grid_size_w
+
         # the transpose convolution still reduces via all-gather and has no polar_mode, so only
         # the halo rows are meaningful for it
         if transpose and polar_mode != "halo-exchange":
@@ -605,8 +609,8 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 thd.DistributedDiscreteContinuousConvS2(
                     th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
                     th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                    1,
-                    1,
+                    C,
+                    C,
                     kernel_shape=kernel_shape,
                     theta_cutoff=theta_cutoff,
                     polar_mode=polar_mode,
@@ -618,16 +622,16 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             conv_local = th.DiscreteContinuousConvTransposeS2(
                 th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
                 th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                1,
-                1,
+                C,
+                C,
                 kernel_shape=kernel_shape,
                 theta_cutoff=theta_cutoff,
             ).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(
                 th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
                 th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                1,
-                1,
+                C,
+                C,
                 kernel_shape=kernel_shape,
                 theta_cutoff=theta_cutoff,
             ).to(self.device)
@@ -638,16 +642,16 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             conv_local = th.DiscreteContinuousConvS2(
                 th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
                 th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                1,
-                1,
+                C,
+                C,
                 kernel_shape=kernel_shape,
                 theta_cutoff=theta_cutoff,
             ).to(self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvS2(
                 th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
                 th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                1,
-                1,
+                C,
+                C,
                 kernel_shape=kernel_shape,
                 theta_cutoff=theta_cutoff,
                 polar_mode=polar_mode,
