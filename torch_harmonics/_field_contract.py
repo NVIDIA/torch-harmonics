@@ -136,7 +136,7 @@ def check_field(x: torch.Tensor, grid: Union[PointSetS2, GridShardS2], leading: 
     name : str, optional
         Name of the tensor in the error message, by default ``"x"``.
     radial : RadialGrid, optional
-        The radial grid of a :class:`~torch_harmonics.SphericalProductGrid` whose angular
+        The radial grid of a :class:`~torch_harmonics.radial.SphericalProductGrid` whose angular
         factor is ``grid``, by default ``None``.
 
     Raises

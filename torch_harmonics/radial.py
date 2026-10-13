@@ -95,10 +95,10 @@ class RadialGrid:
     r"""
     Descriptor for the radial nodes and weights of a volumetric grid.
 
-    :attr:`nr` nodes :math:`r_k` in the domain :math:`[r_\mathrm{inner}, r_\mathrm{outer}]`,
+    ``nr`` nodes :math:`r_k` in the domain :math:`[r_\mathrm{inner}, r_\mathrm{outer}]`,
     with weights :math:`w_k` such that :math:`\sum_k w_k f(r_k) \approx \int f(r)\,dr`.
     The domain bounds are where boundary conditions apply, and they need not be nodes:
-    :attr:`r_outer` may be infinite, and a rule may keep its nodes off the boundary.
+    ``r_outer`` may be infinite, and a rule may keep its nodes off the boundary.
     Together they say which domain the grid covers:
 
     ==========================  =========================  ======================
@@ -153,7 +153,12 @@ class RadialGrid:
 
     @property
     def key(self) -> Tuple[Any, ...]:
-        """Canonical, hashable identity: the rule followed by the constructor parameters."""
+        """
+        Canonical, hashable identity of this descriptor.
+
+        A tuple of the rule's name followed by the constructor parameters; it defines both
+        equality and hashing.
+        """
         return (self.radial_type,) + tuple(getattr(self, name) for name in self.params())
 
     def __hash__(self) -> int:
@@ -263,6 +268,9 @@ class GeometricRadialGrid(RadialGrid):
             raise ValueError(f"a geometric radial grid needs at least 2 nodes, got nr={self.nr}")
         for name in ("r_min", "r_max"):
             _as_float(self, name)
+            # nodes, unlike the domain bound r_outer, must be finite
+            if math.isinf(getattr(self, name)):
+                raise ValueError(f"{name} must be finite, got {getattr(self, name)}; only the domain bound r_outer may be infinite")
         if not self.r_inner < self.r_min < self.r_max <= self.r_outer:
             raise ValueError(f"expected r_inner < r_min < r_max <= r_outer, got r_inner={self.r_inner}, r_min={self.r_min}, r_max={self.r_max}, r_outer={self.r_outer}")
 
@@ -320,7 +328,7 @@ def as_radial_grid(spec: Union[RadialGrid, str, Type[RadialGrid]], **params: Any
     """
     Construct a radial grid from the name of its rule and its parameters.
 
-    The radial counterpart of :func:`~torch_harmonics.as_grid`, with a registry of its own,
+    The radial counterpart of :func:`~torch_harmonics.grid.as_grid`, with a registry of its own,
     so a name such as ``"legendre-gauss"`` means the angular grid there and the radial
     rule here.
 
@@ -398,7 +406,11 @@ class SphericalProductGrid:
 
     @property
     def key(self) -> Tuple[Any, ...]:
-        """Canonical, hashable identity, made of the two factors' keys."""
+        """
+        Canonical, hashable identity of this descriptor.
+
+        Made of the two factors' keys; it defines both equality and hashing.
+        """
         return ("spherical-product", self.angular.key, self.radial.key)
 
     def __hash__(self) -> int:

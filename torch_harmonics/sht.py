@@ -71,7 +71,7 @@ class RealSHT(nn.Module):
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
-        :class:`~torch_harmonics.SphericalProductGrid` over one transforms every shell
+        :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
         alike, with the radial axis in front of the spatial (or spectral) ones.
     lmax : int
         Maximum spherical harmonic degree
@@ -219,7 +219,7 @@ class InverseRealSHT(nn.Module):
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
-        :class:`~torch_harmonics.SphericalProductGrid` over one transforms every shell
+        :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
         alike, with the radial axis in front of the spatial (or spectral) ones.
     lmax : int
         Maximum spherical harmonic degree
@@ -365,7 +365,7 @@ class RealVectorSHT(nn.Module):
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
-        :class:`~torch_harmonics.SphericalProductGrid` over one transforms every shell
+        :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
         alike, with the radial axis in front of the spatial (or spectral) ones.
     lmax : int
         Maximum spherical harmonic degree
@@ -527,7 +527,7 @@ class InverseRealVectorSHT(nn.Module):
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
-        :class:`~torch_harmonics.SphericalProductGrid` over one transforms every shell
+        :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
         alike, with the radial axis in front of the spatial (or spectral) ones.
     lmax : int
         Maximum spherical harmonic degree
