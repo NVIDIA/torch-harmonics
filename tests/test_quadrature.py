@@ -331,6 +331,15 @@ class TestFloat64BuffersOnDevicesWithout(unittest.TestCase):
         layer = build().to("cpu")
         self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} lost its float64 weights")
 
+    def test_recast_reaches_layers_inside_a_model(self):
+        """A model's move reaches its layers through _apply, not through their to(), which is why the recast hooks _apply."""
+        grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+        model = torch.nn.Sequential(th.SpectralConvS2(grid, grid, 4, 4, bias=True), torch.nn.Sequential(th.QuadratureS2(grid)))
+        self.assertTrue(any(b.dtype == torch.float64 for b in model.buffers()))
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            model = model.to("cpu")
+        self.assertFalse(any(b.dtype == torch.float64 for b in model.buffers()))
+
     def test_probe_ignores_a_float64_default(self):
         """The destination probe is float32 whatever the default dtype, or it would fail on MPS itself."""
         seen = []

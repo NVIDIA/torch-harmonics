@@ -188,16 +188,48 @@ def recast_buffers_for(module: torch.nn.Module, fn) -> None:
     """
     Downcast ``module``'s own float64 buffers to float32 if ``module._apply(fn)`` is about to move them to a device without float64.
 
-    Layers keep weights they derive from a grid in float64 and cast them to the input's
-    precision at use. On MPS, which has no float64, moving such a buffer fails before any
-    forward could cast it, so call this first thing in ``_apply``; elsewhere it does
-    nothing and the buffers keep their precision.
+    The convention this supports: a layer builds the weights it derives from a grid
+    (quadrature weights, Legendre polynomials, ...) in float64, keeps them as float64
+    buffers, and casts them at use to ``torch.promote_types(x.dtype, torch.float32)``. A
+    float64 input then computes with float64 weights, and every other dtype exactly as
+    with float32 ones. MPS has no float64, and moving such a buffer there fails inside the
+    move, before any forward could cast it. So a module with float64 buffers calls this
+    first thing in its ``_apply``::
 
-    ``_apply`` is not told where it is going, so ``fn`` is applied to an empty float32 CPU
-    tensor to find out. Only this module's own buffers are touched: ``_apply`` recurses through
-    each child's ``_apply``, so a child with float64 buffers calls this itself. Runs only
-    on module conversions (``.to()``, ``.cuda()``, ``.half()``, ...), never in ``forward``,
-    so it is invisible to ``torch.compile``.
+        def _apply(self, fn, recurse=True):
+            recast_buffers_for(self, fn)
+            return super()._apply(fn, recurse)
+
+    On a move to MPS its float64 buffers become float32; on any other conversion nothing
+    changes, and they keep their precision.
+
+    **Why** ``_apply`` **and not** ``to``. Every conversion -- ``.to()``, ``.cuda()``,
+    ``.cpu()``, ``.half()``, ``.double()``, ``.to_empty()`` -- ends in ``_apply``, and
+    ``_apply`` is what recurses into the children. ``Module.to`` does not call the
+    children's ``to``: a ``to`` override on a layer would never run when the layer sits
+    inside a model and the model is moved, which is how layers are normally used.
+
+    **How the destination is found.** ``_apply`` is only given ``fn``, not where it leads;
+    PyTorch has no public way to ask. So ``fn`` is applied to an empty probe, and the
+    probe's resulting device is the destination. The probe is float32 on CPU explicitly,
+    whatever the default dtype and device: a float64 probe would itself fail to move to
+    MPS, and a probe created on a default MPS device would make a dtype-only conversion
+    such as ``.double()`` fail on it. From CPU, a move lands on its target and a dtype-only
+    conversion stays on CPU, which is all the check needs to tell apart.
+
+    Only ``module``'s own buffers are touched; ``_apply`` recurses through each child's
+    ``_apply``, so a child with float64 buffers calls this itself. It runs on module
+    conversions only, never in ``forward``, so ``torch.compile`` does not see it.
+
+    Not covered: state a module creates directly on the device after the move, such as
+    what a backend's ``prepare`` builds; that has to choose its dtype itself.
+
+    Parameters
+    ----------
+    module : torch.nn.Module
+        The module whose own buffers are about to be converted.
+    fn : callable
+        The conversion ``module._apply`` was called with.
     """
     # the probe's dtype and device are fixed rather than the defaults: a float64 default would fail
     # to move to MPS just as the buffers would, and an MPS default device would make a dtype-only
