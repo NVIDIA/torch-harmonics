@@ -295,6 +295,24 @@ q = torch.randn(2, 32, 33, 64)                         # queries live on the out
 y = decode(q, key=h, value=h)                          # keys and values on the input grid
 ```
 
+Volumetric fields on balls, shells or the space outside a sphere use a radial grid
+together with any of the grids above. `th.SphericalProductGrid(angular, radial)` samples
+the same angular grid at every radius, and a field on it is laid out
+`(..., nr, *angular.shape)`. Every layer accepts a product grid and acts on each shell
+alike, treating the radius as a batch axis. `th.QuadratureVolume` integrates over the
+volume:
+
+```python
+shells = th.LegendreGaussRadialGrid(nr=8, r_inner=1.0, r_outer=2.0)
+grid = th.SphericalProductGrid(th.EquiangularGrid(nlat=33, nlon=64), shells)   # grid.shape == (8, 33, 64)
+
+conv = th.DiscreteContinuousConvS2(grid_in=grid, grid_out=grid, in_channels=4, out_channels=8, kernel_shape=3)
+x = torch.randn(2, 4, *grid.shape)                     # (batch, channels, nr, nlat, nlon)
+y = conv(x)                                            # every shell convolved alike: (2, 8, 8, 33, 64)
+
+volume = th.QuadratureVolume(grid)(torch.ones(grid.shape))   # 4/3 pi (2^3 - 1^3)
+```
+
 The distributed layers take the *global* grid and derive each rank's shard from
 it. Passing a resolution where a descriptor belongs raises a `TypeError` naming
 the replacement, and a layer that does not support a grid yet refuses it at
