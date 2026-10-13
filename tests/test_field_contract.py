@@ -1,6 +1,6 @@
 # coding=utf-8
 
-# SPDX-FileCopyrightText: Copyright (c) 2022 The torch-harmonics Authors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 The torch-harmonics Authors. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Redistribution and use in source and binary forms, with or without
@@ -34,7 +34,7 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import requires_torch_compile
+from testutils import accepted_leadings, rejected_shapes, requires_torch_compile, shape_name
 
 import torch_harmonics as th
 from torch_harmonics import HealpixGrid, as_grid
@@ -134,54 +134,7 @@ _CASES = [
 ]
 
 
-def _accepted_leadings(spec):
-    """
-    Leading shapes the contract admits: the minimum first, then expansions of it.
-
-    The minimum fills every free extent with 1 and adds no optional axes. A ``...``
-    contract then grows by one, two and three leading axes, one of them of size 1;
-    an exact-rank contract instead grows its free extents.
-    """
-    variadic = spec[0] is Ellipsis
-    fixed = spec[1:] if variadic else spec
-    minimum = tuple(1 if d is None else d for d in fixed)
-    if variadic:
-        return [minimum, (3, *minimum), (2, 3, *minimum), (2, 1, 3, *minimum)]
-    grown = tuple(3 if d is None else d for d in fixed)
-    return [minimum] if grown == minimum else [minimum, grown]
-
-
-def _rejected_shapes(spec, leading, trailing):
-    """Shapes around an accepted one that break the contract, each with how it breaks it."""
-    variadic = spec[0] is Ellipsis
-    fixed = spec[1:] if variadic else spec
-    offset = len(leading) - len(fixed)
-    bad = []
-    for i, extent in enumerate(trailing):
-        wrong = list(trailing)
-        wrong[i] = extent + 1
-        bad.append((f"trailing axis {i} too long", (*leading, *wrong)))
-        # the broadcast trap: a size-1 axis that a weight buffer would silently expand
-        if extent != 1:
-            wrong[i] = 1
-            bad.append((f"trailing axis {i} of size 1", (*leading, *wrong)))
-    for i, extent in enumerate(fixed):
-        if extent is not None:
-            wrong = list(leading)
-            wrong[offset + i] = extent + 1
-            bad.append((f"leading axis {offset + i} wrong", (*wrong, *trailing)))
-    # fewer axes than any reading of the contract admits
-    bad.append(("too few axes", tuple(trailing[1:])))
-    if not variadic:
-        bad.append(("extra axis", (1, *leading, *trailing)))
-    return bad
-
-
-def _shape_name(shape):
-    return "x".join(str(d) for d in shape) or "none"
-
-
-_SHAPE_CASES = [[f"{name}_{_shape_name(leading)}", factory, grid, leading] for name, factory, grid, spec in _CASES for leading in _accepted_leadings(spec)]
+_SHAPE_CASES = [[f"{name}_{shape_name(leading)}", factory, grid, leading] for name, factory, grid, spec in _CASES for leading in accepted_leadings(spec)]
 
 
 @parameterized_class(("device",), _devices)
@@ -201,8 +154,8 @@ class TestFieldContract(unittest.TestCase):
         layer, trailing, _, dtype = factory(grid)
         layer = layer.to(self.device)
         # probe around an expanded shape, so a free leading axis is actually present
-        leading = _accepted_leadings(spec)[-1]
-        for how, shape in _rejected_shapes(spec, leading, trailing):
+        leading = accepted_leadings(spec)[-1]
+        for how, shape in rejected_shapes(spec, leading, trailing):
             with self.subTest(how=how, shape=shape):
                 x = torch.randn(shape, device=self.device, dtype=dtype)
                 with self.assertRaisesRegex(RuntimeError, r"Expected .* of shape"):

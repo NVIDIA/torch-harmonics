@@ -38,6 +38,7 @@ import torch.nn as nn
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.resample import _slerp_shortest_arc
+from torch_harmonics.utils import check
 
 from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -238,6 +239,11 @@ class DistributedResampleS2(nn.Module):
 
         if self.skip_resampling:
             return x
+
+        # the transposes do not pad, so every rank needs a share of the channels; checked
+        # only here, since an identity resampling never splits them
+        min_chans = max(self.comm_size_polar, self.comm_size_azimuth)
+        check(x.shape[-3] >= min_chans, lambda: f"Expected at least {min_chans} channels in x.shape[-3] to split across the ranks, got {tuple(x.shape)}")
 
         # transpose data so that h is local, and channels are split
         num_chans = x.shape[-3]
