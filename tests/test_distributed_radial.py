@@ -34,8 +34,9 @@ import math
 import unittest
 
 import torch
+import torch.distributed as dist
 from parameterized import parameterized
-from testutils import compare_tensors, set_seed, setup_class_from_context, setup_module, teardown_module
+from testutils import compare_tensors, disable_tf32, set_seed, setup_class_from_context, setup_module, teardown_module
 
 import torch_harmonics.distributed as thd
 from torch_harmonics import LegendreGaussRadialGrid, SphericalProductGrid, as_grid
@@ -62,8 +63,10 @@ _GRID_OUT = as_grid("equiangular", nlat=35, nlon=66)
 
 def _close(msg, actual, expected):
     # the batched and the per-shell contractions sum in different orders, so an entry that
-    # cancels to well below the field's scale differs by roundoff of that scale, not of its own
-    return compare_tensors(msg, actual, expected, atol=1e-5 * expected.abs().max().item(), rtol=1e-5)
+    # cancels to well below the field's scale differs by roundoff of that scale, not of its own.
+    # Diagnostics from rank 0 only, as in test_distributed_convolution
+    verbose = not dist.is_initialized() or dist.get_rank() == 0
+    return compare_tensors(msg, actual, expected, atol=1e-5 * expected.abs().max().item(), rtol=1e-5, verbose=verbose)
 
 
 def _loss(y):
@@ -113,9 +116,22 @@ class TestDistributedLayersOnProductGrids(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
+        # the distributed DISCO weight contraction is a cuBLAS einsum; with TF32 the batched
+        # and the per-shell call can land on different kernels, see test_distributed_convolution
+        disable_tf32()
 
     def setUp(self):
+        # start from a drained device and matched ranks, as test_distributed_convolution does:
+        # module-owned receive buffers of a previous test may still be written by NCCL
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        if dist.is_initialized():
+            dist.barrier()
         set_seed(333)
+
+    def tearDown(self):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
     @parameterized.expand(_LAYERS)
     def test_acts_on_each_shell_alike(self, name, build, rdim_in, rdim_out, input_shape, dtype, needs_cuda):
