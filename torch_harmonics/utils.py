@@ -193,13 +193,15 @@ def recast_buffers_for(module: torch.nn.Module, fn) -> None:
     forward could cast it, so call this first thing in ``_apply``; elsewhere it does
     nothing and the buffers keep their precision.
 
-    ``_apply`` is not told where it is going, so ``fn`` is applied to an empty tensor to
-    find out. Only this module's own buffers are touched: ``_apply`` recurses through
+    ``_apply`` is not told where it is going, so ``fn`` is applied to an empty float32
+    tensor to find out. Only this module's own buffers are touched: ``_apply`` recurses through
     each child's ``_apply``, so a child with float64 buffers calls this itself. Runs only
     on module conversions (``.to()``, ``.cuda()``, ``.half()``, ...), never in ``forward``,
     so it is invisible to ``torch.compile``.
     """
-    if fn(torch.empty(0)).device.type not in _NO_FLOAT64_DEVICE_TYPES:
+    # the probe's dtype is fixed rather than the default: under torch.set_default_dtype(torch.float64)
+    # an empty float64 probe would fail to move to MPS just as the buffers would
+    if fn(torch.empty(0, dtype=torch.float32)).device.type not in _NO_FLOAT64_DEVICE_TYPES:
         return
     for name, buf in module._buffers.items():
         if buf is not None and buf.dtype == torch.float64:

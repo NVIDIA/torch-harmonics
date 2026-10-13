@@ -39,6 +39,7 @@ from testutils import compare_tensors, set_seed
 
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, trapezoidal_weights
+from torch_harmonics.utils import recast_buffers_for
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -329,6 +330,22 @@ class TestFloat64BuffersOnDevicesWithout(unittest.TestCase):
     def test_other_moves_keep_float64(self, name, build, shape, dtype):
         layer = build().to("cpu")
         self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} lost its float64 weights")
+
+    def test_probe_ignores_a_float64_default(self):
+        """The destination probe is float32 whatever the default dtype, or it would fail on MPS itself."""
+        seen = []
+
+        def fn(t):
+            seen.append(t.dtype)
+            return t
+
+        default = torch.get_default_dtype()
+        torch.set_default_dtype(torch.float64)
+        try:
+            recast_buffers_for(th.QuadratureS2(th.as_grid("legendre-gauss", nlat=8, nlon=16)), fn)
+        finally:
+            torch.set_default_dtype(default)
+        self.assertEqual(seen, [torch.float32])
 
     @unittest.skipUnless(torch.backends.mps.is_available(), "needs an MPS device")
     def test_quadrature_moves_to_mps(self):
