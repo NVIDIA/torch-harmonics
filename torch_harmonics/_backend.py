@@ -56,6 +56,8 @@ from typing import Dict, Optional
 
 import torch
 
+from torch_harmonics.utils import recast_buffers_for
+
 
 def _kernel_device_types(op_name: str) -> frozenset:
     """
@@ -194,6 +196,9 @@ class BackendSelectionMixin:
         thrown away -- once per move, against not having to know the target device or
         dtype before anything has been touched.
         """
+        # the outgoing state is moved before it is replaced, and float64 state cannot move to
+        # MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
         device_before, dtype_before = self.device, getattr(self, "dtype", None)
         dtypes_before = {name: getattr(self, name).dtype for name in self._backend_state}
         out = super()._apply(fn, recurse)

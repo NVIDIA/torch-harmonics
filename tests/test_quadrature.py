@@ -31,6 +31,7 @@
 
 import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
@@ -292,6 +293,48 @@ class TestQuadratureS2Dtypes(unittest.TestCase):
         grid = th.as_grid("equiangular", nlat=9, nlon=16)
         quad = th.QuadratureS2(grid).to(self.device)
         self.assertEqual(quad(torch.ones(grid.shape, dtype=dtype, device=self.device)).dtype, expected)
+
+
+def _float64_layers():
+    grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+    product = th.SphericalProductGrid(grid, th.LegendreGaussRadialGrid(nr=3, r_inner=1.0, r_outer=2.0))
+    return [
+        ["quadrature", lambda: th.QuadratureS2(grid), (2, *grid.shape), torch.float32],
+        ["quadrature_volume", lambda: th.QuadratureVolume(product), (2, *product.shape), torch.float32],
+        ["sht", lambda: th.RealSHT(grid), (2, *grid.shape), torch.float32],
+        ["inverse_sht", lambda: th.InverseRealSHT(grid, lmax=5, mmax=5), (2, 5, 5), torch.complex64],
+        ["vector_sht", lambda: th.RealVectorSHT(grid), (2, 2, *grid.shape), torch.float32],
+        ["inverse_vector_sht", lambda: th.InverseRealVectorSHT(grid, lmax=5, mmax=5), (2, 2, 5, 5), torch.complex64],
+    ]
+
+
+class TestFloat64BuffersOnDevicesWithout(unittest.TestCase):
+    """Layers keeping float64 weights downcast them when moved to a device without float64, such as MPS."""
+
+    @parameterized.expand(_float64_layers())
+    def test_downcast_on_the_move(self, name, build, shape, dtype):
+        layer = build()
+        self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} keeps no float64 weights")
+        x = torch.randn(shape, dtype=dtype)
+        expected = layer(x)
+
+        # pretend the CPU is such a device, so the move takes the MPS path here
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            layer = layer.to("cpu")
+        self.assertFalse(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} kept a float64 buffer")
+        # the inputs are float32, which the weights were cast to at use anyway
+        self.assertTrue(torch.equal(layer(x), expected))
+
+    @parameterized.expand(_float64_layers())
+    def test_other_moves_keep_float64(self, name, build, shape, dtype):
+        layer = build().to("cpu")
+        self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} lost its float64 weights")
+
+    @unittest.skipUnless(torch.backends.mps.is_available(), "needs an MPS device")
+    def test_quadrature_moves_to_mps(self):
+        grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+        area = th.QuadratureS2(grid).to("mps")(torch.ones(grid.shape, device="mps"))
+        self.assertAlmostEqual(area.item() / (4.0 * math.pi), 1.0, places=5)
 
 
 class TestQuadratureWeightPrecision(unittest.TestCase):

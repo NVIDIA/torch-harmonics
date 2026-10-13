@@ -40,6 +40,7 @@ from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, requi
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.utils import recast_buffers_for
 
 from .primitives import (
     compute_split_shapes,
@@ -198,6 +199,11 @@ class DistributedRealSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -388,6 +394,11 @@ class DistributedInverseRealSHT(nn.Module):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
+
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
     # every one of them and inductor only ever sees the slivers in between. Those slivers hold
@@ -572,6 +583,11 @@ class DistributedRealVectorSHT(nn.Module):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
+
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
     # every one of them and inductor only ever sees the slivers in between. Those slivers hold
@@ -751,6 +767,11 @@ class DistributedInverseRealVectorSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at

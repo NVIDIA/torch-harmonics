@@ -47,6 +47,7 @@ import torch.nn as nn
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import PointSetS2, _rejects_legacy_signature, require_point_set
 from torch_harmonics.radial import SphericalProductGrid, split_radial
+from torch_harmonics.utils import recast_buffers_for
 
 
 class QuadratureS2(nn.Module):
@@ -175,6 +176,11 @@ class QuadratureS2(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nnormalize={self.normalize}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

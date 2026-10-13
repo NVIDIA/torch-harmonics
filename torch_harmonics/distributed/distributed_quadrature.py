@@ -36,6 +36,7 @@ import torch
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.radial import SphericalProductGrid, split_radial
+from torch_harmonics.utils import recast_buffers_for
 
 from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -122,6 +123,11 @@ class DistributedQuadratureS2(torch.nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nnormalize={self.normalize}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         check_field(x, self.shard, radial=self.radial)

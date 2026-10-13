@@ -40,6 +40,7 @@ from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, requi
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.utils import recast_buffers_for
 
 
 class RealSHT(nn.Module):
@@ -156,6 +157,11 @@ class RealSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -305,6 +311,11 @@ class InverseRealSHT(nn.Module):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
 
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
+
     def forward(self, x: torch.Tensor):
         """
         Compute the inverse (real) spherical harmonic transform.
@@ -451,6 +462,11 @@ class RealVectorSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -607,6 +623,11 @@ class InverseRealVectorSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
