@@ -54,6 +54,33 @@ Today `QuadratureS2` accepts any `PointSetS2`, `AttentionS2` and
    HealpixGrid
 ```
 
+### Radial and volumetric grids
+
+A field on a ball, a shell or the space outside a sphere is sampled on the same angular
+grid at every radius, which is the direct product of a radial grid and a sampling of the
+sphere. A `SphericalProductGrid` pairs a `RadialGrid` with any of the grids above, and a
+field on it is laid out `(..., nr, *angular.shape)`, the `(D, H, W)` order of volumetric
+data on a regular angular grid. Every layer above accepts a product in place of its
+angular grid and acts on each shell alike, with the radius as one more batch axis; a layer
+with an input and an output grid needs both on the same radial grid. Radial rules have a
+registry of their own, so `as_radial_grid("legendre-gauss", ...)` is the radial rule and
+`as_grid("legendre-gauss", ...)` the angular grid.
+
+```{eval-rst}
+.. currentmodule:: torch_harmonics.radial
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   as_radial_grid
+   radial_grid_types
+   RadialGrid
+   GeometricRadialGrid
+   LegendreGaussRadialGrid
+   SphericalProductGrid
+```
+
 ## Quadrature
 
 torch-harmonics supports several quadrature rules for the latitudinal

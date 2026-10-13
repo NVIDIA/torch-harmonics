@@ -46,6 +46,7 @@ import torch.nn as nn
 
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import PointSetS2, _rejects_legacy_signature, require_point_set
+from torch_harmonics.radial import split_radial
 
 
 class QuadratureS2(nn.Module):
@@ -103,6 +104,10 @@ class QuadratureS2(nn.Module):
         accepted: integration needs points and weights, not ring structure. The
         descriptor carries both the resolution and the quadrature rule, so no separate
         shape argument is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
+        On a :class:`~torch_harmonics.SphericalProductGrid` every shell is integrated
+        over the sphere alone, giving one integral per radial node; the volume integral
+        takes :attr:`SphericalProductGrid.quad_weights
+        <torch_harmonics.SphericalProductGrid.quad_weights>` instead.
     normalize : bool, optional
         If ``True``, divides weights by :math:`4\pi` to return a spherical mean
         instead of an integral, by default ``False``.
@@ -135,6 +140,8 @@ class QuadratureS2(nn.Module):
 
         # integration needs points and weights and nothing else -- no ring structure, no
         # uniform longitude stride -- so this is the one guard that can be the weakest
+        # on a product grid each shell is integrated alike, the radial axis kept
+        grid, self.radial = split_radial(grid)
         self.grid = require_point_set(grid)
         self.normalize = normalize
 
@@ -164,7 +171,8 @@ class QuadratureS2(nn.Module):
         self.register_buffer("quad_weight", quad_weight, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\nnormalize={self.normalize}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nnormalize={self.normalize}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -182,7 +190,7 @@ class QuadratureS2(nn.Module):
             Integral of shape ``(...)`` (the input with its spatial axes reduced).
         """
         # the weights broadcast against x, so a size-1 spatial axis would integrate silently
-        check_field(x, self.grid)
+        check_field(x, self.grid, radial=self.radial)
 
         # reduce over the spatial axes only, however many the grid has
         quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)

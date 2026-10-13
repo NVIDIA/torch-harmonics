@@ -40,6 +40,10 @@
 #     InverseRealSHT                              (..., lmax, mmax)
 #     DISCO, attention, SpectralConvS2            (batch, in_channels, *grid.shape)
 #
+# On a SphericalProductGrid every one of these gains the radial axis directly in front of
+# the angular ones, (..., nr, *angular.shape); a layer on the sphere builds on the angular
+# grid and passes the radial one here, as `radial`, only to state that axis.
+#
 # The trailing part is never spelled out by the layer: it is `grid.shape`, which is
 # (nlat, nlon) on a RegularGridS2, (npoints,) on any other grid, and the local block on a
 # shard. So a layer states only its leading contract and the descriptor supplies the rest,
@@ -54,7 +58,7 @@
 # under torch.compile and drop the message while tracing; in eager mode the message
 # names the expected and the actual shape.
 
-from typing import Any, Callable, Tuple, Union
+from typing import Any, Callable, Optional, Tuple, Union
 
 import torch
 
@@ -114,9 +118,12 @@ def _check_shape(x: torch.Tensor, leading: Leading, trailing: Tuple[int, ...], n
             check(x.shape[axis] == extent, message)
 
 
-def check_field(x: torch.Tensor, grid: Union[PointSetS2, GridShardS2], leading: Leading = (...,), name: str = "x") -> None:
+def check_field(x: torch.Tensor, grid: Union[PointSetS2, GridShardS2], leading: Leading = (...,), name: str = "x", radial: Optional[Any] = None) -> None:
     """
     Check that ``x`` is a field on ``grid``, shaped ``(*leading, *grid.shape)``.
+
+    With ``radial``, a field on the product of ``grid`` with that radial grid, shaped
+    ``(*leading, nr, *grid.shape)``.
 
     Parameters
     ----------
@@ -128,25 +135,35 @@ def check_field(x: torch.Tensor, grid: Union[PointSetS2, GridShardS2], leading: 
         The layer's leading contract, see :data:`Leading`, by default ``(...,)``.
     name : str, optional
         Name of the tensor in the error message, by default ``"x"``.
+    radial : RadialGrid, optional
+        The radial grid of a :class:`~torch_harmonics.SphericalProductGrid` whose angular
+        factor is ``grid``, by default ``None``.
 
     Raises
     ------
     RuntimeError
         If the rank or an extent of ``x`` disagrees with the contract.
     """
-    _check_shape(x, leading, _grid_shape(grid), name, lambda: f"on {grid!r}")
+    if radial is None:
+        _check_shape(x, leading, _grid_shape(grid), name, lambda: f"on {grid!r}")
+    else:
+        _check_shape(x, leading, (radial.nr, *_grid_shape(grid)), name, lambda: f"on {grid!r} x {radial!r}")
 
 
-def check_coeffs(x: torch.Tensor, lmax: int, mmax: int, leading: Leading = (...,), name: str = "x") -> None:
+def check_coeffs(x: torch.Tensor, lmax: int, mmax: int, leading: Leading = (...,), name: str = "x", radial: Optional[Any] = None) -> None:
     """
     Check that ``x`` holds spherical harmonic coefficients, shaped ``(*leading, lmax, mmax)``.
 
     The spectral counterpart of :func:`check_field`. ``lmax`` and ``mmax`` are this rank's
-    extents on a distributed transform.
+    extents on a distributed transform. With ``radial``, one set of coefficients per
+    radial node, ``(*leading, nr, lmax, mmax)``.
 
     Raises
     ------
     RuntimeError
         If the rank or an extent of ``x`` disagrees with the contract.
     """
-    _check_shape(x, leading, (lmax, mmax), name, lambda: f"for lmax={lmax}, mmax={mmax}")
+    if radial is None:
+        _check_shape(x, leading, (lmax, mmax), name, lambda: f"for lmax={lmax}, mmax={mmax}")
+    else:
+        _check_shape(x, leading, (radial.nr, lmax, mmax), name, lambda: f"for lmax={lmax}, mmax={mmax} on {radial!r}")

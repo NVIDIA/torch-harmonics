@@ -41,11 +41,12 @@ from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import BackendSelectionMixin
 from torch_harmonics._field_contract import check_field
-from torch_harmonics.attention._attention_utils import _check_dtypes_match
+from torch_harmonics.attention._attention_utils import _check_dtypes_match, _fold_radius_qkv
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
 from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
+from torch_harmonics.radial import split_radial_pair, unfold_radius
 from torch_harmonics.truncation import truncate_support
 
 
@@ -185,6 +186,9 @@ class AttentionS2(nn.Module):
         # There is no longitude constraint either, unlike the neighbourhood layer:
         # every output point attends to every input point, so there is no p-shift that
         # would need to be exact.
+        # on a pair of product grids every shell attends within itself, with the radius
+        # folded into the batch, see _fold_radius_qkv
+        grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
         self.grid_in = require_grid(grid_in, "grid_in")
         self.grid_out = require_grid(grid_out, "grid_out")
 
@@ -263,7 +267,8 @@ class AttentionS2(nn.Module):
         self.register_load_state_dict_pre_hook(_drop_inert_key_bias)
 
     def extra_repr(self):
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}"
 
     def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
         """
@@ -271,9 +276,9 @@ class AttentionS2(nn.Module):
         query on the output grid and key/value on the input grid, each checked against
         its own grid since a mixed pair gives the two sides different ranks.
         """
-        check_field(query, self.grid_out, leading=(None, self.in_channels), name="query")
-        check_field(key, self.grid_in, leading=(None, self.in_channels), name="key")
-        check_field(value, self.grid_in, leading=(None, self.in_channels), name="value")
+        check_field(query, self.grid_out, leading=(None, self.in_channels), name="query", radial=self.radial)
+        check_field(key, self.grid_in, leading=(None, self.in_channels), name="key", radial=self.radial)
+        check_field(value, self.grid_in, leading=(None, self.in_channels), name="value", radial=self.radial)
         _check_dtypes_match((query, key, value))
 
     @staticmethod
@@ -336,6 +341,9 @@ class AttentionS2(nn.Module):
 
         self._check_inputs(query, key, value)
 
+        if self.radial is not None:
+            query, key, value = _fold_radius_qkv(query, key, value)
+
         # Channels-last, as in NeighborhoodAttentionS2: converted once on the way in and
         # once on the way out, and in between every projection is a plain GEMM over a
         # contiguous channel axis. Self-attention binds all three names to one tensor,
@@ -389,7 +397,12 @@ class AttentionS2(nn.Module):
         # only then back to channels-first
         out = F.linear(out, self.proj_weights.reshape(self.proj_weights.shape[0], -1), self.proj_bias)
 
-        return self._to_channels_first(out, self.grid_out)
+        out = self._to_channels_first(out, self.grid_out)
+
+        if self.radial is not None:
+            out = unfold_radius(out, self.radial.nr)
+
+        return out
 
 
 class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
@@ -492,6 +505,9 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         # HEALPix and other grids whose rings differ in length. This is the first of the
         # require_regular_grid guards to come back down, which is what they were put in
         # for -- one relaxed per backend that gains support, rather than all at once.
+        # on a pair of product grids every shell attends within itself, with the radius
+        # folded into the batch, see _fold_radius_qkv
+        grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
         self.grid_in = require_grid(grid_in, "grid_in")
         self.grid_out = require_grid(grid_out, "grid_out")
 
@@ -631,7 +647,8 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         self._select_backend()
 
     def extra_repr(self):
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}, theta_cutoff={self.theta_cutoff}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.in_channels}, out_channels={self.out_channels}, k_channels={self.k_channels}, theta_cutoff={self.theta_cutoff}"
 
     @property
     def device(self) -> torch.device:
@@ -693,9 +710,9 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         pair gives the two sides different ranks; each is checked against its own grid
         rather than against one rank for the layer.
         """
-        check_field(query, self.grid_out, leading=(None, self.in_channels), name="query")
-        check_field(key, self.grid_in, leading=(None, self.in_channels), name="key")
-        check_field(value, self.grid_in, leading=(None, self.in_channels), name="value")
+        check_field(query, self.grid_out, leading=(None, self.in_channels), name="query", radial=self.radial)
+        check_field(key, self.grid_in, leading=(None, self.in_channels), name="key", radial=self.radial)
+        check_field(value, self.grid_in, leading=(None, self.in_channels), name="value", radial=self.radial)
         _check_dtypes_match((query, key, value))
 
     def _to_channels_last(self, tensor: torch.Tensor, ragged_layout: bool) -> torch.Tensor:
@@ -770,6 +787,9 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
 
         self._check_inputs(query, key, value)
 
+        if self.radial is not None:
+            query, key, value = _fold_radius_qkv(query, key, value)
+
         # Convert to NHWC once, here, and stay in it for the whole module. Every
         # projection is 1x1 (see __init__), so in NHWC it is a plain GEMM over a
         # contiguous reduction dimension rather than a convolution; qk-norm's head
@@ -840,4 +860,9 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         # generated by autograd and uses the same tiled kernel.
         out = F.linear(out, self.proj_weights.reshape(self.proj_weights.shape[0], -1), self.proj_bias)
 
-        return self._to_channels_first(out)
+        out = self._to_channels_first(out)
+
+        if self.radial is not None:
+            out = unfold_radius(out, self.radial.nr)
+
+        return out

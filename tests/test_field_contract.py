@@ -37,7 +37,7 @@ from parameterized import parameterized, parameterized_class
 from testutils import accepted_leadings, rejected_shapes, requires_torch_compile, shape_name
 
 import torch_harmonics as th
-from torch_harmonics import HealpixGrid, as_grid
+from torch_harmonics import HealpixGrid, LegendreGaussRadialGrid, SphericalProductGrid, as_grid
 from torch_harmonics._field_contract import check_coeffs, check_field
 
 _devices = [(torch.device("cpu"),)]
@@ -48,6 +48,21 @@ _C = 4
 _C_OUT = 6
 _REGULAR = as_grid("legendre-gauss", nlat=8, nlon=16)
 _HEALPIX = HealpixGrid(nside=2)
+_RADIAL = LegendreGaussRadialGrid(nr=3, r_inner=1.0, r_outer=2.0)
+
+
+def _product(grid):
+    return SphericalProductGrid(grid, _RADIAL)
+
+
+# on a product grid a layer builds on the angular factor, and every field gains the radial
+# axis in front of the angular ones -- the spectral ones included
+def _angular(grid):
+    return grid.angular if isinstance(grid, SphericalProductGrid) else grid
+
+
+def _radial(grid):
+    return (grid.nr,) if isinstance(grid, SphericalProductGrid) else ()
 
 
 # Each case names a layer, the grid it runs on and the leading contract it declares. The
@@ -57,31 +72,35 @@ _HEALPIX = HealpixGrid(nside=2)
 # same ways.
 def _sht(grid):
     layer = th.RealSHT(grid)
-    return layer, grid.shape, lambda lead: (*lead, layer.lmax, layer.mmax), torch.float32
+    return layer, grid.shape, lambda lead: (*lead, *_radial(grid), layer.lmax, layer.mmax), torch.float32
 
 
 def _isht(grid):
     layer = th.InverseRealSHT(grid)
-    return layer, (layer.lmax, layer.mmax), lambda lead: (*lead, *grid.shape), torch.complex64
+    return layer, (*_radial(grid), layer.lmax, layer.mmax), lambda lead: (*lead, *grid.shape), torch.complex64
 
 
 def _vsht(grid):
     layer = th.RealVectorSHT(grid)
-    return layer, grid.shape, lambda lead: (*lead, layer.lmax, layer.mmax), torch.float32
+    return layer, grid.shape, lambda lead: (*lead, *_radial(grid), layer.lmax, layer.mmax), torch.float32
 
 
 def _ivsht(grid):
     layer = th.InverseRealVectorSHT(grid)
-    return layer, (layer.lmax, layer.mmax), lambda lead: (*lead, *grid.shape), torch.complex64
+    return layer, (*_radial(grid), layer.lmax, layer.mmax), lambda lead: (*lead, *grid.shape), torch.complex64
 
 
 def _quadrature(grid):
-    # the spatial axes are reduced and nothing else; in particular no leading axis is added
-    return th.QuadratureS2(grid), grid.shape, lambda lead: lead, torch.float32
+    # the spatial axes are reduced and nothing else; in particular no leading axis is added,
+    # and on a product grid the radial axis is kept, one integral per shell
+    return th.QuadratureS2(grid), grid.shape, lambda lead: (*lead, *_radial(grid)), torch.float32
 
 
 def _resample(grid):
-    grid_out = as_grid("equiangular", nlat=grid.nlat + 2, nlon=grid.nlon)
+    angular = _angular(grid)
+    grid_out = as_grid("equiangular", nlat=angular.nlat + 2, nlon=angular.nlon)
+    if isinstance(grid, SphericalProductGrid):
+        grid_out = SphericalProductGrid(grid_out, grid.radial)
     return th.ResampleS2(grid, grid_out), grid.shape, lambda lead: (*lead, *grid_out.shape), torch.float32
 
 
@@ -132,6 +151,9 @@ _CASES = [
     ["neighborhood_attention", _neighborhood_attention, _REGULAR, (None, _C)],
     ["neighborhood_attention_healpix", _neighborhood_attention, _HEALPIX, (None, _C)],
 ]
+
+# and every one of them again on the product of its grid with a radial grid
+_CASES += [[f"{name}_product", factory, _product(grid), spec] for name, factory, grid, spec in _CASES]
 
 
 _SHAPE_CASES = [[f"{name}_{shape_name(leading)}", factory, grid, leading] for name, factory, grid, spec in _CASES for leading in accepted_leadings(spec)]
@@ -184,6 +206,15 @@ class TestFieldContractHelper(unittest.TestCase):
         check_field(torch.zeros(3, *shard.shape), shard)
         with self.assertRaises(RuntimeError):
             check_field(torch.zeros(3, *_REGULAR.shape), shard)
+
+    def test_radial_axis_precedes_the_grid(self):
+        check_field(torch.zeros(2, _RADIAL.nr, *_REGULAR.shape), _REGULAR, radial=_RADIAL)
+        check_coeffs(torch.zeros(2, _RADIAL.nr, 5, 3), 5, 3, radial=_RADIAL)
+        with self.assertRaises(RuntimeError) as ctx:
+            check_field(torch.zeros(2, _RADIAL.nr + 1, *_REGULAR.shape), _REGULAR, radial=_RADIAL)
+        message = str(ctx.exception)
+        self.assertIn(f"(..., {_RADIAL.nr}, 8, 16)", message)
+        self.assertIn(repr(_RADIAL), message)
 
     def test_ellipsis_only_leads(self):
         with self.assertRaises(ValueError):
