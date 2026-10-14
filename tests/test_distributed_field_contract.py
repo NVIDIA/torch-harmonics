@@ -218,6 +218,16 @@ class TestDistributedFieldContract(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, r"Expected .* of shape"):
                     layer(torch.randn(shape, device=self.device, dtype=dtype))
 
+    @parameterized.expand([["angular", None], ["product", _RADIAL]])
+    def test_attention_rejects_a_shared_key_value_batch(self, _, radial):
+        """Like the serial layers, a key/value batch of one is refused, on every rank and before any collective."""
+        layer, trailing, _, dtype, _ = _attention(radial)
+        layer = layer.to(self.device)
+        query = torch.randn(2, _C, *trailing, device=self.device, dtype=dtype)
+        shared = torch.randn(1, _C, *trailing, device=self.device, dtype=dtype)
+        with self.assertRaisesRegex(RuntimeError, "query's batch size 2, got 1"):
+            layer(query, shared, shared)
+
     def test_resample_rejects_too_few_channels(self):
         """The resampling transposes do not pad, so fewer channels than ranks is an error, not a hang."""
         need = _resample_free()

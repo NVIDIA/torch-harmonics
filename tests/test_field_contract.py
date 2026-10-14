@@ -195,6 +195,39 @@ class TestFieldContract(unittest.TestCase):
                     layer(x)
 
 
+_ATTENTION_LAYERS = [
+    ["attention", lambda grid: th.AttentionS2(grid, grid, in_channels=_C, num_heads=1)],
+    ["neighborhood_attention_reference", lambda grid: th.NeighborhoodAttentionS2(grid, grid, in_channels=_C, optimized_kernel=False)],
+    ["neighborhood_attention_optimized", lambda grid: th.NeighborhoodAttentionS2(grid, grid, in_channels=_C, optimized_kernel=True)],
+]
+_ATTENTION_BATCH_CASES = [[f"{name}_{gname}", build, grid] for name, build in _ATTENTION_LAYERS for gname, grid in (("angular", _REGULAR), ("product", _product(_REGULAR)))]
+
+
+@parameterized_class(("device",), _devices)
+class TestAttentionBatchContract(unittest.TestCase):
+    """Query, key and value share one batch size; attention does not broadcast it."""
+
+    @parameterized.expand(_ATTENTION_BATCH_CASES)
+    def test_rejects_a_shared_key_value_batch(self, _, build, grid):
+        """
+        A key/value batch of one is not broadcast against the query's, on any path.
+
+        SDPA and the torch reference used to broadcast it on the angular grid while the
+        compiled kernels refused it, and on a product grid the radius is folded into the
+        batch, after which it cannot broadcast at all; every path now refuses it alike.
+        """
+        layer = build(grid).to(self.device)
+        query = torch.randn(2, _C, *grid.shape, device=self.device)
+        shared = torch.randn(1, _C, *grid.shape, device=self.device)
+        for how, key, value in (("key and value", shared, shared), ("key", shared, query), ("value", query, shared)):
+            with self.subTest(shared=how):
+                with self.assertRaisesRegex(RuntimeError, "query's batch size 2, got 1"):
+                    layer(query, key, value)
+        # expanded to the query's batch, the same inputs are accepted
+        expanded = shared.expand(2, *shared.shape[1:])
+        self.assertEqual(layer(query, expanded, expanded).shape[0], 2)
+
+
 class TestFieldContractHelper(unittest.TestCase):
     """The helper itself: what it accepts, and what it reports."""
 
