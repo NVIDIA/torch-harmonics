@@ -114,7 +114,10 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
 
     def scale(self, g):
         """Scale factor as the RMS, averaged over the sphere and over the radial nodes."""
-        return self.sphere_mean(g**2).mean().sqrt()
+        # squared relative to the largest value, which cannot overflow: r**2 f squares to
+        # beyond float32 from radii of about 4e9 on, which a grid in physical units can reach
+        m = g.abs().amax().clamp_min(torch.finfo(g.dtype).tiny)
+        return m * self.sphere_mean((g / m) ** 2).mean().sqrt()
 
     def __getitem__(self, index):
 

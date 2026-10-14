@@ -219,6 +219,18 @@ class TestRadialPoissonSolver(unittest.TestCase):
         inp, tar = dataset[0]
         self.assertTrue(torch.isfinite(inp).all() and torch.isfinite(tar).all())
 
+    def test_dataset_scale_does_not_overflow(self):
+        """
+        The float32 samples are normalized without squaring them outright.
+
+        r**2 f is about 1e20 on radii of 1e10, which squares to beyond float32, and an
+        infinite scale would turn both tensors of the pair into zeros.
+        """
+        grid = SphericalProductGrid(as_grid("legendre-gauss", nlat=16, nlon=32), GeometricRadialGrid(64, 1e10, 1e11))
+        inp, tar = RadialPoissonDataset(grid, source="ball", num_examples=1)[0]
+        self.assertTrue(torch.isfinite(inp).all() and torch.isfinite(tar).all())
+        self.assertGreater(inp.abs().max().item(), 0.0)
+
     def test_rejects_bounded_domains(self):
         """The Green's operator assumes u -> 0 at infinity, so a radial grid with a finite outer bound is refused."""
         angular = as_grid("legendre-gauss", nlat=16, nlon=32)
