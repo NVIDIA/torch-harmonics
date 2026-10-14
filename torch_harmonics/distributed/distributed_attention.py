@@ -38,7 +38,7 @@ from attention_helpers import optimized_kernels_is_available
 from torch_harmonics._backend import _kernel_device_types
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.attention import attention_kernels
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _reciprocal_or_zero
+from torch_harmonics.attention._attention_utils import _check_batches_match, _check_dtypes_match, _reciprocal_or_zero
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
 from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
@@ -1283,4 +1283,5 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         check_field(query, self.shard_out, leading=(None, self.in_channels), name="query", radial=self.radial)
         check_field(key, self.shard_in, leading=(None, self.in_channels), name="key", radial=self.radial)
         check_field(value, self.shard_in, leading=(None, self.in_channels), name="value", radial=self.radial)
+        _check_batches_match(query, key, value)
         _check_dtypes_match((query, key, value))

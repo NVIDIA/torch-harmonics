@@ -41,7 +41,7 @@ from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import BackendSelectionMixin
 from torch_harmonics._field_contract import check_field
-from torch_harmonics.attention._attention_utils import _check_dtypes_match, _fold_radius_qkv
+from torch_harmonics.attention._attention_utils import _check_batches_match, _check_dtypes_match, _fold_radius_qkv
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
@@ -279,6 +279,7 @@ class AttentionS2(nn.Module):
         check_field(query, self.grid_out, leading=(None, self.in_channels), name="query", radial=self.radial)
         check_field(key, self.grid_in, leading=(None, self.in_channels), name="key", radial=self.radial)
         check_field(value, self.grid_in, leading=(None, self.in_channels), name="value", radial=self.radial)
+        _check_batches_match(query, key, value)
         _check_dtypes_match((query, key, value))
 
     @staticmethod
@@ -713,6 +714,7 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         check_field(query, self.grid_out, leading=(None, self.in_channels), name="query", radial=self.radial)
         check_field(key, self.grid_in, leading=(None, self.in_channels), name="key", radial=self.radial)
         check_field(value, self.grid_in, leading=(None, self.in_channels), name="value", radial=self.radial)
+        _check_batches_match(query, key, value)
         _check_dtypes_match((query, key, value))
 
     def _to_channels_last(self, tensor: torch.Tensor, ragged_layout: bool) -> torch.Tensor:
