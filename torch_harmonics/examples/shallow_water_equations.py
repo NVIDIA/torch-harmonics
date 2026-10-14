@@ -71,6 +71,11 @@ class ShallowWaterSolver(nn.Module):
         Average height in meters, by default 10.e3
     hamp : float, optional
         Height amplitude in meters, by default 120.
+
+    Notes
+    -----
+    The solver is built in float64. Cast it with ``.float()`` before moving it to a device
+    without float64, such as MPS, as ``ShallowWaterDataset`` does.
     """
 
     @_rejects_legacy_signature(

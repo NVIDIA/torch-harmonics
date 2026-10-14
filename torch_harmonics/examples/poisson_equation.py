@@ -38,7 +38,6 @@ import torch.nn as nn
 import torch_harmonics as th
 from torch_harmonics.grid import require_regular_grid
 from torch_harmonics.radial import RadialGrid, SphericalProductGrid
-from torch_harmonics.utils import recast_buffers_for
 
 
 class GreensOperator(nn.Module):
@@ -93,11 +92,6 @@ class GreensOperator(nn.Module):
 
         return -core * quad.reshape(1, 1, -1) / (2 * l + 1)
 
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
-
     def forward(self, fspec: torch.Tensor) -> torch.Tensor:
         """Solve lap u = f in spectral space."""
 
@@ -132,6 +126,12 @@ class RadialPoissonSolver(nn.Module):
         Maximum l mode, by default None
     mmax : int, optional
         Maximum m mode, by default None
+
+    Notes
+    -----
+    The solver is built in float64, since the Green's kernel spans several decades in r.
+    Cast it with ``.float()`` before moving it to a device without float64, such as MPS,
+    as ``RadialPoissonDataset`` does.
     """
 
     # new in v1.0.0rc1, so there is no signature before the grid descriptors to reject
@@ -193,7 +193,8 @@ class RadialPoissonSolver(nn.Module):
         lsrc = min(l_src + 1, self.lmax)
         msrc = min(lsrc, self.mmax)
 
-        aspec = torch.zeros(*shape, self.lmax, self.mmax, dtype=torch.complex128, device=self.r.device)
+        ctype = torch.complex128 if self.r.dtype == torch.float64 else torch.complex64
+        aspec = torch.zeros(*shape, self.lmax, self.mmax, dtype=ctype, device=self.r.device)
         scale = math.sqrt(4.0 * math.pi / lsrc / (lsrc + 1))
         aspec[..., :lsrc, :msrc] = scale * torch.randn_like(aspec[..., :lsrc, :msrc])
 

@@ -31,12 +31,14 @@
 
 import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized
 from testutils import compare_tensors
 
 from torch_harmonics import GeometricRadialGrid, LegendreGaussRadialGrid, SphericalProductGrid, as_grid
+from torch_harmonics.examples import RadialPoissonDataset
 from torch_harmonics.examples.poisson_equation import RadialPoissonSolver
 
 
@@ -195,6 +197,27 @@ class TestRadialPoissonSolver(unittest.TestCase):
         # small rather than exactly zero; measure it against the scale of the solution
         ratio = (u[0].abs().max() / u.abs().max()).item()
         self.assertLess(ratio, 1e-2, f"u on the innermost node is {ratio:.2e} of its maximum on degree {l}")
+
+    def test_float32_solver_generates_float32_sources(self):
+        """A solver cast to float32 builds its sources in float32 too, so nothing on its device needs float64."""
+        solver = make_solver(64, rmin=1e-1).float()
+        self.assertEqual(solver.random_bump_source(nblobs=2).dtype, torch.float32)
+        self.assertEqual(solver.ball_source(radius=1.0).dtype, torch.float32)
+
+    def test_dataset_casts_its_solver_before_moving_it(self):
+        """The solver holds no float64 state when it is moved, so the dataset can be built on a device without float64 such as MPS."""
+        moved_with = []
+        original = RadialPoissonSolver.to
+
+        def to(solver, *args, **kwargs):
+            moved_with.append([name for name, b in solver.named_buffers() if b.dtype in (torch.float64, torch.complex128)])
+            return original(solver, *args, **kwargs)
+
+        with mock.patch.object(RadialPoissonSolver, "to", to):
+            dataset = RadialPoissonDataset(make_solver(64, rmin=1e-1).grid, num_examples=1)
+        self.assertEqual(moved_with, [[]])
+        inp, tar = dataset[0]
+        self.assertTrue(torch.isfinite(inp).all() and torch.isfinite(tar).all())
 
     def test_rejects_bounded_domains(self):
         """The Green's operator assumes u -> 0 at infinity, so a radial grid with a finite outer bound is refused."""

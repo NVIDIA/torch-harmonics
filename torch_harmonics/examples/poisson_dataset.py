@@ -81,7 +81,10 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
         self.normalize = normalize
         self.source = source
 
-        self.solver = RadialPoissonSolver(grid).to(self.device)
+        # the samples are float32, so they are solved in float32 too, which agrees with a float64
+        # solve to a few 1e-7 of the solution's maximum. Cast before moving: the solver is built
+        # in float64, which a device such as MPS cannot hold
+        self.solver = RadialPoissonSolver(grid).float().to(self.device)
 
         self.grid = self.solver.grid
         self.nr, self.nlat, self.nlon = self.grid.shape
