@@ -220,6 +220,17 @@ class RadialPoissonSolver(nn.Module):
         xlo = x[0].item() + margin * span
         xhi = x[-1].item() - margin * span
 
+        # every blob must contain a node, or a sample can vanish on the grid and normalizing
+        # it divides by zero. A blob is an open interval in x at least 2 * min_half wide, so
+        # that holds exactly when no gap between neighbouring nodes is as wide
+        min_half = min(width[0] * span, 0.5 * (xhi - xlo))
+        gap = (x[1:] - x[:-1]).max().item()
+        if gap >= 2 * min_half:
+            raise ValueError(
+                f"the radial grid is too coarse for bumps of half width {width[0]} of the log-radial range: its widest gap, "
+                f"{gap / span:.3g} of the range, can hold a bump without a node. Use more radial nodes or a larger width[0]."
+            )
+
         # random half width of blobs
         half = width[0] * span + (width[1] - width[0]) * span * torch.rand(nblobs, dtype=dtype, device=device)
         half = torch.clamp(half, max=0.5 * (xhi - xlo))
