@@ -70,6 +70,7 @@
 
    ResampleS2
    QuadratureS2
+   QuadratureVolume
 ```
 
 ## Random fields

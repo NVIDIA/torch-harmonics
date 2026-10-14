@@ -34,6 +34,8 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+
 from .losses import get_quadrature_weights
 
 
@@ -74,18 +76,16 @@ def _get_stats_multiclass(
         Tuple containing (tp_count, fp_count, fn_count, tn_count) for each class
     """
     batch_size, *dims = output.shape
-    num_elements = torch.prod(torch.tensor(dims)).long()
 
+    # ignored samples are given zero area, which removes them from every count below,
+    # the total included. this is the only mechanism needed to honor ignore_index
+    quad_weights = quad_weights.expand(batch_size, *dims)
     if ignore_index is not None:
-        ignore = target == ignore_index
-        output = torch.where(ignore, -1, output)
-        target = torch.where(ignore, -1, target)
-        ignore_per_sample = ignore.view(batch_size, -1).sum(1)
+        quad_weights = torch.where(target == ignore_index, 0.0, quad_weights)
 
     tp_count = torch.zeros(batch_size, num_classes, dtype=torch.float32, device=output.device)
     fp_count = torch.zeros(batch_size, num_classes, dtype=torch.float32, device=output.device)
     fn_count = torch.zeros(batch_size, num_classes, dtype=torch.float32, device=output.device)
-    tn_count = torch.zeros(batch_size, num_classes, dtype=torch.float32, device=output.device)
 
     matched = target == output
     not_matched = target != output
@@ -94,10 +94,11 @@ def _get_stats_multiclass(
         not_matched_i = not_matched[i, ...]
         target_i = target[i, ...]
         output_i = output[i, ...]
+        quad_weights_i = quad_weights[i, ...]
         for c in range(num_classes):
             # compute weights
-            qwt_c = quad_weights[target_i == c]
-            qwo_c = quad_weights[output_i == c]
+            qwt_c = quad_weights_i[target_i == c]
+            qwo_c = quad_weights_i[output_i == c]
 
             # true positives
             tp_count[i, c] = torch.sum(matched_i[target_i == c] * qwt_c)
@@ -106,8 +107,9 @@ def _get_stats_multiclass(
             # false negatives
             fn_count[i, c] = torch.sum(not_matched_i[target_i == c] * qwt_c)
 
-    # true negatives is the leftovers
-    tn_count = torch.sum(quad_weights) - tp_count - fp_count - fn_count
+    # true negatives are the leftovers of the area which is actually scored
+    scored_area = quad_weights.flatten(1).sum(1, keepdim=True)
+    tn_count = scored_area - tp_count - fp_count - fn_count
     return tp_count, fp_count, fn_count, tn_count
 
 
@@ -138,12 +140,10 @@ class BaseMetricS2(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights for weighted averaging, by default None
     ignore_index : int, optional
@@ -152,14 +152,20 @@ class BaseMetricS2(nn.Module):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
+    @_rejects_legacy_signature(
+        'nlat, nlon, grid="equiangular", weight=None, ignore_index=-100, mode="micro"',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
         super().__init__()
 
         self.ignore_index = ignore_index
         self.mode = mode
 
-        # area weights
-        q = get_quadrature_weights(nlat=nlat, nlon=nlon, grid=grid, tile=True)
+        # area weights. The masks below index a flattened (nlat, nlon) field, so this
+        # needs a grid that really is a dense array
+        self.grid = require_regular_grid(grid)
+        q = get_quadrature_weights(self.grid, tile=True)
         self.register_buffer("quad_weights", q)
 
         if weight is None:
@@ -207,12 +213,10 @@ class IntersectionOverUnionS2(BaseMetricS2):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights for weighted averaging, by default None
     ignore_index : int, optional
@@ -221,8 +225,12 @@ class IntersectionOverUnionS2(BaseMetricS2):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
-        super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
+    @_rejects_legacy_signature(
+        'nlat, nlon, grid="equiangular", weight=None, ignore_index=-100, mode="micro"',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
+        super().__init__(grid, weight, ignore_index, mode)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
 
@@ -253,12 +261,10 @@ class AccuracyS2(BaseMetricS2):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    grid : str, optional
-        Grid type ("equiangular", "legendre-gauss", etc.), by default "equiangular"
+    grid : RegularGridS2
+        Descriptor of the grid the fields are sampled on. It carries the resolution as
+        well as the quadrature rule, so no separate shape argument is needed. Build one
+        with :func:`torch_harmonics.as_grid`.
     weight : torch.Tensor, optional
         Class weights for weighted averaging, by default None
     ignore_index : int, optional
@@ -267,8 +273,12 @@ class AccuracyS2(BaseMetricS2):
         Averaging mode ("micro" or "macro"), by default "micro"
     """
 
-    def __init__(self, nlat: int, nlon: int, grid: str = "equiangular", weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
-        super().__init__(nlat, nlon, grid, weight, ignore_index, mode)
+    @_rejects_legacy_signature(
+        'nlat, nlon, grid="equiangular", weight=None, ignore_index=-100, mode="micro"',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, weight: torch.Tensor = None, ignore_index: int = -100, mode: str = "micro"):
+        super().__init__(grid, weight, ignore_index, mode)
 
     def forward(self, pred: torch.Tensor, truth: torch.Tensor) -> torch.Tensor:
 

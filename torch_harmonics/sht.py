@@ -29,20 +29,24 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
+from torch_harmonics._field_contract import check_coeffs, check_field
 from torch_harmonics.fft import irfft, rfft
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
-from torch_harmonics.quadrature import precompute_latitudes
-from torch_harmonics.truncation import truncate_sht
-from torch_harmonics.utils import check
+from torch_harmonics.radial import split_radial
+from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.utils import recast_buffers_for
 
 
 class RealSHT(nn.Module):
     r"""
     Defines a module for computing the forward (real-valued) SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last two dimensions of the input.
 
     Given a real-valued signal :math:`f(\theta, \lambda)` sampled on the sphere,
@@ -64,17 +68,16 @@ class RealSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
+        :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
+        alike, with the radial axis in front of the spatial (or spectral) ones.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
-        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
@@ -86,9 +89,9 @@ class RealSHT(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> nlat, nlon = 128, 256
-    >>> sht = th.RealSHT(nlat, nlon)
-    >>> signal = torch.randn(1, nlat, nlon)
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
+    >>> sht = th.RealSHT(grid)
+    >>> signal = torch.randn(1, grid.nlat, grid.nlon)
     >>> coeffs = sht(signal)   # shape (1, lmax, mmax), complex
     >>> coeffs.shape
     torch.Size([1, 64, 64])
@@ -111,24 +114,33 @@ class RealSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        # on a SphericalProductGrid every shell is transformed alike; the radial grid only
+        # adds its axis to the field shape
+        grid, self.radial = split_radial(grid)
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        _warn_if_not_spectrally_accurate(self.grid)
         self.norm = norm
         self.csphase = csphase
 
         # TODO: include assertions regarding the dimensions
 
-        # nodes and quadrature weights; the grid switch and the cosine transform live in
-        # precompute_latitudes, which is cached on (nlat, grid)
-        _, weights = precompute_latitudes(nlat, grid=self.grid)
+        # quadrature weights come from the grid descriptor, which supports every grid
+        # precompute_latitudes does -- the switch this replaced silently rejected
+        # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
+        # descriptor and reads them itself, which is also what keys its cache.
+        weights = self.grid.colat_weights
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights. It is a constant prefactor of a linear transform, so folding it
@@ -136,14 +148,20 @@ class RealSHT(nn.Module):
         weights = 2.0 * torch.pi * weights
 
         # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase)
         weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -160,9 +178,7 @@ class RealSHT(nn.Module):
             Complex spherical harmonic coefficients of shape ``(..., lmax, mmax)``.
         """
 
-        check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
-        check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
+        check_field(x, self.grid, radial=self.radial)
 
         # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
         # the quadrature weights, so no scaling of the complex output is needed here.
@@ -187,7 +203,7 @@ class RealSHT(nn.Module):
 class InverseRealSHT(nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials on the nodes of the given grid.
 
     Given complex spherical harmonic coefficients :math:`\hat{f}_l^m`, the inverse
     scalar SHT reconstructs the real-valued signal on the sphere via Legendre
@@ -205,17 +221,16 @@ class InverseRealSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
+        :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
+        alike, with the radial axis in front of the spatial (or spectral) ones.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
-        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
@@ -227,8 +242,8 @@ class InverseRealSHT(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> nlat, nlon = 128, 256
-    >>> isht = th.InverseRealSHT(nlat, nlon)
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
+    >>> isht = th.InverseRealSHT(grid)
     >>> coeffs = torch.randn(1, isht.lmax, isht.mmax, dtype=torch.cfloat)
     >>> signal = isht(coeffs)   # shape (1, 128, 256), real
     >>> signal.shape
@@ -256,37 +271,50 @@ class InverseRealSHT(nn.Module):
 
     Raises
     ------
-    ValueError
-        If the grid type is unknown
+    TypeError
+        If ``grid`` is not a :class:`~torch_harmonics.grid.RegularGridS2`.
 
     References
     ----------
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        # on a SphericalProductGrid every shell is transformed alike; the radial grid only
+        # adds its axis to the field shape
+        grid, self.radial = split_radial(grid)
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        _warn_if_not_spectrally_accurate(self.grid)
         self.norm = norm
         self.csphase = csphase
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
-        pct = _precompute_legpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
         pct = pct.permute(0, 2, 1).contiguous()
 
         # register buffer
         self.register_buffer("pct", pct, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -303,9 +331,7 @@ class InverseRealSHT(nn.Module):
             Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
         """
 
-        check(x.dim() >= 2, lambda: f"Expected tensor with at least 2 dimensions but got {x.dim()} instead")
-        check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.mmax, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax}, got {x.shape[-1]}")
+        check_coeffs(x, self.lmax, self.mmax, radial=self.radial)
 
         # transpose to put the contraction dim (lmax) on the fast axis
         x = x.transpose(-1, -2)
@@ -330,7 +356,7 @@ class InverseRealSHT(nn.Module):
 class RealVectorSHT(nn.Module):
     r"""
     Defines a module for computing the forward (real) vector SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last three dimensions of the input.
 
     Decomposes a tangential vector field
@@ -346,17 +372,16 @@ class RealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
+        :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
+        alike, with the radial axis in front of the spatial (or spectral) ones.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
-        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
@@ -368,9 +393,9 @@ class RealVectorSHT(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> nlat, nlon = 128, 256
-    >>> vsht = th.RealVectorSHT(nlat, nlon)
-    >>> vector_field = torch.randn(1, 2, nlat, nlon)
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
+    >>> vsht = th.RealVectorSHT(grid)
+    >>> vector_field = torch.randn(1, 2, grid.nlat, grid.nlon)
     >>> coeffs = vsht(vector_field)   # shape (1, 2, lmax, mmax), complex
     >>> coeffs.shape
     torch.Size([1, 2, 64, 64])
@@ -393,25 +418,31 @@ class RealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        # on a SphericalProductGrid every shell is transformed alike; the radial grid only
+        # adds its axis to the field shape
+        grid, self.radial = split_radial(grid)
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        _warn_if_not_spectrally_accurate(self.grid)
         self.norm = norm
         self.csphase = csphase
 
-        # nodes and quadrature weights; the grid switch and the cosine transform live in
-        # precompute_latitudes, which is cached on (nlat, grid)
-        _, weights = precompute_latitudes(nlat, grid=self.grid)
+        # quadrature weights come from the grid descriptor; see the note in RealSHT
+        weights = self.grid.colat_weights
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase)
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights (see RealSHT.__init__)
@@ -429,7 +460,13 @@ class RealVectorSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -448,10 +485,7 @@ class RealVectorSHT(nn.Module):
             size-2 dimension holds the spheroidal and toroidal components.
         """
 
-        check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-        check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
-        check(x.shape[-2] == self.nlat, lambda: f"Expected latitudes shape[-2]=={self.nlat}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.nlon, lambda: f"Expected longitudes shape[-1]=={self.nlon}, got {x.shape[-1]}")
+        check_field(x, self.grid, leading=(..., 2), radial=self.radial)
 
         # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
         # the quadrature weights, so no scaling of the complex output is needed here.
@@ -462,16 +496,19 @@ class RealVectorSHT(nn.Module):
         x_re = x.real.contiguous()
         x_im = x.imag.contiguous()
 
+        # the component axis, in front of the radial one on a product grid
+        cdim = -3 if self.radial is None else -4
+
         w0 = self.weights[0].to(x_re.dtype)
         w1 = self.weights[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        s_re = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w0) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w1)
-        s_im = torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w0) + torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w1)
+        s_re = torch.einsum("...mk,mlk->...lm", x_re.select(cdim, 0), w0) - torch.einsum("...mk,mlk->...lm", x_im.select(cdim, 1), w1)
+        s_im = torch.einsum("...mk,mlk->...lm", x_im.select(cdim, 0), w0) + torch.einsum("...mk,mlk->...lm", x_re.select(cdim, 1), w1)
 
         # contraction - toroidal component
-        t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
-        t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
+        t_re = -torch.einsum("...mk,mlk->...lm", x_im.select(cdim, 0), w1) - torch.einsum("...mk,mlk->...lm", x_re.select(cdim, 1), w0)
+        t_im = torch.einsum("...mk,mlk->...lm", x_re.select(cdim, 0), w1) - torch.einsum("...mk,mlk->...lm", x_im.select(cdim, 1), w0)
 
         # stack the spheroidal and toroidal components in real space, so the only complex-typed
         # op is a single aten.complex over contiguous operands. Stacking complex tensors instead
@@ -479,8 +516,8 @@ class RealVectorSHT(nn.Module):
         # and feeding aten.complex the non-contiguous ...lm einsum outputs directly trips
         # assert_size_stride, as its meta predicts a contiguous layout. torch.stack allocates a
         # fresh contiguous buffer, which is exactly what that meta expects.
-        out_re = torch.stack((s_re, t_re), dim=-3)
-        out_im = torch.stack((s_im, t_im), dim=-3)
+        out_re = torch.stack((s_re, t_re), dim=cdim)
+        out_im = torch.stack((s_im, t_im), dim=cdim)
 
         return torch.complex(out_re, out_im)
 
@@ -488,7 +525,7 @@ class RealVectorSHT(nn.Module):
 class InverseRealVectorSHT(nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
-    Precomputes Legendre Gauss nodes, weights and associated Legendre polynomials on these nodes.
+    Precomputes the associated Legendre polynomials on the nodes of the given grid.
 
     Given spheroidal and toroidal spectral coefficients :math:`\hat{s}_l^m` and
     :math:`\hat{t}_l^m`, reconstructs the tangential vector field on the sphere
@@ -502,17 +539,16 @@ class InverseRealVectorSHT(nn.Module):
 
     Parameters
     ----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
+    grid : RegularGridS2
+        Descriptor of the spatial grid the transform operates on. It carries the
+        resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
+        is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
+        :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
+        alike, with the radial axis in front of the spatial (or spectral) ones.
     lmax : int
         Maximum spherical harmonic degree
     mmax : int
         Maximum spherical harmonic order
-    grid : str
-        Grid type (``"equiangular"``, ``"legendre-gauss"``, ``"lobatto"``,
-        ``"equiangular-trapezoidal"``), by default ``"equiangular"``
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
@@ -524,8 +560,8 @@ class InverseRealVectorSHT(nn.Module):
     --------
     >>> import torch
     >>> import torch_harmonics as th
-    >>> nlat, nlon = 128, 256
-    >>> ivsht = th.InverseRealVectorSHT(nlat, nlon)
+    >>> grid = th.as_grid("equiangular", nlat=128, nlon=256)
+    >>> ivsht = th.InverseRealVectorSHT(grid)
     >>> coeffs = torch.randn(1, 2, ivsht.lmax, ivsht.mmax, dtype=torch.cfloat)
     >>> vector_field = ivsht(coeffs)   # shape (1, 2, 128, 256), real
     >>> vector_field.shape
@@ -556,29 +592,42 @@ class InverseRealVectorSHT(nn.Module):
     :cite:`Schaeffer2013`, :cite:`Wang2018`
     """
 
-    def __init__(self, nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True):
+    @_rejects_legacy_signature(
+        'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
+        grid=("nlat", "nlon"),
+    )
+    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
 
         super().__init__()
 
-        self.nlat = nlat
-        self.nlon = nlon
-        self.grid = grid
+        # on a SphericalProductGrid every shell is transformed alike; the radial grid only
+        # adds its axis to the field shape
+        grid, self.radial = split_radial(grid)
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
+        _warn_if_not_spectrally_accurate(self.grid)
         self.norm = norm
         self.csphase = csphase
 
         # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.nlat, self.nlon, lmax, mmax, self.grid)
+        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
 
         # precompute associated Legendre polynomials
         # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.nlat, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
         dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
         # register weights
         self.register_buffer("dpct", dpct, persistent=False)
 
     def extra_repr(self):
-        return f"nlat={self.nlat}, nlon={self.nlon},\n lmax={self.lmax}, mmax={self.mmax},\n grid={self.grid}, csphase={self.csphase}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -597,10 +646,7 @@ class InverseRealVectorSHT(nn.Module):
             size-2 dimension holds the two tangential (colatitude, longitude) components.
         """
 
-        check(x.dim() >= 3, lambda: f"Expected tensor with at least 3 dimensions but got {x.dim()} instead")
-        check(x.shape[-3] == 2, lambda: f"Expected vector field shape[-3]==2, got {x.shape[-3]}")
-        check(x.shape[-2] == self.lmax, lambda: f"Expected spherical harmonic degrees (lmax) shape[-2]=={self.lmax}, got {x.shape[-2]}")
-        check(x.shape[-1] == self.mmax, lambda: f"Expected spherical harmonic orders (mmax) shape[-1]=={self.mmax}, got {x.shape[-1]}")
+        check_coeffs(x, self.lmax, self.mmax, leading=(..., 2), radial=self.radial)
 
         # transpose to put the contraction dim (lmax) on the fast axis
         x = x.transpose(-1, -2)
@@ -608,20 +654,23 @@ class InverseRealVectorSHT(nn.Module):
         x_im = x.imag.contiguous()
 
         # dpct layout: (2, mmax, nlat, lmax) — contract over l (stride-1 in both operands)
+        # the component axis, in front of the radial one on a product grid
+        cdim = -3 if self.radial is None else -4
+
         d0 = self.dpct[0].to(x_re.dtype)
         d1 = self.dpct[1].to(x_re.dtype)
 
         # contraction - spheroidal component
-        srl = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d0) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d1)
-        sim = torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d0) + torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d1)
+        srl = torch.einsum("...ml,mkl->...km", x_re.select(cdim, 0), d0) - torch.einsum("...ml,mkl->...km", x_im.select(cdim, 1), d1)
+        sim = torch.einsum("...ml,mkl->...km", x_im.select(cdim, 0), d0) + torch.einsum("...ml,mkl->...km", x_re.select(cdim, 1), d1)
 
         # contraction - toroidal component
-        trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
-        tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
+        trl = -torch.einsum("...ml,mkl->...km", x_im.select(cdim, 0), d1) - torch.einsum("...ml,mkl->...km", x_re.select(cdim, 1), d0)
+        tim = torch.einsum("...ml,mkl->...km", x_re.select(cdim, 0), d1) - torch.einsum("...ml,mkl->...km", x_im.select(cdim, 1), d0)
 
         # reassemble in real space and apply inverse FFT, see RealVectorSHT.forward
-        out_re = torch.stack((srl, trl), dim=-3)
-        out_im = torch.stack((sim, tim), dim=-3)
+        out_re = torch.stack((srl, trl), dim=cdim)
+        out_im = torch.stack((sim, tim), dim=cdim)
         xs = torch.complex(out_re, out_im)
         x = irfft(xs, n=self.nlon, dim=-1, norm="forward")
 

@@ -53,7 +53,8 @@ def _eval_dense(basis, r, phi, r_cutoff):
     """Evaluate all basis functions on a dense grid, returning (kernel_size, nr, nphi)."""
     iidx, vals = basis.compute_support_vals(r, phi, r_cutoff=r_cutoff)
     nr, nphi = r.shape
-    psi = torch.sparse_coo_tensor(iidx.t(), vals, size=(basis.kernel_size, nr, nphi)).to_dense()
+    with torch.sparse.check_sparse_tensor_invariants(enable=False):
+        psi = torch.sparse_coo_tensor(iidx.t(), vals, size=(basis.kernel_size, nr, nphi)).to_dense()
     return psi
 
 

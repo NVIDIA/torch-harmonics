@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import functools
 import os
 import tempfile
 import urllib.request
@@ -140,6 +141,105 @@ class _EnsureContiguous(torch.autograd.Function):
 def ensure_contiguous(x: torch.Tensor) -> torch.Tensor:
     """Ensures the tensor is contiguous in both the forward and backward pass."""
     return _EnsureContiguous.apply(x)
+
+
+# How torch.compile words its refusal on an unsupported Python, in torch 2.8 to 2.10 at least.
+_TORCH_COMPILE_REFUSAL = "torch.compile is not supported on Python"
+
+
+@functools.lru_cache(maxsize=None)
+def torch_compile_supported() -> bool:
+    """
+    Whether ``torch.compile`` can be used at all with this PyTorch and Python.
+
+    False where torch refuses it outright -- torch 2.9 on Python 3.14, torch 2.10 on 3.15, a
+    free-threaded build -- which it does with a RuntimeError starting with the prefix below in
+    every supported version. Any other error is not a refusal and is raised, so a broken setup
+    surfaces instead of silently running uncompiled. Wrapping a function does not compile
+    anything yet, so this is cheap.
+    """
+    try:
+        torch.compile(lambda x: x)
+    except RuntimeError as e:
+        if str(e).startswith(_TORCH_COMPILE_REFUSAL):
+            return False
+        raise
+    return True
+
+
+def compile_if_supported(fn):
+    """
+    ``torch.compile(fn)``, or ``fn`` unchanged where this torch cannot compile at all.
+
+    ``torch.compile`` refuses outright when the running Python is newer than the torch
+    release supports -- torch 2.9 on Python 3.14 raises ``torch.compile is not supported
+    on Python 3.14+`` -- and it does so when called, not when the compiled function first
+    runs. Used as a decorator in a class body, that made ``import torch_harmonics`` fail.
+    Falling back to the plain function keeps the code working, eagerly.
+    """
+    return torch.compile(fn) if torch_compile_supported() else fn
+
+
+#: device types that cannot hold a float64 tensor at all
+_NO_FLOAT64_DEVICE_TYPES = frozenset({"mps"})
+
+
+def recast_buffers_for(module: torch.nn.Module, fn) -> None:
+    """
+    Downcast ``module``'s own float64 buffers to float32 if ``module._apply(fn)`` is about to move them to a device without float64.
+
+    The convention this supports: a layer builds the weights it derives from a grid
+    (quadrature weights, Legendre polynomials, ...) in float64, keeps them as float64
+    buffers, and casts them at use to ``torch.promote_types(x.dtype, torch.float32)``. A
+    float64 input then computes with float64 weights, and every other dtype exactly as
+    with float32 ones. MPS has no float64, and moving such a buffer there fails inside the
+    move, before any forward could cast it. So a module with float64 buffers calls this
+    first thing in its ``_apply``::
+
+        def _apply(self, fn, recurse=True):
+            recast_buffers_for(self, fn)
+            return super()._apply(fn, recurse)
+
+    On a move to MPS its float64 buffers become float32; on any other conversion nothing
+    changes, and they keep their precision.
+
+    **Why** ``_apply`` **and not** ``to``. Every conversion -- ``.to()``, ``.cuda()``,
+    ``.cpu()``, ``.half()``, ``.double()``, ``.to_empty()`` -- ends in ``_apply``, and
+    ``_apply`` is what recurses into the children. ``Module.to`` does not call the
+    children's ``to``: a ``to`` override on a layer would never run when the layer sits
+    inside a model and the model is moved, which is how layers are normally used.
+
+    **How the destination is found.** ``_apply`` is only given ``fn``, not where it leads;
+    PyTorch has no public way to ask. So ``fn`` is applied to an empty probe, and the
+    probe's resulting device is the destination. The probe is float32 on CPU explicitly,
+    whatever the default dtype and device: a float64 probe would itself fail to move to
+    MPS, and a probe created on a default MPS device would make a dtype-only conversion
+    such as ``.double()`` fail on it. From CPU, a move lands on its target and a dtype-only
+    conversion stays on CPU, which is all the check needs to tell apart.
+
+    Only ``module``'s own buffers are touched; ``_apply`` recurses through each child's
+    ``_apply``, so a child with float64 buffers calls this itself. It runs on module
+    conversions only, never in ``forward``, so ``torch.compile`` does not see it.
+
+    Not covered: state a module creates directly on the device after the move, such as
+    what a backend's ``prepare`` builds; that has to choose its dtype itself.
+
+    Parameters
+    ----------
+    module : torch.nn.Module
+        The module whose own buffers are about to be converted.
+    fn : callable
+        The conversion ``module._apply`` was called with.
+    """
+    # the probe's dtype and device are fixed rather than the defaults: a float64 default would fail
+    # to move to MPS just as the buffers would, and an MPS default device would make a dtype-only
+    # conversion such as .double() fail on the probe. From CPU, a move lands on its target and a
+    # dtype-only conversion stays put, which is all this needs to tell apart
+    if fn(torch.empty(0, dtype=torch.float32, device="cpu")).device.type not in _NO_FLOAT64_DEVICE_TYPES:
+        return
+    for name, buf in module._buffers.items():
+        if buf is not None and buf.dtype == torch.float64:
+            module._buffers[name] = buf.to(torch.float32)
 
 
 def check(cond: bool, message) -> None:

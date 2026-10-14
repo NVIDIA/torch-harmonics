@@ -31,13 +31,15 @@
 
 import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import geometric_weights, precompute_latitudes, precompute_longitudes, precompute_radii, trapezoidal_weights
+from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, trapezoidal_weights
+from torch_harmonics.utils import recast_buffers_for
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -56,15 +58,15 @@ class TestQuadrature(unittest.TestCase):
             [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", True, 1e-6, 1e-6],
-            [64, 128, 2, 3, "equiangular-trapezoidal", False, 1e-6, 1e-6],
-            [64, 128, 2, 3, "equiangular-trapezoidal", True, 1e-6, 1e-6],
+            [64, 128, 2, 3, "trapezoidal", False, 1e-6, 1e-6],
+            [64, 128, 2, 3, "trapezoidal", True, 1e-6, 1e-6],
         ]
     )
     def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
 
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
 
         data = torch.ones((batch_size, num_chan, nlat, nlon), dtype=torch.float32, device=self.device)
         out = quad(data)
@@ -80,7 +82,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
-            [64, 128, "equiangular-trapezoidal"],
+            [64, 128, "trapezoidal"],
         ]
     )
     def test_odd_latitude_integral(self, nlat, nlon, grid, verbose=False):
@@ -91,7 +93,7 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
 
         # cos(theta) on the grid: precompute_latitudes returns colatitude angles
         # theta in [0, pi], so cos(theta) in [-1, 1]
@@ -111,7 +113,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular", 1e-5, 1e-5],
             [65, 128, "legendre-gauss", 1e-5, 1e-5],
             [65, 128, "lobatto", 1e-5, 1e-5],
-            [64, 128, "equiangular-trapezoidal", 1e-2, 1e-2],
+            [64, 128, "trapezoidal", 1e-2, 1e-2],
         ]
     )
     def test_polynomial_latitude_integral(self, nlat, nlon, grid, atol, rtol, verbose=False):
@@ -119,7 +121,7 @@ class TestQuadrature(unittest.TestCase):
 
         Analytically: 2*pi * integral_{-1}^{1} t^2 dt = 2*pi * 2/3 = 4*pi/3.
         Gauss-type quadrature rules integrate quadratic polynomials in cos-theta
-        exactly; the trapezoidal rule (equiangular-trapezoidal) has O(h^2) error.
+        exactly; the trapezoidal rule (trapezoidal) has O(h^2) error.
         """
         set_seed(333)
 
@@ -128,7 +130,7 @@ class TestQuadrature(unittest.TestCase):
         f = cos2_theta.view(1, 1, nlat, 1).expand(1, 1, nlat, nlon)
 
         for normalize, expected_val in [(False, 4.0 * math.pi / 3.0), (True, 1.0 / 3.0)]:
-            quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+            quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
             out = quad(f)
             expected = torch.full((1, 1), expected_val, device=self.device)
             self.assertTrue(
@@ -148,7 +150,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
-            [64, 128, "equiangular-trapezoidal"],
+            [64, 128, "trapezoidal"],
         ]
     )
     def test_zero_longitude_mean(self, nlat, nlon, grid, verbose=False):
@@ -160,7 +162,7 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
 
         lons = precompute_longitudes(nlon).to(self.device)  # shape [nlon], in [0, 2*pi)
         cos_phi = torch.cos(lons).to(torch.float32)
@@ -185,8 +187,8 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad_raw = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
-        quad_norm = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=True).to(self.device)
+        quad_raw = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
+        quad_norm = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=True).to(self.device)
 
         data = torch.randn(batch_size, num_chan, nlat, nlon, device=self.device)
 
@@ -205,153 +207,174 @@ class TestQuadrature(unittest.TestCase):
         )
 
 
-class TestGeometricWeights(unittest.TestCase):
-    """Geometrically spaced quadrature nodes and weights on a positive interval."""
+class TestQuadratureS2Constructor(unittest.TestCase):
+    """
+    The constructor contract after the switch to grid descriptors.
+
+    The numerical tests above all build their grid with :func:`as_grid`, so two
+    things go unexercised there: that a directly constructed grid works just as
+    well, and that the arguments the old signature took now fail with an error
+    that says what to write instead. The latter matters because this is a
+    breaking change -- without it a caller passing the old ``(nlat, nlon)`` shape
+    gets ``AttributeError: 'tuple' object has no attribute 'shape'`` from deep
+    inside the constructor.
+    """
+
+    def test_takes_a_directly_constructed_grid(self):
+        """as_grid is a convenience, not the only way in."""
+        direct = th.LegendreGaussGrid(nlat=32, nlon=64)
+        via_helper = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        self.assertTrue(compare_tensors("direct vs as_grid", th.QuadratureS2(direct).quad_weight, th.QuadratureS2(via_helper).quad_weight))
 
     @parameterized.expand(
         [
-            # n, a, b
-            [8, 1e-3, 1e3],
-            [64, 1e-3, 1e3],
-            [512, 1e-3, 1e3],
-            [33, 1.0, 2.0],
-            [65, 1e-6, 1.0],
+            # a shape is the pre-v1.0.0 call, QuadratureS2(img_shape, grid=...), answered
+            # with the replacement built from it
+            [(32, 64), "Write QuadratureS2(as_grid('equiangular', nlat=32, nlon=64)) instead"],
+            # so is a bare resolution, though it does not say what the other one was
+            [32, "no longer takes (img_shape, grid=...)"],
+            # a grid name alone was never a valid old call either; the descriptor guard
+            # answers it, naming the replacement all the same
+            ["legendre-gauss", "as_grid('legendre-gauss'"],
         ]
     )
-    def test_inverse_integral(self, n, a, b, verbose=False):
-        """The rule is exact for f(x) = 1/x, whose integral over [a, b] is log(b / a).
+    def test_old_style_arguments_explain_themselves(self, bad_grid, expected_fragment):
+        with self.assertRaises(TypeError) as ctx:
+            th.QuadratureS2(bad_grid)
+        message = str(ctx.exception)
+        self.assertIn(expected_fragment, message)
+        self.assertIn("as_grid", message, msg="the error should name the replacement")
+        self.assertNotIn("multiple values", message, msg="the binding error must never reach the caller")
 
-        The nodes are equispaced in t = log(x), so f dx/dt = 1 is constant and the
-        trapezoidal rule integrates it without discretization error at any n. This
-        pins down both the node placement and the dx/dt Jacobian carried by the
-        weights: dropping it turns the result into something n-dependent.
-        """
 
-        x, w = geometric_weights(n, a, b)
-
-        integral = (w / x).sum()
-        expected = torch.as_tensor(math.log(b / a), dtype=integral.dtype)
-
-        self.assertTrue(compare_tensors("inverse integral", integral, expected, atol=1e-12, rtol=1e-12, verbose=verbose))
+@parameterized_class(("device",), _devices)
+class TestQuadratureLeadingDimensions(unittest.TestCase):
+    """
+    Only the spatial axes are reduced. The weight buffer must not broadcast extra
+    leading axes onto an input that has fewer than two of its own -- a single field or a
+    plain batch -- on a regular grid, whose fields are ``(..., nlat, nlon)``, or on a
+    ragged one, whose fields are ``(..., npoints)``.
+    """
 
     @parameterized.expand(
         [
-            # n, a, b
-            [16, 1e-3, 1e3],
-            [65, 1e-2, 1.0],
+            ["equiangular", False],
+            ["legendre-gauss", True],
+            ["healpix", False],
+            ["healpix", True],
         ]
     )
-    def test_node_placement(self, n, a, b, verbose=False):
-        """Nodes span [a, b] and are geometrically spaced, i.e. a constant ratio apart."""
-
-        x, w = geometric_weights(n, a, b)
-
-        self.assertEqual(x.shape, (n,))
-        self.assertEqual(w.shape, (n,))
-        self.assertTrue(compare_tensors("endpoints", x[[0, -1]], torch.as_tensor([a, b], dtype=x.dtype), atol=1e-12, rtol=1e-12, verbose=verbose))
-
-        ratio = x[1:] / x[:-1]
-        expected = torch.full_like(ratio, (b / a) ** (1.0 / (n - 1)))
-        self.assertTrue(compare_tensors("node ratio", ratio, expected, atol=1e-12, rtol=1e-12, verbose=verbose))
-        self.assertTrue(torch.all(w > 0.0))
-
-    def test_convergence(self, verbose=False):
-        """For f(x) = 1, which is not exact, the error decays at second order in h = log(b / a) / (n - 1)."""
-
-        a, b = 1.0, 10.0
-        errors = [abs(geometric_weights(n, a, b)[1].sum().item() - (b - a)) for n in (64, 128, 256)]
-
-        for coarse, fine in zip(errors[:-1], errors[1:]):
-            self.assertGreater(coarse / fine, 3.5)
-
-    def test_invalid_bounds(self):
-        """A geometric grid is undefined for a non-positive lower bound.
-
-        Matched on the message rather than the type: math.log raises ValueError for
-        these inputs by itself, so a bare assertRaises would also pass if the explicit
-        bound check were removed.
-        """
-
-        for a in (0.0, -1.0):
-            with self.assertRaisesRegex(ValueError, "must be positive"):
-                geometric_weights(8, a, 10.0)
+    def test_only_the_spatial_axes_are_reduced(self, grid_name, normalize):
+        grid = th.HealpixGrid(nside=4) if grid_name == "healpix" else th.as_grid(grid_name, nlat=8, nlon=16)
+        quad = th.QuadratureS2(grid, normalize=normalize).to(self.device)
+        expected_integral = 1.0 if normalize else 4.0 * math.pi
+        for leading in ((), (3,), (2, 3), (2, 1, 3), (0,)):
+            with self.subTest(leading=leading):
+                amplitudes = torch.arange(1, math.prod(leading) + 1, dtype=torch.float32, device=self.device).reshape(leading)
+                field = amplitudes.reshape(*leading, *([1] * len(grid.shape))) * torch.ones(grid.shape, device=self.device)
+                out = quad(field)
+                self.assertEqual(out.shape, torch.Size(leading))
+                self.assertTrue(compare_tensors(f"integral {leading}", out, amplitudes * expected_integral, atol=1e-5, rtol=1e-5))
 
 
-class TestPrecomputeRadii(unittest.TestCase):
-    """Radial grids of the half-line and the exterior domain, built on geometric_weights."""
+@parameterized_class(("device",), _devices)
+class TestQuadratureS2Dtypes(unittest.TestCase):
+    """The weights are kept in float64 and cast at use, as the SHTs keep their Legendre weights."""
 
-    @parameterized.expand(
-        [
-            # nr, vmin, vmax
-            [16, 1e-1, 1e3],
-            [65, 1e-2, 1e2],
-        ]
-    )
-    def test_half_line(self, nr, vmin, vmax, verbose=False):
-        """On the half-line the grid is the geometric rule itself, with x = log(r)."""
+    def test_float64_field_integrates_in_float64(self):
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        area = th.QuadratureS2(grid).to(self.device)(torch.ones(grid.shape, dtype=torch.float64, device=self.device))
+        self.assertEqual(area.dtype, torch.float64)
+        # float32 weights would hold this to about 1e-7
+        self.assertAlmostEqual(area.item() / (4.0 * math.pi), 1.0, places=13)
 
-        x, r, w = precompute_radii(nr, vmin, vmax, domain="half-line")
-        rg, wg = geometric_weights(nr, vmin, vmax)
+    @parameterized.expand([[torch.float32, torch.float32], [torch.float16, torch.float32], [torch.bfloat16, torch.float32]])
+    def test_lower_precision_promotes_as_before(self, dtype, expected):
+        """Exactly the promotion a float32 weight buffer gave: lower-precision fields integrate in float32."""
+        grid = th.as_grid("equiangular", nlat=9, nlon=16)
+        quad = th.QuadratureS2(grid).to(self.device)
+        self.assertEqual(quad(torch.ones(grid.shape, dtype=dtype, device=self.device)).dtype, expected)
 
-        self.assertTrue(compare_tensors("nodes", r, rg, atol=0.0, rtol=0.0, verbose=verbose))
-        self.assertTrue(compare_tensors("weights", w, wg, atol=0.0, rtol=0.0, verbose=verbose))
-        self.assertTrue(compare_tensors("log nodes", x, torch.log(rg), atol=0.0, rtol=0.0, verbose=verbose))
 
-    @parameterized.expand(
-        [
-            # nr, vmin, vmax, inner_radius
-            [16, 1e-1, 1e3, 1.0],
-            [65, 1e-2, 1e2, 2.5],
-        ]
-    )
-    def test_exterior_mapping(self, nr, vmin, vmax, inner_radius, verbose=False):
-        """On the exterior domain the geometric rule is applied to rho = (r - R) / R, so r = R (1 + rho) and dr = R drho."""
+def _float64_layers():
+    grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+    product = th.SphericalProductGrid(grid, th.LegendreGaussRadialGrid(nr=3, r_inner=1.0, r_outer=2.0))
+    return [
+        ["quadrature", lambda: th.QuadratureS2(grid), (2, *grid.shape), torch.float32],
+        ["quadrature_volume", lambda: th.QuadratureVolume(product), (2, *product.shape), torch.float32],
+        ["sht", lambda: th.RealSHT(grid), (2, *grid.shape), torch.float32],
+        ["inverse_sht", lambda: th.InverseRealSHT(grid, lmax=5, mmax=5), (2, 5, 5), torch.complex64],
+        ["vector_sht", lambda: th.RealVectorSHT(grid), (2, 2, *grid.shape), torch.float32],
+        ["inverse_vector_sht", lambda: th.InverseRealVectorSHT(grid, lmax=5, mmax=5), (2, 2, 5, 5), torch.complex64],
+    ]
 
-        x, r, w = precompute_radii(nr, vmin, vmax, domain="exterior", inner_radius=inner_radius)
-        rho, wrho = geometric_weights(nr, vmin, vmax)
 
-        self.assertTrue(compare_tensors("nodes", r, inner_radius * (1.0 + rho), atol=1e-12, rtol=1e-12, verbose=verbose))
-        self.assertTrue(compare_tensors("weights", w, inner_radius * wrho, atol=1e-12, rtol=1e-12, verbose=verbose))
-        self.assertTrue(compare_tensors("log nodes", x, torch.log(rho), atol=1e-12, rtol=1e-12, verbose=verbose))
-        self.assertTrue(torch.all(r > inner_radius))
+class TestFloat64BuffersOnDevicesWithout(unittest.TestCase):
+    """Layers keeping float64 weights downcast them when moved to a device without float64, such as MPS."""
 
-    @parameterized.expand(
-        [
-            # nr, vmin, vmax, inner_radius
-            [8, 1e-2, 1e2, 1.0],
-            [128, 1e-4, 1e3, 3.0],
-        ]
-    )
-    def test_exterior_inverse_integral(self, nr, vmin, vmax, inner_radius, verbose=False):
-        """The exterior rule is exact for f(r) = 1 / (r - R), whose integral is log(vmax / vmin).
+    @parameterized.expand(_float64_layers())
+    def test_downcast_on_the_move(self, name, build, shape, dtype):
+        layer = build()
+        self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} keeps no float64 weights")
+        x = torch.randn(shape, dtype=dtype)
+        expected = layer(x)
 
-        This is the exterior counterpart of the 1/x case for geometric_weights: the
-        integrand is 1/rho in the reduced coordinate, so the result is independent of
-        nr and of R only if both the node mapping and the factor R in the weights are right.
-        """
+        # pretend the CPU is such a device, so the move takes the MPS path here
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            layer = layer.to("cpu")
+        self.assertFalse(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} kept a float64 buffer")
+        # the inputs are float32, which the weights were cast to at use anyway
+        self.assertTrue(torch.equal(layer(x), expected))
 
-        _, r, w = precompute_radii(nr, vmin, vmax, domain="exterior", inner_radius=inner_radius)
+    @parameterized.expand(_float64_layers())
+    def test_other_moves_keep_float64(self, name, build, shape, dtype):
+        layer = build().to("cpu")
+        self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} lost its float64 weights")
 
-        integral = (w / (r - inner_radius)).sum()
-        expected = torch.as_tensor(math.log(vmax / vmin), dtype=integral.dtype)
+    def test_recast_reaches_layers_inside_a_model(self):
+        """A model's move reaches its layers through _apply, not through their to(), which is why the recast hooks _apply."""
+        grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+        model = torch.nn.Sequential(th.SpectralConvS2(grid, grid, 4, 4, bias=True), torch.nn.Sequential(th.QuadratureS2(grid)))
+        self.assertTrue(any(b.dtype == torch.float64 for b in model.buffers()))
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            model = model.to("cpu")
+        self.assertFalse(any(b.dtype == torch.float64 for b in model.buffers()))
 
-        self.assertTrue(compare_tensors("inverse integral", integral, expected, atol=1e-10, rtol=1e-10, verbose=verbose))
+    def test_probe_ignores_a_float64_default(self):
+        """The destination probe is float32 whatever the default dtype, or it would fail on MPS itself."""
+        seen = []
 
-    def test_dtype(self):
-        """Nodes and weights come back in the requested precision, float64 by default."""
+        def fn(t):
+            seen.append(t.dtype)
+            return t
 
-        for domain, inner_radius in (("half-line", None), ("exterior", 1.0)):
-            for dtype in (torch.float64, torch.float32):
-                out = precompute_radii(8, 1e-1, 1e1, domain=domain, inner_radius=inner_radius, dtype=dtype)
-                self.assertTrue(all(t.dtype == dtype for t in out))
+        default = torch.get_default_dtype()
+        torch.set_default_dtype(torch.float64)
+        try:
+            recast_buffers_for(th.QuadratureS2(th.as_grid("legendre-gauss", nlat=8, nlon=16)), fn)
+        finally:
+            torch.set_default_dtype(default)
+        self.assertEqual(seen, [torch.float32])
 
-    def test_invalid_arguments(self):
-        """The exterior domain needs an inner radius, and only the two known domains are accepted."""
+    def test_probe_ignores_the_default_device(self):
+        """The probe starts on CPU whatever the default device, so a dtype-only conversion never touches another device."""
+        seen = []
 
-        with self.assertRaisesRegex(ValueError, "inner_radius must be given"):
-            precompute_radii(8, 1e-1, 1e1, domain="exterior")
-        with self.assertRaisesRegex(ValueError, "unknown domain"):
-            precompute_radii(8, 1e-1, 1e1, domain="shell")
+        def fn(t):
+            seen.append(t.device.type)
+            return t
+
+        layer = th.QuadratureS2(th.as_grid("legendre-gauss", nlat=8, nlon=16))
+        # meta stands in for MPS: any default device but the layer's own
+        with torch.device("meta"):
+            recast_buffers_for(layer, fn)
+        self.assertEqual(seen, ["cpu"])
+
+    @unittest.skipUnless(torch.backends.mps.is_available(), "needs an MPS device")
+    def test_quadrature_moves_to_mps(self):
+        grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+        area = th.QuadratureS2(grid).to("mps")(torch.ones(grid.shape, device="mps"))
+        self.assertAlmostEqual(area.item() / (4.0 * math.pi), 1.0, places=5)
 
 
 class TestQuadratureWeightPrecision(unittest.TestCase):
@@ -362,7 +385,7 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
             ["equiangular"],
             ["legendre-gauss"],
             ["lobatto"],
-            ["equiangular-trapezoidal"],
+            ["trapezoidal"],
         ]
     )
     def test_latitude_weight_dtype(self, grid):

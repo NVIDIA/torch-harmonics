@@ -32,7 +32,7 @@
 # we need this in order to enable distributed
 from .distributed_attention import DistributedNeighborhoodAttentionS2
 from .distributed_convolution import DistributedDiscreteContinuousConvS2, DistributedDiscreteContinuousConvTransposeS2
-from .distributed_quadrature import DistributedQuadratureS2
+from .distributed_quadrature import DistributedQuadratureS2, DistributedQuadratureVolume
 from .distributed_resample import DistributedResampleS2
 from .distributed_sht import DistributedInverseRealSHT, DistributedInverseRealVectorSHT, DistributedRealSHT, DistributedRealVectorSHT
 from .distributed_spectral_convolution import DistributedSpectralConvS2

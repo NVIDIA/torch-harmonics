@@ -1,0 +1,128 @@
+// coding=utf-8
+//
+// SPDX-FileCopyrightText: Copyright (c) 2025 The torch-harmonics Authors. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+// contributors may be used to endorse or promote products derived from
+// this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+#include "attention_cpu_bwd.h"
+#include "attention_cpu_bwd_upsample.h"
+
+using namespace torch::indexing;
+
+namespace attention_kernels
+{
+
+    // NHWC ABI with heads packed along channels -- see s2_attention_fwd_cpu.
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+    // The torch reference is what stays on the column list, in its own operator; this
+    // path and the CUDA kernels both read the arcs.
+    s2_attention_bwd_cpu(torch::Tensor kx, torch::Tensor vx, torch::Tensor qy, torch::Tensor dy,
+                         torch::Tensor ring_weights, torch::Tensor seg, torch::Tensor seg_off, int64_t num_heads,
+                         int64_t nlon_in, int64_t nlat_out, int64_t nlon_out)
+    {
+
+        // Caller-visible shapes (NHWC, heads packed along channels):
+        //   kx, vx          : (B, Hi, Wi, num_heads * C)
+        //   qy, dy          : (B, Ho, Wo, num_heads * C)
+        //   ring_weights    : (Hi,)
+        //   dkx, dvx (out)  : same as kx, vx
+        //   dqy (out)       : same as qy
+        // The loop kernels are head-agnostic, so the wrapper folds heads into the
+        // batch dimension on the way in and unfolds on the way out.
+
+        CHECK_CPU_INPUT_TENSOR(kx);
+        CHECK_CPU_INPUT_TENSOR(vx);
+        CHECK_CPU_INPUT_TENSOR(qy);
+        CHECK_CPU_INPUT_TENSOR(dy);
+        CHECK_CPU_INPUT_TENSOR(ring_weights);
+
+        // devices, shapes, dtypes, direction, index and weight tables, dense layouts
+        check_regular_attention_inputs(kx, vx, qy, ring_weights, seg, seg_off, num_heads, nlon_in, nlat_out, nlon_out);
+        check_output_grad(dy, kx, vx, qy);
+
+        // direction selection: same as fwd. Self (nlon_in == nlon_out) hits both
+        // and routes through the gather kernel (pscale == 1).
+        const bool downsample = (nlon_in % nlon_out == 0); // otherwise upsample: validated above
+
+        // The CPU kernels are fp32-only (storage/compute split is CUDA-only Tier B).
+        // Upcast fp16/bf16 inputs to fp32 and cast the grads back at the end; CPU
+        // reduced-precision compute is emulated, so this loses no performance and
+        // keeps the Python op device-agnostic.
+        const auto inp_dtype = qy.scalar_type();
+        kx = kx.to(torch::kFloat32);
+        vx = vx.to(torch::kFloat32);
+        qy = qy.to(torch::kFloat32);
+        dy = dy.to(torch::kFloat32);
+
+        // already NHWC by contract; only the head fold is needed
+        kx = fold_heads(kx, num_heads).contiguous();
+        vx = fold_heads(vx, num_heads).contiguous();
+        qy = fold_heads(qy, num_heads).contiguous();
+        dy = fold_heads(dy, num_heads).contiguous();
+
+        const int64_t batch_size = kx.size(0);
+        const int64_t nlat_in = kx.size(1);
+        const int64_t nchannels_in = qy.size(3);
+        const int64_t nchannels_out = vx.size(3);
+
+        // grads allocated as physical (B, H, W, C) zeros — matches input layout.
+        auto dkx = torch::zeros({batch_size, nlat_in, nlon_in, nchannels_in}, kx.options());
+        auto dvx = torch::zeros({batch_size, nlat_in, nlon_in, nchannels_out}, vx.options());
+        auto dqy = torch::zeros({batch_size, nlat_out, nlon_out, nchannels_in}, qy.options());
+
+        auto kx_arr = kx.packed_accessor64<float, 4>();
+        auto vx_arr = vx.packed_accessor64<float, 4>();
+        auto qy_arr = qy.packed_accessor64<float, 4>();
+        auto dy_arr = dy.packed_accessor64<float, 4>();
+        auto quad_weights_arr = ring_weights.packed_accessor64<float, 1>();
+        auto seg_arr = seg.packed_accessor64<int32_t, 2>();
+        auto seg_off_arr = seg_off.packed_accessor64<int32_t, 1>();
+        auto dqy_arr = dqy.packed_accessor64<float, 4>();
+        auto dvx_arr = dvx.packed_accessor64<float, 4>();
+        auto dkx_arr = dkx.packed_accessor64<float, 4>();
+
+        if (downsample) {
+            s2_attn_bwd_kernel<float>(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, seg_arr, seg_off_arr, dqy_arr,
+                                      dvx_arr, dkx_arr, nlon_in, nlat_out, nlon_out, batch_size, nchannels_in,
+                                      nchannels_out);
+        } else {
+            s2_attn_bwd_upsample_dispatch(kx_arr, vx_arr, qy_arr, dy_arr, quad_weights_arr, seg_arr, seg_off_arr,
+                                          dqy_arr, dvx_arr, dkx_arr, nlon_in, nlat_in, nlat_out, nlon_out, batch_size,
+                                          nchannels_in, nchannels_out);
+        }
+
+        // back to the packed NHWC form the caller supplied
+        dkx = unfold_heads(dkx, num_heads).contiguous();
+        dvx = unfold_heads(dvx, num_heads).contiguous();
+        dqy = unfold_heads(dqy, num_heads).contiguous();
+
+        return std::make_tuple(dkx.to(inp_dtype), dvx.to(inp_dtype), dqy.to(inp_dtype));
+    }
+
+    TORCH_LIBRARY_IMPL(attention_kernels, CPU, m) { m.impl("backward_regular", &s2_attention_bwd_cpu); }
+
+} // namespace attention_kernels

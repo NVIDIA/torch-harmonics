@@ -30,12 +30,16 @@
 #
 
 import math
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
+from torch_harmonics._field_contract import check_field
+from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.radial import split_radial_pair
 from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.utils import compile_if_supported
 
 from .distributed_quadrature import DistributedQuadratureS2
 from .distributed_sht import DistributedInverseRealSHT, DistributedRealSHT
@@ -86,22 +90,17 @@ class DistributedSpectralConvS2(nn.Module):
 
     Parameters
     ----------
-    in_shape : Tuple[int]
-        Spatial input grid shape ``(nlat, nlon)``.
-    out_shape : Tuple[int]
-        Spatial output grid shape ``(nlat, nlon)``.
+    grid_in : RegularGridS2
+        Descriptor of the input grid. It carries the resolution as well as the
+        quadrature rule, so no separate shape argument is needed.
+    grid_out : RegularGridS2
+        Descriptor of the output grid.
     in_channels : int
         Number of input channels.
     out_channels : int
         Number of output channels.
     num_groups : int, optional
         Number of channel groups for grouped spectral weights, by default 1.
-    grid_in : str, optional
-        Grid used for the forward distributed SHT (``"equiangular"``,
-        ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular-trapezoidal"``), by default
-        ``"equiangular"``.
-    grid_out : str, optional
-        Grid used for the inverse distributed SHT, same options as ``grid_in``.
     bias : bool, optional
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral (replicated across process groups as needed), by default
@@ -116,24 +115,26 @@ class DistributedSpectralConvS2(nn.Module):
     Returns
     -------
     torch.Tensor
-        Tensor of shape ``(..., out_channels, out_shape[0], out_shape[1])``.
+        Local output of shape ``(..., out_channels, nlat_out_local, nlon_out_local)``.
 
     Notes
     -----
     The layer truncates ``lmax``/``mmax`` to the distributed SHT limits, and
-    uses local ``lmax``/``mmax`` slices when constructing spectral weights. The
-    grouped contraction is performed with ``_contract_lwise``.
+    stores only this rank's local ``lmax`` slice of the spectral weights.
     """
 
+    @_rejects_legacy_signature(
+        'in_shape, out_shape, in_channels, out_channels, num_groups=1, grid_in="equiangular", grid_out="equiangular", bias=False',
+        grid_in="in_shape",
+        grid_out="out_shape",
+    )
     def __init__(
         self,
-        in_shape: Tuple[int],
-        out_shape: Tuple[int],
+        grid_in: RegularGridS2,
+        grid_out: RegularGridS2,
         in_channels: int,
         out_channels: int,
         num_groups: Optional[int] = 1,
-        grid_in: Optional[str] = "equiangular",
-        grid_out: Optional[str] = "equiangular",
         bias: Optional[bool] = False,
     ):
         super().__init__()
@@ -144,6 +145,12 @@ class DistributedSpectralConvS2(nn.Module):
             raise ValueError(f"out_channels ({out_channels}) must be divisible by num_groups ({num_groups})")
 
         # copy inputs
+        # on a pair of product grids every shell is convolved alike, see SpectralConvS2.forward
+        grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
+        self.grid_in = require_regular_grid(grid_in, "grid_in")
+        self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.nlat_in, self.nlon_in = self.grid_in.shape
+        self.nlat_out, self.nlon_out = self.grid_out.shape
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups
@@ -155,8 +162,8 @@ class DistributedSpectralConvS2(nn.Module):
         self.comm_rank_azimuth = azimuth_group_rank()
 
         # compute truncation
-        lmax_in, mmax_in = truncate_sht(in_shape[0], in_shape[1], grid=grid_in)
-        lmax_out, mmax_out = truncate_sht(out_shape[0], out_shape[1], grid=grid_out)
+        lmax_in, mmax_in = truncate_sht(self.grid_in)
+        lmax_out, mmax_out = truncate_sht(self.grid_out)
 
         # compute lmax and lmin
         lmax = min(lmax_in, lmax_out)
@@ -165,8 +172,8 @@ class DistributedSpectralConvS2(nn.Module):
         self.mmax = self.lmax
 
         # set up sht layers
-        self.sht = DistributedRealSHT(*in_shape, grid=grid_in, lmax=self.lmax, mmax=self.mmax)
-        self.isht = DistributedInverseRealSHT(*out_shape, grid=grid_out, lmax=self.lmax, mmax=self.mmax)
+        self.sht = DistributedRealSHT(self.grid_in, lmax=self.lmax, mmax=self.mmax)
+        self.isht = DistributedInverseRealSHT(self.grid_out, lmax=self.lmax, mmax=self.mmax)
 
         # extract sht parameters
         self.l_shapes = self.isht.l_shapes
@@ -185,14 +192,21 @@ class DistributedSpectralConvS2(nn.Module):
 
         if bias:
             self.spectral_bias = nn.Parameter(torch.zeros(1, self.in_channels, self.lmax_local, self.mmax_local, dtype=torch.complex64))
-            self.quadrature = DistributedQuadratureS2(img_shape=in_shape, grid=grid_in, normalize=False)
+            self.quadrature = DistributedQuadratureS2(self.grid_in, normalize=False)
 
-    @torch.compile
+    def extra_repr(self):
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, num_groups={self.num_groups}"
+
+    @compile_if_supported
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
-        resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
+        # any axes between the channels and (l, m), i.e. the radial one, ride along
+        resc = torch.einsum("bgi...xy,giox->bgo...xy", ac, bc)
         return resc
 
     def forward(self, x):
+        check_field(x, self.sht.shard, leading=(None, self.in_channels), radial=self.radial)
+
         dtype = x.dtype
 
         # compute integral in case if bias is used
@@ -210,22 +224,26 @@ class DistributedSpectralConvS2(nn.Module):
             # type and the kernel signature then fails with KeyError: 'complex64'
             x = self.sht(x)
 
-        # store the shapes
-        B, C, H, W = x.shape
+        # store the shapes; the radial axis of a product field rides along, see SpectralConvS2.forward
+        B, C = x.shape[:2]
+        rest = x.shape[2:]
 
         # deal with bias. `integral` is computed from the real-valued input above, so it is a
         # real tensor and broadcasts over the re/im axis: applying the bias on the real view is
         # exact and keeps this pointwise op off the complex dtype (see above).
         if hasattr(self, "spectral_bias"):
-            bias = integral.reshape(B, C, 1, 1, 1) * torch.view_as_real(self.spectral_bias)
+            bias = torch.view_as_real(self.spectral_bias)
+            if self.radial is not None:
+                bias = bias.unsqueeze(2)
+            bias = integral.reshape(*integral.shape, 1, 1, 1) * bias
             x = torch.view_as_complex(torch.view_as_real(x) + bias)
 
         # perform contraction
-        x = x.reshape(B, self.num_groups, C // self.num_groups, H, W)
+        x = x.reshape(B, self.num_groups, C // self.num_groups, *rest)
         xp = self._contract_lwise(x, self.weight)
         # merge the group axes on the real view: the einsum output can be non-contiguous, in
         # which case this reshape copies, and that copy must not be over a complex buffer
-        x = torch.view_as_complex(torch.view_as_real(xp).reshape(B, self.out_channels, H, W, 2).contiguous())
+        x = torch.view_as_complex(torch.view_as_real(xp).reshape(B, self.out_channels, *rest, 2).contiguous())
 
         with torch.amp.autocast(device_type=x.device.type, enabled=False):
             x = self.isht(x)

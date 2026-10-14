@@ -92,8 +92,8 @@ class TestDistributedQuadrature(unittest.TestCase):
 
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
-        quad_local = th.QuadratureS2(img_shape=(H, W), grid=grid, normalize=normalize).to(self.device)
-        quad_dist = thd.DistributedQuadratureS2(img_shape=(H, W), grid=grid, normalize=normalize).to(self.device)
+        quad_local = th.QuadratureS2(th.as_grid(grid, nlat=H, nlon=W), normalize=normalize).to(self.device)
+        quad_dist = thd.DistributedQuadratureS2(th.as_grid(grid, nlat=H, nlon=W), normalize=normalize).to(self.device)
 
         # create tensors
         inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
@@ -116,6 +116,9 @@ class TestDistributedQuadrature(unittest.TestCase):
 
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
+
+        # only the spatial axes are reduced: a single field integrates to a scalar
+        self.assertEqual(quad_dist(inp_local[0, 0].detach()).shape, torch.Size([]))
 
         # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
         # rank so a failure on any rank fails the test consistently (see reduce_success).

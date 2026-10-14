@@ -39,5 +39,13 @@ RUN pip install parameterized
 ENV TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
 ENV TORCH_HARMONICS_ENABLE_OPENMP=1
 ENV TORCH_CUDA_ARCH_LIST="8.0 8.6 8.7 9.0a 10.0a+PTX"
+
+# earth2grid, for the HEALPix tests against an independent implementation. Not on PyPI:
+# installed from the commit pinned in .github/requirements/test-tools.txt, the same pin CI
+# uses. Only that file is copied first, so source changes do not rebuild it. --no-deps
+# keeps pip from replacing the image's torch to satisfy earth2grid's torch pin.
+COPY .github/requirements/test-tools.txt /tmp/test-tools.txt
+RUN pip install --no-deps --no-build-isolation -r /tmp/test-tools.txt
+
 COPY . /workspace/torch_harmonics
 RUN cd /workspace/torch_harmonics && NVCC_THREADS=4 MAX_JOBS=8 pip install --no-build-isolation .

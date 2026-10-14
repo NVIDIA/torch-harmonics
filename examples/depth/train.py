@@ -43,6 +43,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import v2
 
+from torch_harmonics import as_grid
 from torch_harmonics.examples import (
     Stanford2D3DSDownloader,
     StanfordDepthDataset,
@@ -421,6 +422,8 @@ def main(
 
     # print dataset info
     img_size = dataset.input_shape[1:]
+    # the Stanford 2D-3D-S panoramas are equirectangular: an equiangular grid with both poles
+    data_grid = as_grid("equiangular", nlat=img_size[0], nlon=img_size[1])
 
     if logging:
         print(f"Train dataset initialized with {len(train_dataset)} samples of resolution {img_size}")
@@ -428,7 +431,7 @@ def main(
         print(f"Validation dataset initialized with {len(valid_dataset)} samples of resolution {img_size}")
 
     # get baseline model registry
-    baseline_models = get_baseline_models(img_size=img_size, in_chans=in_channels, out_chans=out_channels)
+    baseline_models = get_baseline_models(data_grid, in_chans=in_channels, out_chans=out_channels)
 
     # specify which models to train here
     if models is None:
@@ -454,17 +457,17 @@ def main(
         raise ValueError("No models selected")
 
     # initialize Sobolev W11 loss function
-    loss_w11 = W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
-    loss_l1 = L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device)
+    loss_w11 = W11LossS2(data_grid).to(device=device)
+    loss_l1 = L1LossS2(data_grid).to(device=device)
     loss_fn = lambda prd, tar, mask: 0.1 * loss_w11(prd, tar, mask) + loss_l1(prd, tar, mask)
 
     # metrics
     metrics = {}
     metrics_fns = {
-        "L2 error": L2LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "L1 error": L1LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "W11 error": W11LossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
-        "Normals error": NormalLossS2(nlat=img_size[0], nlon=img_size[1], grid="equiangular").to(device=device),
+        "L2 error": L2LossS2(data_grid).to(device=device),
+        "L1 error": L1LossS2(data_grid).to(device=device),
+        "W11 error": W11LossS2(data_grid).to(device=device),
+        "Normals error": NormalLossS2(data_grid).to(device=device),
     }
 
     # iterate over models and train each model

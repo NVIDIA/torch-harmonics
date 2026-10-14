@@ -36,11 +36,13 @@ import torch.nn as nn
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, ResampleS2
 from torch_harmonics.examples.models._layers import DropPath
+from torch_harmonics.grid import require_regular_grid
 
 
 # heuristic for finding theta_cutoff
 def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
-    theta_cutoff_factor = {"piecewise linear": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
+    # "morlet" is the deprecated unnormalized alias of "harmonic", with the same support
+    theta_cutoff_factor = {"piecewise linear": 0.5, "harmonic": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
 
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
@@ -54,24 +56,20 @@ class DownsamplingBlock(nn.Module):
 
     Parameters
     ----------
-    in_shape : tuple
-        Input shape (nlat, nlon)
-    out_shape : tuple
-        Output shape (nlat, nlon)
+    grid_in : RegularGridS2
+        Grid of the block's input.
+    grid_out : RegularGridS2
+        Grid of the block's output.
     in_channels : int
         Number of input channels
     out_channels : int
         Number of output channels
-    grid_in : str, optional
-        Input grid type, by default "equiangular"
-    grid_out : str, optional
-        Output grid type, by default "equiangular"
     nrep : int, optional
         Number of convolution repetitions, by default 1
     kernel_shape : tuple, optional
         Kernel shape for convolution, by default (3, 3)
     basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     activation : nn.Module, optional
         Activation function, by default nn.ReLU
     transform_skip : bool, optional
@@ -88,15 +86,13 @@ class DownsamplingBlock(nn.Module):
 
     def __init__(
         self,
-        in_shape,
-        out_shape,
+        grid_in,
+        grid_out,
         in_channels,
         out_channels,
-        grid_in="equiangular",
-        grid_out="equiangular",
         nrep=1,
         kernel_shape=(3, 3),
-        basis_type="morlet",
+        basis_type="harmonic",
         activation=nn.ReLU,
         transform_skip=False,
         drop_conv_rate=0.0,
@@ -106,29 +102,27 @@ class DownsamplingBlock(nn.Module):
     ):
         super().__init__()
 
-        self.in_shape = in_shape
-        self.out_shape = out_shape
-        self.in_channels = in_channels
-        self.out_channels = out_channels
         self.grid_in = grid_in
         self.grid_out = grid_out
+        self.in_shape = grid_in.shape
+        self.out_shape = grid_out.shape
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
         self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
 
         self.fwd = []
         for i in range(nrep):
-            # conv
-            theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
+            # conv, on the grid the input lives on
+            theta_cutoff = _compute_cutoff_radius(grid_in.nlat, kernel_shape, basis_type)
             self.fwd.append(
                 DiscreteContinuousConvS2(
+                    grid_in=grid_in,
+                    grid_out=grid_in,
                     in_channels=(in_channels if i == 0 else out_channels),
                     out_channels=out_channels,
-                    in_shape=in_shape,
-                    out_shape=in_shape,
                     kernel_shape=kernel_shape,
                     basis_type=basis_type,
-                    grid_in=grid_out,
-                    grid_out=grid_out,
                     bias=False,
                     theta_cutoff=theta_cutoff,
                 )
@@ -146,27 +140,21 @@ class DownsamplingBlock(nn.Module):
             )
 
         if downsampling_mode == "conv":
-            theta_cutoff = _compute_cutoff_radius(out_shape[0], kernel_shape, basis_type)
+            theta_cutoff = _compute_cutoff_radius(grid_out.nlat, kernel_shape, basis_type)
             self.downsample = DiscreteContinuousConvS2(
+                grid_in,
+                grid_out,
                 out_channels,
                 out_channels,
-                in_shape=in_shape,
-                out_shape=out_shape,
                 kernel_shape=kernel_shape,
                 basis_type=basis_type,
-                grid_in=grid_in,
-                grid_out=grid_out,
                 bias=False,
                 theta_cutoff=theta_cutoff,
             )
         else:
             self.downsample = ResampleS2(
-                nlat_in=in_shape[0],
-                nlon_in=in_shape[1],
-                nlat_out=out_shape[0],
-                nlon_out=out_shape[1],
-                grid_in=grid_in,
-                grid_out=grid_out,
+                grid_in,
+                grid_out,
                 mode=downsampling_mode,
             )
 
@@ -220,24 +208,20 @@ class UpsamplingBlock(nn.Module):
 
     Parameters
     ----------
-    in_shape : tuple
-        Input shape (nlat, nlon)
-    out_shape : tuple
-        Output shape (nlat, nlon)
+    grid_in : RegularGridS2
+        Grid of the block's input.
+    grid_out : RegularGridS2
+        Grid of the block's output.
     in_channels : int
         Number of input channels
     out_channels : int
         Number of output channels
-    grid_in : str, optional
-        Input grid type, by default "equiangular"
-    grid_out : str, optional
-        Output grid type, by default "equiangular"
     nrep : int, optional
         Number of convolution repetitions, by default 1
     kernel_shape : tuple, optional
         Kernel shape for convolution, by default (3, 3)
     basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     activation : nn.Module, optional
         Activation function, by default nn.ReLU
     transform_skip : bool, optional
@@ -254,15 +238,13 @@ class UpsamplingBlock(nn.Module):
 
     def __init__(
         self,
-        in_shape,
-        out_shape,
+        grid_in,
+        grid_out,
         in_channels,
         out_channels,
-        grid_in="equiangular",
-        grid_out="equiangular",
         nrep=1,
         kernel_shape=(3, 3),
-        basis_type="morlet",
+        basis_type="harmonic",
         activation=nn.ReLU,
         transform_skip=False,
         drop_conv_rate=0.0,
@@ -272,40 +254,39 @@ class UpsamplingBlock(nn.Module):
     ):
         super().__init__()
 
-        self.in_shape = in_shape
-        self.out_shape = out_shape
+        self.grid_in = grid_in
+        self.grid_out = grid_out
+        self.in_shape = grid_in.shape
+        self.out_shape = grid_out.shape
         self.in_channels = in_channels
         self.out_channels = out_channels
 
         self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
 
-        if in_shape != out_shape:
+        if grid_in.shape != grid_out.shape:
             if upsampling_mode == "conv":
-                theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
+                theta_cutoff = _compute_cutoff_radius(grid_in.nlat, kernel_shape, basis_type)
                 self.upsample = nn.Sequential(
                     DiscreteContinuousConvTransposeS2(
-                        in_channels=out_channels,
-                        out_channels=out_channels,
-                        in_shape=in_shape,
-                        out_shape=out_shape,
-                        kernel_shape=kernel_shape,
-                        basis_type=basis_type,
                         grid_in=grid_in,
                         grid_out=grid_out,
+                        in_channels=out_channels,
+                        out_channels=out_channels,
+                        kernel_shape=kernel_shape,
+                        basis_type=basis_type,
                         bias=False,
                         theta_cutoff=theta_cutoff,
                     ),
                     nn.BatchNorm2d(out_channels, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
                     activation(),
+                    # after the upsampling the data lives on grid_out
                     DiscreteContinuousConvS2(
+                        grid_in=grid_out,
+                        grid_out=grid_out,
                         in_channels=out_channels,
                         out_channels=out_channels,
-                        in_shape=out_shape,
-                        out_shape=out_shape,
                         kernel_shape=kernel_shape,
                         basis_type=basis_type,
-                        grid_in=grid_in,
-                        grid_out=grid_out,
                         bias=False,
                         theta_cutoff=theta_cutoff,
                     ),
@@ -313,25 +294,19 @@ class UpsamplingBlock(nn.Module):
 
             else:
                 self.upsample = ResampleS2(
-                    nlat_in=in_shape[0],
-                    nlon_in=in_shape[1],
-                    nlat_out=out_shape[0],
-                    nlon_out=out_shape[1],
-                    grid_in=grid_in,
-                    grid_out=grid_out,
+                    grid_in,
+                    grid_out,
                     mode=upsampling_mode,
                 )
         else:
-            theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
+            theta_cutoff = _compute_cutoff_radius(grid_in.nlat, kernel_shape, basis_type)
             self.upsample = DiscreteContinuousConvS2(
-                in_channels=out_channels,
-                out_channels=out_channels,
-                in_shape=in_shape,
-                out_shape=in_shape,
-                kernel_shape=kernel_shape,
-                basis_type=basis_type,
                 grid_in=grid_in,
                 grid_out=grid_out,
+                in_channels=out_channels,
+                out_channels=out_channels,
+                kernel_shape=kernel_shape,
+                basis_type=basis_type,
                 bias=False,
                 theta_cutoff=theta_cutoff,
             )
@@ -339,17 +314,15 @@ class UpsamplingBlock(nn.Module):
         self.fwd = []
         for i in range(nrep):
             # conv
-            theta_cutoff = _compute_cutoff_radius(in_shape[0], kernel_shape, basis_type)
+            theta_cutoff = _compute_cutoff_radius(grid_in.nlat, kernel_shape, basis_type)
             self.fwd.append(
                 DiscreteContinuousConvS2(
-                    in_channels=in_channels,
-                    out_channels=(out_channels if i == nrep - 1 else in_channels),
-                    in_shape=in_shape,
-                    out_shape=in_shape,
-                    kernel_shape=kernel_shape,
-                    basis_type=basis_type,
                     grid_in=grid_in,
                     grid_out=grid_in,
+                    in_channels=in_channels,
+                    out_channels=(out_channels if i == nrep - 1 else in_channels),
+                    kernel_shape=kernel_shape,
+                    basis_type=basis_type,
                     bias=False,
                     theta_cutoff=theta_cutoff,
                 )
@@ -407,12 +380,13 @@ class SphericalUNet(nn.Module):
 
     Parameters
     ----------
-    img_size : tuple, optional
-        Shape of the input channels, by default (128, 256)
-    grid : str, optional
-        Grid type for input/output, by default "equiangular"
-    grid_internal : str, optional
-        Grid type for internal processing, by default "legendre-gauss"
+    grid : RegularGridS2
+        Grid the input and output fields live on, e.g.
+        ``as_grid("equiangular", nlat=128, nlon=256)``.
+    grids_internal : Sequence[RegularGridS2]
+        One grid per stage, in order from the finest to the coarsest; stage ``i``
+        downsamples onto ``grids_internal[i]`` and the matching upsampling stage
+        returns from it. Must have the same length as ``embed_dims``.
     in_chans : int, optional
         Number of input channels, by default 3
     out_chans : int, optional
@@ -421,14 +395,12 @@ class SphericalUNet(nn.Module):
         Dimension of the embeddings for each block, has to be the same length as depths
     depths : List[int], optional
         Number of repetitions of conv blocks and ffn mixers per layer. Has to be the same length as embed_dims
-    scale_factor : int, optional
-        Scale factor to use, by default 2
     activation_function : str, optional
         Activation function to use, by default "relu"
     kernel_shape : tuple, optional
         Kernel shape for convolutions, by default (3, 3)
     filter_basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     transform_skip : bool, optional
         Whether to transform skip connection, by default False
     drop_conv_rate : float, optional
@@ -444,9 +416,10 @@ class SphericalUNet(nn.Module):
 
     Examples
     --------
+    >>> from torch_harmonics import as_grid
     >>> model = SphericalUNet(
-    ...         img_size=(128, 256),
-    ...         scale_factor=2,
+    ...         grid=as_grid("equiangular", nlat=128, nlon=256),
+    ...         grids_internal=[as_grid("legendre-gauss", nlat=128 // 2**i, nlon=256 // 2**i) for i in range(1, 5)],
     ...         in_chans=2,
     ...         out_chans=2,
     ...         embed_dims=[16, 32, 64, 128],
@@ -457,17 +430,15 @@ class SphericalUNet(nn.Module):
 
     def __init__(
         self,
-        img_size=(128, 256),
-        grid="equiangular",
-        grid_internal="legendre-gauss",
+        grid,
+        grids_internal,
         in_chans=3,
         out_chans=3,
         embed_dims=[64, 128, 256, 512],
         depths=[2, 2, 2, 2],
-        scale_factor=2,
         activation_function="relu",
         kernel_shape=(3, 3),
-        filter_basis_type="morlet",
+        filter_basis_type="harmonic",
         transform_skip=False,
         drop_conv_rate=0.1,
         drop_path_rate=0.1,
@@ -477,9 +448,9 @@ class SphericalUNet(nn.Module):
     ):
         super().__init__()
 
-        self.img_size = img_size
-        self.grid = grid
-        self.grid_internal = grid_internal
+        self.grid = require_regular_grid(grid, "grid")
+        self.grids_internal = [require_regular_grid(g, f"grids_internal[{i}]") for i, g in enumerate(grids_internal)]
+        self.img_size = self.grid.shape
         self.in_chans = in_chans
         self.out_chans = out_chans
         self.embed_dims = embed_dims
@@ -489,6 +460,8 @@ class SphericalUNet(nn.Module):
 
         if len(self.depths) != self.num_blocks:
             raise ValueError(f"depths must have length num_blocks={self.num_blocks}, got {len(self.depths)}")
+        if len(self.grids_internal) != self.num_blocks:
+            raise ValueError(f"grids_internal must have one grid per stage, num_blocks={self.num_blocks}, got {len(self.grids_internal)}")
 
         # activation function
         if activation_function == "relu":
@@ -505,21 +478,17 @@ class SphericalUNet(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_blocks)]
 
         self.dblocks = nn.ModuleList([])
-        out_shape = img_size
-        grid_in = grid
-        grid_out = grid_internal
+        grid_in = self.grid
         in_channels = in_chans
         for i in range(self.num_blocks):
-            out_shape_new = (out_shape[0] // scale_factor, out_shape[1] // scale_factor)
+            grid_out = self.grids_internal[i]
             out_channels = self.embed_dims[i]
             self.dblocks.append(
                 DownsamplingBlock(
-                    in_shape=out_shape,
-                    out_shape=out_shape_new,
-                    in_channels=in_channels,
-                    out_channels=out_channels,
                     grid_in=grid_in,
                     grid_out=grid_out,
+                    in_channels=in_channels,
+                    out_channels=out_channels,
                     nrep=self.depths[i],
                     kernel_shape=kernel_shape,
                     basis_type=filter_basis_type,
@@ -531,14 +500,11 @@ class SphericalUNet(nn.Module):
                     downsampling_mode=downsampling_mode,
                 )
             )
-            out_shape = out_shape_new
-            grid_in = grid_internal
+            grid_in = grid_out
             in_channels = out_channels
 
         self.ublocks = nn.ModuleList([])
         for i in range(self.num_blocks - 1, -1, -1):
-            in_shape = self.dblocks[i].out_shape
-            out_shape = self.dblocks[i].in_shape
             in_channels = self.dblocks[i].out_channels
             if i != self.num_blocks - 1:
                 in_channels = 2 * in_channels
@@ -549,12 +515,10 @@ class SphericalUNet(nn.Module):
             grid_out = self.dblocks[i].grid_in
             self.ublocks.append(
                 UpsamplingBlock(
-                    in_shape=in_shape,
-                    out_shape=out_shape,
-                    in_channels=in_channels,
-                    out_channels=out_channels,
                     grid_in=grid_in,
                     grid_out=grid_out,
+                    in_channels=in_channels,
+                    out_channels=out_channels,
                     kernel_shape=kernel_shape,
                     basis_type=filter_basis_type,
                     activation=self.activation_function,
