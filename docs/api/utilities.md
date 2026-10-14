@@ -98,14 +98,6 @@ takes to build the descriptor the layers are given:
 The longitudinal direction always uses equispaced nodes (see
 `precompute_longitudes`).
 
-`geometric_weights` is not a latitudinal rule: it returns nodes that are
-equispaced in $\log x$ on a positive interval, together with the corresponding
-trapezoidal weights for $\int f \, \mathrm{d}x$. It is intended for radial
-directions spanning several decades. `precompute_radii` builds on it to return
-the radial grid of either the half-line $(0, \infty)$ or the exterior domain
-$[R, \infty)$, where the geometric spacing is applied to the reduced coordinate
-$(r - R)/R$.
-
 Because only `"equiangular"` has uniform spacing in $\theta$, quantities derived
 from "one latitudinal grid spacing" must come from the grid's actual node
 distribution rather than from $\pi / (N_\theta - 1)$; see
@@ -128,7 +120,6 @@ applies the widening that the sparsity patterns are actually built with.
 
    precompute_longitudes
    precompute_latitudes
-   precompute_radii
    compute_latitude_spacing
    compute_theta_cutoff
    effective_theta_cutoff
@@ -137,7 +128,6 @@ applies the widening that the sparsity patterns are actually built with.
    lobatto_weights
    clenshaw_curtiss_weights
    trapezoidal_weights
-   geometric_weights
 ```
 
 ## Neighborhoods

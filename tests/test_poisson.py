@@ -36,7 +36,21 @@ import torch
 from parameterized import parameterized
 from testutils import compare_tensors
 
+from torch_harmonics import GeometricRadialGrid, LegendreGaussRadialGrid, SphericalProductGrid, as_grid
 from torch_harmonics.examples.poisson_equation import RadialPoissonSolver
+
+
+def make_solver(nr, rmin=1e-2, rmax=1e3, grid="legendre-gauss", inner_radius=None):
+    """A solver on a 16 x 32 angular grid times a geometric radial grid.
+
+    On the half-line rmin and rmax bound r itself. On the exterior domain they bound the
+    reduced coordinate (r - R) / R, so the nodes run from R (1 + rmin) to R (1 + rmax).
+    """
+    if inner_radius is None:
+        radial = GeometricRadialGrid(nr, rmin, rmax)
+    else:
+        radial = GeometricRadialGrid(nr, inner_radius * (1 + rmin), inner_radius * (1 + rmax), r_inner=inner_radius)
+    return RadialPoissonSolver(SphericalProductGrid(as_grid(grid, nlat=16, nlon=32), radial))
 
 
 def gaussian_shell(r, r0=1.0, width=0.2):
@@ -68,7 +82,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
     @parameterized.expand([[256, 4.8e-3], [512, 1.2e-3], [1024, 3.0e-4]])
     def test_manufactured_solution(self, nr, tol, verbose=False):
         """The solve reproduces a known smooth solution to within the quadrature error."""
-        solver = RadialPoissonSolver(nlat=16, nlon=32, nr=nr, rmin=1e-2, rmax=1e3, grid="legendre-gauss").double()
+        solver = make_solver(nr).double()
         expected, source = gaussian_shell(solver.r)
         actual = solve_radial(solver, source)
 
@@ -86,7 +100,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
         """
         errors = []
         for nr in (256, 512, 1024, 2048):
-            solver = RadialPoissonSolver(nlat=16, nlon=32, nr=nr, rmin=1e-2, rmax=1e3, grid="legendre-gauss").double()
+            solver = make_solver(nr).double()
             expected, source = gaussian_shell(solver.r)
             actual = solve_radial(solver, source)
             window = (solver.r > 0.2) & (solver.r < 5.0)
@@ -105,7 +119,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
         the tolerance is loose -- this checks the closed form, not the convergence rate.
         """
         radius = 1.0
-        solver = RadialPoissonSolver(nlat=16, nlon=32, nr=512, rmin=1e-2, rmax=1e3, grid=grid).double()
+        solver = make_solver(512, grid=grid).double()
         actual = solver.solve(solver.ball_source(radius=radius).unsqueeze(0)).squeeze(0)[:, 0, 0]
 
         r = solver.r
@@ -116,7 +130,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
     def test_exterior_domain_vanishes_on_the_inner_sphere(self, verbose=False):
         """The image term imposes u = 0 at the inner radius."""
         inner_radius = 1.0
-        solver = RadialPoissonSolver(nlat=16, nlon=32, nr=512, rmin=1e-3, rmax=1e3, grid="legendre-gauss", domain="exterior", inner_radius=inner_radius).double()
+        solver = make_solver(512, rmin=1e-3, rmax=1e3, inner_radius=inner_radius).double()
 
         _, source = gaussian_shell(solver.r, r0=2.0, width=0.5)
         field = source.reshape(-1, 1, 1).expand(solver.nr, 16, 32).contiguous()
@@ -126,6 +140,18 @@ class TestRadialPoissonSolver(unittest.TestCase):
         # small rather than exactly zero; measure it against the scale of the solution
         self.assertLess((u[:, 0].abs().max() / u.abs().max()).item(), 1e-2)
 
+    def test_rejects_bounded_domains(self):
+        """The Green's operator assumes u -> 0 at infinity, so a radial grid with a finite outer bound is refused."""
+        angular = as_grid("legendre-gauss", nlat=16, nlon=32)
+        for radial in (LegendreGaussRadialGrid(16, 0.0, 1.0), LegendreGaussRadialGrid(16, 1.0, 2.0), GeometricRadialGrid(16, 1e-2, 1.0, r_outer=1.0)):
+            with self.assertRaisesRegex(NotImplementedError, radial.domain):
+                RadialPoissonSolver(SphericalProductGrid(angular, radial))
+
+    def test_requires_a_product_grid(self):
+        """The angular grid alone has no radial nodes to solve on."""
+        with self.assertRaisesRegex(TypeError, "SphericalProductGrid"):
+            RadialPoissonSolver(as_grid("legendre-gauss", nlat=16, nlon=32))
+
     @parameterized.expand([[torch.float32], [torch.float64]])
     def test_solve_honours_the_input_precision(self, dtype, verbose=False):
         """The Green's kernel is assembled in float64 whatever the caller uses.
@@ -133,7 +159,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
         RadialPoissonDataset hands back float32 samples, and einsum rejects a float32 operand
         against a float64 kernel outright, so the solve has to meet the input where it is.
         """
-        solver = RadialPoissonSolver(nlat=16, nlon=32, nr=64, grid="legendre-gauss")
+        solver = make_solver(64, rmin=1e-1)
         out = solver.solve(torch.randn(1, 64, 16, 32, dtype=dtype))
         self.assertEqual(out.dtype, dtype)
         self.assertTrue(torch.isfinite(out).all())
@@ -141,7 +167,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
     @parameterized.expand([[torch.float32], [torch.float64]])
     def test_converted_solver_honours_the_input_precision(self, dtype, verbose=False):
         """Converting the module must not pin the solve to one dtype either."""
-        solver = RadialPoissonSolver(nlat=16, nlon=32, nr=64, grid="legendre-gauss").float()
+        solver = make_solver(64, rmin=1e-1).float()
         out = solver.solve(torch.randn(1, 64, 16, 32, dtype=dtype))
         self.assertEqual(out.dtype, dtype)
         self.assertTrue(torch.isfinite(out).all())

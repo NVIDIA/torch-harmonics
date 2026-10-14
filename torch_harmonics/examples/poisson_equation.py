@@ -31,13 +31,14 @@
 
 
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
 
 import torch_harmonics as th
-from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, precompute_radii
+from torch_harmonics.grid import require_regular_grid
+from torch_harmonics.radial import RadialGrid, SphericalProductGrid
+from torch_harmonics.utils import recast_buffers_for
 
 
 class GreensOperator(nn.Module):
@@ -47,16 +48,11 @@ class GreensOperator(nn.Module):
 
     Parameters
     -----------
-    r : torch.Tensor
-        Radial nodes
-    w : torch.Tensor
-        Quadrature weights for the integral over dr
+    radial : RadialGrid
+        Radial grid on the half-line (0, inf) or on the exterior domain [R, inf), whose
+        nodes and volume weights r^2 dr discretize the radial integral
     lmax : int
         Number of spherical harmonic degrees
-    domain : str, optional
-        Either "half-line" or "exterior", by default "half-line"
-    inner_radius : float, optional
-        Inner radius for exterior domain, by default None
 
     References
     ----------
@@ -65,20 +61,17 @@ class GreensOperator(nn.Module):
        https://farside.ph.utexas.edu/teaching/jk1/Electromagnetism/node31.html
     """
 
-    def __init__(self, r: torch.Tensor, w: torch.Tensor, lmax: int, domain: str = "half-line", inner_radius: Optional[float] = None):
+    def __init__(self, radial: RadialGrid, lmax: int):
         super().__init__()
 
-        if domain not in ("half-line", "exterior"):
-            raise NotImplementedError(f"Domain {domain} not implemented")
-        if domain == "exterior" and inner_radius is None:
-            raise ValueError("Inner radius must be given for domain='exterior'")
+        if radial.domain not in ("half-line", "exterior"):
+            raise NotImplementedError(f"the Green's operator is implemented on the half-line and the exterior domain, got a {radial.domain} ({radial!r})")
 
         self.lmax = lmax
-        self.domain = domain
-        self.inner_radius = inner_radius
+        self.domain = radial.domain
+        self.inner_radius = radial.r_inner if self.domain == "exterior" else None
 
-        logr = torch.log(r)
-        green = self._assemble(logr, r**2 * w)
+        green = self._assemble(torch.log(radial.r), radial.volume_weights)
 
         self.register_buffer("green", green)
 
@@ -99,6 +92,11 @@ class GreensOperator(nn.Module):
             core = core - torch.exp((2 * l + 1) * math.log(self.inner_radius) - (l + 1) * (loglo + loghi))
 
         return -core * quad.reshape(1, 1, -1) / (2 * l + 1)
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, fspec: torch.Tensor) -> torch.Tensor:
         """Solve lap u = f in spectral space."""
@@ -125,61 +123,50 @@ class RadialPoissonSolver(nn.Module):
 
     Parameters
     -----------
-    nlat : int
-        Number of latitude points
-    nlon : int
-        Number of longitude points
-    nr : int
-        Number of radial points
-    rmin, rmax : float, optional
-        Bounds of the radial grid, by default (1e-1, 1e3). On the half-line these are
-        bounds on r itself. On the exterior domain they are bounds on the reduced
-        coordinate (r - inner_radius) / inner_radius, so that r ranges over
-        inner_radius * (1 + rmin) to inner_radius * (1 + rmax).
+    grid : SphericalProductGrid
+        Grid the fields live on, of shape (nr, nlat, nlon): a regular angular grid times a
+        radial grid on the half-line (0, inf) or on the exterior domain [R, inf), e.g.
+        ``SphericalProductGrid(as_grid("legendre-gauss", nlat=64, nlon=128), GeometricRadialGrid(256, 1e-1, 1e3))``.
+        On the exterior domain R is the radial grid's ``r_inner``.
     lmax : int, optional
         Maximum l mode, by default None
     mmax : int, optional
         Maximum m mode, by default None
-    grid : str, optional
-        Grid type ("legendre-gauss", "lobatto", "equiangular"), by default "legendre-gauss"
-    domain : str, optional
-        Either "half-line" or "exterior", by default "half-line"
-    inner_radius : float, optional
-        Inner radius for exterior domain, by default None
     """
 
-    def __init__(self, nlat, nlon, nr, rmin=1e-1, rmax=1e3, lmax=None, mmax=None, grid="legendre-gauss", domain="half-line", inner_radius=None):
+    # new in v1.0.0rc1, so there is no signature before the grid descriptors to reject
+    _legacy_signature_exempt = "new in v1.0.0rc1"
+
+    def __init__(self, grid, lmax=None, mmax=None):
         super().__init__()
 
-        # assertions
-        if domain == "half-line" and inner_radius is not None:
-            raise ValueError("inner_radius is only meaningful on the exterior domain")
+        if not isinstance(grid, SphericalProductGrid):
+            raise TypeError(f"grid must be a SphericalProductGrid of an angular and a radial grid, got {grid!r}")
+        require_regular_grid(grid.angular, "grid.angular")
 
         # grid parameters
-        self.nlat = nlat
-        self.nlon = nlon
-        self.nr = nr
         self.grid = grid
-        self.domain = domain
-        self.rmin = rmin
-        self.rmax = rmax
-        self.inner_radius = inner_radius
+        self.nr, self.nlat, self.nlon = grid.shape
+        self.domain = grid.radial.domain
+        self.inner_radius = grid.radial.r_inner if self.domain == "exterior" else None
 
-        # SHT
-        self.sht = th.RealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
-        self.isht = th.InverseRealSHT(nlat, nlon, lmax=lmax, mmax=mmax, grid=grid, csphase=False)
+        # SHT, acting on every radial node alike
+        self.sht = th.RealSHT(grid, lmax=lmax, mmax=mmax, csphase=False)
+        self.isht = th.InverseRealSHT(grid, lmax=lmax, mmax=mmax, csphase=False)
 
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
 
-        # compute gridpoints
-        colats, _ = precompute_latitudes(self.nlat, grid=self.grid)
-        lats = 0.5 * torch.pi - colats
-        lons = precompute_longitudes(self.nlon)
-        x, r, w = precompute_radii(nr, self.rmin, self.rmax, domain=domain, inner_radius=inner_radius)
-
         # exact radial Green's operator
-        self.operator = GreensOperator(r, w, self.lmax, domain=domain, inner_radius=inner_radius)
+        self.operator = GreensOperator(grid.radial, self.lmax)
+
+        # compute gridpoints. x is the coordinate the radial nodes are uniform in for a
+        # geometric grid, log(r) on the half-line and log(r - R) on the exterior domain
+        lats = grid.angular.lats
+        lons = grid.angular.lons()
+        r = grid.radial.r
+        w = grid.radial.quad_weights
+        x = torch.log(r - grid.radial.r_inner)
 
         # register all
         self.register_buffer("lats", lats)
@@ -245,10 +232,12 @@ class RadialPoissonSolver(nn.Module):
         radial = torch.zeros_like(t)
         radial[inside] = torch.exp(1.0 - 1.0 / (1.0 - t[inside] ** 2))
 
-        # one angular field per blob
-        angular = self.spec2grid(self._random_angular_spec((nblobs,), l_src=l_src))
+        # one angular field per blob, combined with its radial profile before the inverse
+        # transform, which is linear, so the transform runs once over the radial nodes
+        aspec = self._random_angular_spec((nblobs,), l_src=l_src)
+        fspec = torch.einsum("blm,bk->klm", aspec, radial.to(aspec.dtype))
 
-        return torch.einsum("bxy,bk->kxy", angular, radial)
+        return self.spec2grid(fspec)
 
     def plot_sphere(self, data, ax, title="", cmap=None, vmin=None, vmax=None, projection="mollweide", colorbar=True):
         """One radial level of a grid field, on the sphere. Supports the "mollweide" projection."""

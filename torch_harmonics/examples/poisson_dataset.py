@@ -32,7 +32,7 @@
 
 import torch
 
-from torch_harmonics.quadrature import QuadratureS2
+from torch_harmonics.integration import QuadratureS2
 
 from .poisson_equation import RadialPoissonSolver
 
@@ -42,16 +42,9 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
 
     Parameters
     ----------
-    dims : tuple, optional
-        Number of latitude, longitude and radial points, by default (64, 128, 256)
-    grid : str, optional
-        Angular grid type, by default "legendre-gauss"
-    domain : str, optional
-        Either "half-line" or "exterior", by default "half-line"
-    inner_radius : float, optional
-        Inner radius for exterior domain, by default None
-    rmin, rmax : float, optional
-        Radial bounds, by default (1e-1, 1e3)
+    grid : SphericalProductGrid
+        Grid the samples are generated on, of shape (nr, nlat, nlon), on the half-line or the
+        exterior domain; see RadialPoissonSolver
     source : str, optional
         Source type, by default "bump". Either "bump" or "ball"
     num_examples : int, optional
@@ -69,14 +62,12 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
         Solution, shape (nr, nlat, nlon)
     """
 
+    # new in v1.0.0rc1, so there is no signature before the grid descriptors to reject
+    _legacy_signature_exempt = "new in v1.0.0rc1"
+
     def __init__(
         self,
-        dims=(64, 128, 256),
-        grid="legendre-gauss",
-        domain="half-line",
-        inner_radius=None,
-        rmin=1e-1,
-        rmax=1e3,
+        grid,
         source="bump",
         num_examples=32,
         device=torch.device("cpu"),
@@ -89,21 +80,14 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
         self.device = device
         self.normalize = normalize
         self.source = source
-        self.nlat, self.nlon, self.nr = dims
 
-        self.solver = RadialPoissonSolver(
-            self.nlat,
-            self.nlon,
-            self.nr,
-            rmin=rmin,
-            rmax=rmax,
-            grid=grid,
-            domain=domain,
-            inner_radius=inner_radius,
-        ).to(self.device)
+        self.solver = RadialPoissonSolver(grid).to(self.device)
 
-        # mean over the sphere for the scale
-        self.sphere_mean = QuadratureS2((self.nlat, self.nlon), grid=grid, normalize=True).to(self.device)
+        self.grid = self.solver.grid
+        self.nr, self.nlat, self.nlon = self.grid.shape
+
+        # mean over the sphere, on every radial node alike, for the scale
+        self.sphere_mean = QuadratureS2(self.grid, normalize=True).to(self.device)
 
     def __len__(self):
         return self.num_examples
