@@ -45,6 +45,7 @@ from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid, require_regular_grid
 from torch_harmonics.neighborhood import _row_chunks, precompute_neighborhood_csr_s2
 from torch_harmonics.quadrature import THETA_CUTOFF_EPS, effective_theta_cutoff, latitude_support_band
+from torch_harmonics.radial import fold_radius, split_radial_pair, unfold_radius
 from torch_harmonics.truncation import truncate_support
 
 from ._disco_utils import _get_psi, _get_psi_ragged
@@ -637,6 +638,9 @@ def _setup_grids(layer: "DiscreteContinuousConv", grid_in: GridS2, grid_out: Gri
     pick only the layout each side shows the caller, which is what lets a HEALPix field be
     convolved onto a lat/lon one and come back shaped like a lat/lon field.
     """
+    # on a pair of product grids every shell is convolved alike, with the radius folded
+    # into the batch, see fold_radius
+    grid_in, grid_out, layer.radial = split_radial_pair(grid_in, grid_out)
     layer.grid_in = require_grid(grid_in, "grid_in")
     layer.grid_out = require_grid(grid_out, "grid_out")
 
@@ -921,7 +925,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self._select_backend()
 
     def extra_repr(self):
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     def _psi_coo(self):
         precompute = _precompute_convolution_tensor_s2_ragged if self.ragged else _precompute_convolution_tensor_s2
@@ -951,16 +956,19 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         x : torch.Tensor
             Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)`` on a
             :class:`~torch_harmonics.grid.RegularGridS2`, ``(batch, in_channels, npoints_in)``
-            on any other grid.
+            on any other grid; with a radial axis ``nr`` after the channels on a product grid.
 
         Returns
         -------
         torch.Tensor
             Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)`` on a
             :class:`~torch_harmonics.grid.RegularGridS2`, ``(batch, out_channels, npoints_out)``
-            on any other grid.
+            on any other grid; with a radial axis ``nr`` after the channels on a product grid.
         """
-        check_field(x, self.grid_in, leading=(None, self.in_channels))
+        check_field(x, self.grid_in, leading=(None, self.in_channels), radial=self.radial)
+
+        if self.radial is not None:
+            x = fold_radius(x)
 
         x = _to_flat(self, x)
 
@@ -970,7 +978,12 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], *([1] * (out.dim() - 2)))
 
-        return _from_flat(self, out)
+        out = _from_flat(self, out)
+
+        if self.radial is not None:
+            out = unfold_radius(out, self.radial.nr)
+
+        return out
 
 
 class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
@@ -1068,7 +1081,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         self._select_backend()
 
     def extra_repr(self):
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
 
     def _psi_coo(self):
         # switch in_shape and out_shape since we want the transpose convolution
@@ -1099,16 +1113,19 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         x : torch.Tensor
             Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)`` on a
             :class:`~torch_harmonics.grid.RegularGridS2`, ``(batch, in_channels, npoints_in)``
-            on any other grid.
+            on any other grid; with a radial axis ``nr`` after the channels on a product grid.
 
         Returns
         -------
         torch.Tensor
             Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)`` on a
             :class:`~torch_harmonics.grid.RegularGridS2`, ``(batch, out_channels, npoints_out)``
-            on any other grid.
+            on any other grid; with a radial axis ``nr`` after the channels on a product grid.
         """
-        check_field(x, self.grid_in, leading=(None, self.in_channels))
+        check_field(x, self.grid_in, leading=(None, self.in_channels), radial=self.radial)
+
+        if self.radial is not None:
+            x = fold_radius(x)
 
         x = _to_flat(self, x)
 
@@ -1127,4 +1144,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if self.bias is not None:
             out = out + self.bias.reshape(1, self.bias.shape[0], *([1] * (out.dim() - 2)))
 
-        return _from_flat(self, out)
+        out = _from_flat(self, out)
+
+        if self.radial is not None:
+            out = unfold_radius(out, self.radial.nr)
+
+        return out

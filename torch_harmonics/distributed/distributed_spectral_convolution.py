@@ -37,6 +37,7 @@ import torch.nn as nn
 
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.radial import split_radial_pair
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.utils import compile_if_supported
 
@@ -144,6 +145,8 @@ class DistributedSpectralConvS2(nn.Module):
             raise ValueError(f"out_channels ({out_channels}) must be divisible by num_groups ({num_groups})")
 
         # copy inputs
+        # on a pair of product grids every shell is convolved alike, see SpectralConvS2.forward
+        grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
         self.grid_in = require_regular_grid(grid_in, "grid_in")
         self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
@@ -192,15 +195,17 @@ class DistributedSpectralConvS2(nn.Module):
             self.quadrature = DistributedQuadratureS2(self.grid_in, normalize=False)
 
     def extra_repr(self):
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, num_groups={self.num_groups}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, num_groups={self.num_groups}"
 
     @compile_if_supported
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:
-        resc = torch.einsum("bgixy,giox->bgoxy", ac, bc)
+        # any axes between the channels and (l, m), i.e. the radial one, ride along
+        resc = torch.einsum("bgi...xy,giox->bgo...xy", ac, bc)
         return resc
 
     def forward(self, x):
-        check_field(x, self.sht.shard, leading=(None, self.in_channels))
+        check_field(x, self.sht.shard, leading=(None, self.in_channels), radial=self.radial)
 
         dtype = x.dtype
 
@@ -219,22 +224,26 @@ class DistributedSpectralConvS2(nn.Module):
             # type and the kernel signature then fails with KeyError: 'complex64'
             x = self.sht(x)
 
-        # store the shapes
-        B, C, H, W = x.shape
+        # store the shapes; the radial axis of a product field rides along, see SpectralConvS2.forward
+        B, C = x.shape[:2]
+        rest = x.shape[2:]
 
         # deal with bias. `integral` is computed from the real-valued input above, so it is a
         # real tensor and broadcasts over the re/im axis: applying the bias on the real view is
         # exact and keeps this pointwise op off the complex dtype (see above).
         if hasattr(self, "spectral_bias"):
-            bias = integral.reshape(B, C, 1, 1, 1) * torch.view_as_real(self.spectral_bias)
+            bias = torch.view_as_real(self.spectral_bias)
+            if self.radial is not None:
+                bias = bias.unsqueeze(2)
+            bias = integral.reshape(*integral.shape, 1, 1, 1) * bias
             x = torch.view_as_complex(torch.view_as_real(x) + bias)
 
         # perform contraction
-        x = x.reshape(B, self.num_groups, C // self.num_groups, H, W)
+        x = x.reshape(B, self.num_groups, C // self.num_groups, *rest)
         xp = self._contract_lwise(x, self.weight)
         # merge the group axes on the real view: the einsum output can be non-contiguous, in
         # which case this reshape copies, and that copy must not be over a complex buffer
-        x = torch.view_as_complex(torch.view_as_real(xp).reshape(B, self.out_channels, H, W, 2).contiguous())
+        x = torch.view_as_complex(torch.view_as_real(xp).reshape(B, self.out_channels, *rest, 2).contiguous())
 
         with torch.amp.autocast(device_type=x.device.type, enabled=False):
             x = self.isht(x)

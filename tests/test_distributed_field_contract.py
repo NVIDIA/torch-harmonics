@@ -37,7 +37,7 @@ from parameterized import parameterized
 from testutils import accepted_leadings, rejected_shapes, setup_class_from_context, setup_module, shape_name, teardown_module
 
 import torch_harmonics.distributed as thd
-from torch_harmonics import as_grid
+from torch_harmonics import LegendreGaussRadialGrid, SphericalProductGrid, as_grid
 
 # shared state
 _DIST_CTX = {}
@@ -66,56 +66,82 @@ _GRID_OUT = as_grid("equiangular", nlat=35, nlon=66)
 # the trailing shape of this rank's input, the output shape this rank should get back as
 # a function of the input's leading axes, the input dtype, and the global trailing shape a
 # caller might wrongly hand in. A free leading extent is filled with at least `free`.
-def _sht():
-    layer = thd.DistributedRealSHT(_GRID)
-    return layer, layer.shard.shape, lambda lead: (*lead, layer.lmax_local, layer.mmax_local), torch.float32, _GRID.shape
+#
+# Each factory takes a radial grid, None for the angular grid alone; with one, the layer
+# runs on the product grid, and every field gains the radial axis in front of the angular
+# (or spectral) ones.
+_RADIAL = LegendreGaussRadialGrid(nr=3, r_inner=1.0, r_outer=2.0)
 
 
-def _isht():
-    layer = thd.DistributedInverseRealSHT(_GRID)
-    return layer, (layer.lmax_local, layer.mmax_local), lambda lead: (*lead, *layer.shard.shape), torch.complex64, (layer.lmax, layer.mmax)
+def _on(grid, radial):
+    return grid if radial is None else SphericalProductGrid(grid, radial)
 
 
-def _vsht():
-    layer = thd.DistributedRealVectorSHT(_GRID)
+def _r(radial):
+    return () if radial is None else (radial.nr,)
+
+
+def _sht(radial):
+    layer = thd.DistributedRealSHT(_on(_GRID, radial))
+    return layer, (*_r(radial), *layer.shard.shape), lambda lead: (*lead, *_r(radial), layer.lmax_local, layer.mmax_local), torch.float32, (*_r(radial), *_GRID.shape)
+
+
+def _isht(radial):
+    layer = thd.DistributedInverseRealSHT(_on(_GRID, radial))
+    return layer, (*_r(radial), layer.lmax_local, layer.mmax_local), lambda lead: (*lead, *_r(radial), *layer.shard.shape), torch.complex64, (*_r(radial), layer.lmax, layer.mmax)
+
+
+def _vsht(radial):
+    layer = thd.DistributedRealVectorSHT(_on(_GRID, radial))
     # the vector transform keeps only the per-rank list of degree counts
     lmax_local = layer.l_shapes[thd.polar_group_rank()]
-    return layer, layer.shard.shape, lambda lead: (*lead, lmax_local, layer.mmax_local), torch.float32, _GRID.shape
+    return layer, (*_r(radial), *layer.shard.shape), lambda lead: (*lead, *_r(radial), lmax_local, layer.mmax_local), torch.float32, (*_r(radial), *_GRID.shape)
 
 
-def _ivsht():
-    layer = thd.DistributedInverseRealVectorSHT(_GRID)
-    return layer, (layer.lmax_local, layer.mmax_local), lambda lead: (*lead, *layer.shard.shape), torch.complex64, (layer.lmax, layer.mmax)
+def _ivsht(radial):
+    layer = thd.DistributedInverseRealVectorSHT(_on(_GRID, radial))
+    return layer, (*_r(radial), layer.lmax_local, layer.mmax_local), lambda lead: (*lead, *_r(radial), *layer.shard.shape), torch.complex64, (*_r(radial), layer.lmax, layer.mmax)
 
 
-def _quadrature():
-    layer = thd.DistributedQuadratureS2(_GRID)
-    return layer, layer.shard.shape, lambda lead: lead, torch.float32, _GRID.shape
+def _quadrature(radial):
+    layer = thd.DistributedQuadratureS2(_on(_GRID, radial))
+    return layer, (*_r(radial), *layer.shard.shape), lambda lead: (*lead, *_r(radial)), torch.float32, (*_r(radial), *_GRID.shape)
 
 
-def _resample():
-    layer = thd.DistributedResampleS2(_GRID, _GRID_OUT)
-    return layer, layer.shard_in.shape, lambda lead: (*lead, *layer.shard_out.shape), torch.float32, _GRID.shape
+def _quadrature_volume(radial):
+    layer = thd.DistributedQuadratureVolume(_on(_GRID, radial))
+    return layer, (*_r(radial), *layer.shard.shape), lambda lead: lead, torch.float32, (*_r(radial), *_GRID.shape)
 
 
-def _spectral_conv():
-    layer = thd.DistributedSpectralConvS2(_GRID, _GRID, in_channels=_C, out_channels=_C_OUT)
-    return layer, layer.sht.shard.shape, lambda lead: (lead[0], _C_OUT, *layer.isht.shard.shape), torch.float32, _GRID.shape
+def _resample(radial):
+    layer = thd.DistributedResampleS2(_on(_GRID, radial), _on(_GRID_OUT, radial))
+    return layer, (*_r(radial), *layer.shard_in.shape), lambda lead: (*lead, *_r(radial), *layer.shard_out.shape), torch.float32, (*_r(radial), *_GRID.shape)
 
 
-def _disco():
-    layer = thd.DistributedDiscreteContinuousConvS2(_GRID, _GRID, in_channels=_C, out_channels=_C_OUT, kernel_shape=3)
-    return layer, layer.shard_in.shape, lambda lead: (lead[0], _C_OUT, *layer.shard_out.shape), torch.float32, _GRID.shape
+def _spectral_conv(radial):
+    layer = thd.DistributedSpectralConvS2(_on(_GRID, radial), _on(_GRID, radial), in_channels=_C, out_channels=_C_OUT)
+    return (
+        layer,
+        (*_r(radial), *layer.sht.shard.shape),
+        lambda lead: (lead[0], _C_OUT, *_r(radial), *layer.isht.shard.shape),
+        torch.float32,
+        (*_r(radial), *_GRID.shape),
+    )
 
 
-def _disco_transpose():
-    layer = thd.DistributedDiscreteContinuousConvTransposeS2(_GRID, _GRID, in_channels=_C, out_channels=_C_OUT, kernel_shape=3)
-    return layer, layer.shard_in.shape, lambda lead: (lead[0], _C_OUT, *layer.shard_out.shape), torch.float32, _GRID.shape
+def _disco(radial):
+    layer = thd.DistributedDiscreteContinuousConvS2(_on(_GRID, radial), _on(_GRID, radial), in_channels=_C, out_channels=_C_OUT, kernel_shape=3)
+    return layer, (*_r(radial), *layer.shard_in.shape), lambda lead: (lead[0], _C_OUT, *_r(radial), *layer.shard_out.shape), torch.float32, (*_r(radial), *_GRID.shape)
 
 
-def _attention():
-    layer = thd.DistributedNeighborhoodAttentionS2(_GRID, _GRID, in_channels=_C, out_channels=_C_OUT)
-    return layer, layer.shard_in.shape, lambda lead: (lead[0], _C_OUT, *layer.shard_out.shape), torch.float32, _GRID.shape
+def _disco_transpose(radial):
+    layer = thd.DistributedDiscreteContinuousConvTransposeS2(_on(_GRID, radial), _on(_GRID, radial), in_channels=_C, out_channels=_C_OUT, kernel_shape=3)
+    return layer, (*_r(radial), *layer.shard_in.shape), lambda lead: (lead[0], _C_OUT, *_r(radial), *layer.shard_out.shape), torch.float32, (*_r(radial), *_GRID.shape)
+
+
+def _attention(radial):
+    layer = thd.DistributedNeighborhoodAttentionS2(_on(_GRID, radial), _on(_GRID, radial), in_channels=_C, out_channels=_C_OUT)
+    return layer, (*_r(radial), *layer.shard_in.shape), lambda lead: (lead[0], _C_OUT, *_r(radial), *layer.shard_out.shape), torch.float32, (*_r(radial), *_GRID.shape)
 
 
 def _resample_free():
@@ -141,6 +167,12 @@ _CASES = [
     ["neighborhood_attention", _attention, (None, _C), 1, True],
 ]
 
+# name, factory, radial grid, leading contract, free extent, needs CUDA: every case on the
+# angular grid alone and again on its product with a radial grid
+_CASES = [[name, factory, None, *rest] for name, factory, *rest in _CASES] + [[f"{name}_product", factory, _RADIAL, *rest] for name, factory, *rest in _CASES]
+# and the layers that exist only on a product grid
+_CASES += [["quadrature_volume", _quadrature_volume, _RADIAL, (...,), 1, False]]
+
 
 def _free(free):
     return free() if callable(free) else free
@@ -154,11 +186,11 @@ class TestDistributedFieldContract(unittest.TestCase):
         setup_class_from_context(cls, _DIST_CTX)
 
     @parameterized.expand(_CASES)
-    def test_shapes(self, name, factory, spec, free, needs_cuda):
+    def test_shapes(self, name, factory, radial, spec, free, needs_cuda):
         """Every shape the contract admits runs, from the minimum up, and gives this rank its share of the output."""
         if needs_cuda and self.device.type != "cuda":
             self.skipTest(f"{name} runs on CUDA only")
-        layer, trailing, out_shape, dtype, _ = factory()
+        layer, trailing, out_shape, dtype, _ = factory(radial)
         layer = layer.to(self.device)
         # every rank feeds the same leading shapes, so the collectives stay matched
         for leading in accepted_leadings(spec, _free(free)):
@@ -167,14 +199,14 @@ class TestDistributedFieldContract(unittest.TestCase):
                 self.assertEqual(tuple(out.shape), out_shape(leading))
 
     @parameterized.expand(_CASES)
-    def test_rejects_every_violation(self, name, factory, spec, free, needs_cuda):
+    def test_rejects_every_violation(self, name, factory, radial, spec, free, needs_cuda):
         """
         Each violation is rejected before any collective runs.
 
         Every rank breaks the contract against its own block, so every rank raises and
         none is left waiting in a collective for the others.
         """
-        layer, trailing, _, dtype, global_trailing = factory()
+        layer, trailing, _, dtype, global_trailing = factory(radial)
         layer = layer.to(self.device)
         leading = accepted_leadings(spec, _free(free))[-1]
         bad = rejected_shapes(spec, leading, trailing)
@@ -185,6 +217,16 @@ class TestDistributedFieldContract(unittest.TestCase):
             with self.subTest(how=how, shape=shape):
                 with self.assertRaisesRegex(RuntimeError, r"Expected .* of shape"):
                     layer(torch.randn(shape, device=self.device, dtype=dtype))
+
+    @parameterized.expand([["angular", None], ["product", _RADIAL]])
+    def test_attention_rejects_a_shared_key_value_batch(self, _, radial):
+        """Like the serial layers, a key/value batch of one is refused, on every rank and before any collective."""
+        layer, trailing, _, dtype, _ = _attention(radial)
+        layer = layer.to(self.device)
+        query = torch.randn(2, _C, *trailing, device=self.device, dtype=dtype)
+        shared = torch.randn(1, _C, *trailing, device=self.device, dtype=dtype)
+        with self.assertRaisesRegex(RuntimeError, "query's batch size 2, got 1"):
+            layer(query, shared, shared)
 
     def test_resample_rejects_too_few_channels(self):
         """The resampling transposes do not pad, so fewer channels than ranks is an error, not a hang."""

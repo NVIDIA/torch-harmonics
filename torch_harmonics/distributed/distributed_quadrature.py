@@ -35,6 +35,8 @@ import torch
 
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.radial import SphericalProductGrid, split_radial
+from torch_harmonics.utils import recast_buffers_for
 
 from .primitives import reduce_from_azimuth_region, reduce_from_polar_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -75,7 +77,8 @@ class DistributedQuadratureS2(torch.nn.Module):
     def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
         super().__init__()
 
-        # copy input
+        # copy input; on a product grid each shell is integrated alike, the radial axis kept
+        grid, self.radial = split_radial(grid)
         self.grid = require_regular_grid(grid)
         self.normalize = normalize
 
@@ -106,7 +109,9 @@ class DistributedQuadratureS2(torch.nn.Module):
 
         # lay the weights out like the local block they multiply, with no leading singleton
         # axes, which broadcasting would add to inputs with fewer leading dims
-        quad_weight = quad_weight.reshape(*self.shard.shape).to(torch.float32).contiguous()
+        # kept in float64 and cast at use, as the SHTs keep their Legendre weights: a float64
+        # field integrates in float64, and every other dtype exactly as with float32 weights
+        quad_weight = quad_weight.reshape(*self.shard.shape).to(torch.float64).contiguous()
 
         # how many trailing axes `forward` reduces over, derived from the same shape as
         # the buffer so the two cannot disagree
@@ -116,16 +121,74 @@ class DistributedQuadratureS2(torch.nn.Module):
         self.register_buffer("quad_weight", quad_weight, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\nnormalize={self.normalize}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nnormalize={self.normalize}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        check_field(x, self.shard)
+        check_field(x, self.shard, radial=self.radial)
 
+        return self._integrate(x)
+
+    def _integrate(self, x: torch.Tensor) -> torch.Tensor:
+        """The sum over the local angular block and across the ranks, unchecked; shared with :class:`DistributedQuadratureVolume`."""
         # integrate over the spatial axes only, however many the grid has
-        quad = torch.sum(x * self.quad_weight, dim=self.spatial_dims)
+        quad = torch.sum(x * self.quad_weight.to(torch.promote_types(x.dtype, torch.float32)), dim=self.spatial_dims)
         if self.comm_size_polar > 1:
             quad = reduce_from_polar_region(quad)
         if self.comm_size_azimuth > 1:
             quad = reduce_from_azimuth_region(quad)
 
         return quad
+
+
+class DistributedQuadratureVolume(DistributedQuadratureS2):
+    r"""
+    Distributed volume integral on a :class:`~torch_harmonics.radial.SphericalProductGrid`.
+
+    The radial axis is not sharded, so every rank sums its shells first, locally, and only
+    then integrates its angular block and joins the reductions across the ranks. Those
+    then carry one value per leading index rather than one per shell: nr times less than
+    summing the radius after them.
+
+    .. seealso::
+        :class:`torch_harmonics.QuadratureVolume`
+            Serial counterpart with full mathematical description and parameter
+            documentation.
+
+    Parameters
+    ----------
+    grid : SphericalProductGrid
+        The product of the *global* angular grid and the radial grid.
+    normalize : bool, optional
+        If ``True``, returns the volume average instead of the integral, by default ``False``.
+    """
+
+    #: no pre-v1.0.0 signature to reject; see test_every_grid_taking_constructor_rejects_the_old_signature
+    _legacy_signature_exempt = "new in v1.0.0rc1"
+
+    def __init__(self, grid: SphericalProductGrid, normalize: Optional[bool] = False):
+        if not isinstance(grid, SphericalProductGrid):
+            raise TypeError(f"grid must be a SphericalProductGrid; for the integral over the sphere alone use DistributedQuadratureS2. Got {grid!r}.")
+
+        super().__init__(grid, normalize=normalize)
+
+        radial_weight = self.radial.volume_weights
+        if normalize:
+            radial_weight = radial_weight / radial_weight.sum()
+        # kept in float64: r^2 w spans the cube of the radial range, which leaves float32's
+        # range on astrophysical radii in SI units, and in the other direction on tiny ones.
+        # Cast at use, so a float64 field integrates in float64
+        self.register_buffer("radial_weight", radial_weight.contiguous(), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        check_field(x, self.shard, radial=self.radial)
+
+        # the radial sum first and locally, so the collectives below reduce (...) rather than (..., nr)
+        weight = self.radial_weight.to(torch.promote_types(x.dtype, torch.float32))
+        x = torch.sum(x * weight.reshape(-1, *([1] * len(self.shard.shape))), dim=-1 - len(self.shard.shape))
+        return self._integrate(x)

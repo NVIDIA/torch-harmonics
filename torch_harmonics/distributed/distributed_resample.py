@@ -37,6 +37,7 @@ import torch.nn as nn
 
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.radial import split_radial_pair
 from torch_harmonics.resample import _slerp_shortest_arc
 from torch_harmonics.utils import check
 
@@ -89,6 +90,8 @@ class DistributedResampleS2(nn.Module):
         else:
             raise NotImplementedError(f"unknown interpolation mode {mode}")
 
+        # on a pair of product grids every shell is resampled alike, see forward
+        grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
         self.grid_in = require_regular_grid(grid_in, "grid_in")
         self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
@@ -164,7 +167,8 @@ class DistributedResampleS2(nn.Module):
         self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nmode={self.mode}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nmode={self.mode}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
         """Upscale the longitude dimension using interpolation."""
@@ -235,10 +239,15 @@ class DistributedResampleS2(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # a channel axis is required: the transposes split it across the ranks
-        check_field(x, self.shard_in, leading=(..., None))
+        check_field(x, self.shard_in, leading=(..., None), radial=self.radial)
 
         if self.skip_resampling:
             return x
+
+        # a product field (..., C, nr, *spatial): the radial axis joins the channel one,
+        # which the transposes split and which is free to merge with it
+        if self.radial is not None:
+            x = x.flatten(-4, -3)
 
         # the transposes do not pad, so every rank needs a share of the channels; checked
         # only here, since an identity resampling never splits them
@@ -275,5 +284,8 @@ class DistributedResampleS2(nn.Module):
         # transpose back
         if self.comm_size_azimuth > 1:
             x = distributed_transpose_azimuth(x, (-1, -3), channels_shapes)
+
+        if self.radial is not None:
+            x = x.unflatten(-3, (-1, self.radial.nr))
 
         return x

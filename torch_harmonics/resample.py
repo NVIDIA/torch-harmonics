@@ -38,6 +38,7 @@ import torch.nn as nn
 
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.radial import split_radial_pair
 
 
 def _slerp_shortest_arc(start: torch.Tensor, end: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -197,6 +198,8 @@ class ResampleS2(nn.Module):
         else:
             raise NotImplementedError(f"unknown interpolation mode {mode}")
 
+        # on a pair of product grids every shell is resampled alike
+        grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
         self.grid_in = require_regular_grid(grid_in, "grid_in")
         self.grid_out = require_regular_grid(grid_out, "grid_out")
         self.nlat_in, self.nlon_in = self.grid_in.shape
@@ -257,7 +260,8 @@ class ResampleS2(nn.Module):
         self.skip_resampling = self.grid_in == self.grid_out
 
     def extra_repr(self):
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r},\nmode={self.mode}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nmode={self.mode}"
 
     def _upscale_longitudes(self, x: torch.Tensor):
         # do the interpolation in precision of x
@@ -317,7 +321,7 @@ class ResampleS2(nn.Module):
         torch.Tensor
             Resampled signal of shape ``(..., nlat_out, nlon_out)``.
         """
-        check_field(x, self.grid_in)
+        check_field(x, self.grid_in, radial=self.radial)
 
         if self.skip_resampling:
             return x

@@ -32,6 +32,7 @@
 
 import torch
 
+from torch_harmonics.radial import fold_radius
 from torch_harmonics.utils import check
 
 
@@ -48,7 +49,28 @@ def _reciprocal_or_zero(alpha_sum: torch.Tensor) -> torch.Tensor:
 
 
 # Input validation. The shape contract is checked by torch_harmonics._field_contract,
-# like every other layer's; only the dtype check is particular to attention.
+# like every other layer's; only the batch and dtype checks are particular to attention.
+
+
+def _check_batches_match(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> None:
+    """
+    Check that key and value have the query's batch size.
+
+    Attention does not broadcast the batch. Some paths happened to -- SDPA and the torch
+    reference broadcast a key/value batch of one against the query's -- but the compiled
+    kernels index one batch for all three, and on a product grid the radius is folded into
+    the batch, after which a batch of one no longer broadcasts at all. A caller sharing
+    keys and values across the batch expands them first, which makes the copy visible.
+    """
+    for name, tensor in (("key", key), ("value", value)):
+
+        def message(name=name, tensor=tensor):
+            return (
+                f"Expected {name} with the query's batch size {query.shape[0]}, got {tensor.shape[0]}. Attention does not "
+                f"broadcast the batch; expand {name} first, e.g. {name}.expand({query.shape[0]}, *{name}.shape[1:])"
+            )
+
+        check(tensor.shape[0] == query.shape[0], message)
 
 
 def _check_dtypes_match(tensors) -> None:
@@ -74,6 +96,25 @@ def _check_dtypes_match(tensors) -> None:
     ref = tensors[0].dtype
     for tensor in tensors[1:]:
         check(tensor.dtype == ref, "all attention inputs must share a single dtype")
+
+
+def _fold_radius_qkv(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
+    """
+    :func:`~torch_harmonics.radial.fold_radius` of the three attention inputs, keeping their aliasing.
+
+    Self-attention binds all three names to one tensor, and the layers test that by
+    identity to convert it once; folding each name separately would break the identity and
+    copy the same tensor three times.
+    """
+    fquery = fold_radius(query)
+    fkey = fquery if key is query else fold_radius(key)
+    if value is query:
+        fvalue = fquery
+    elif value is key:
+        fvalue = fkey
+    else:
+        fvalue = fold_radius(value)
+    return fquery, fkey, fvalue
 
 
 def _setup_context_attention_regular_optimized_backward(ctx, inputs, output):

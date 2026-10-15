@@ -38,7 +38,9 @@ from torch_harmonics._field_contract import check_coeffs, check_field
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
+from torch_harmonics.radial import split_radial
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.utils import recast_buffers_for
 
 from .primitives import (
     compute_split_shapes,
@@ -122,6 +124,9 @@ class DistributedRealSHT(nn.Module):
 
         super().__init__()
 
+        # on a SphericalProductGrid every shell is transformed alike; the radial axis is one
+        # more leading axis, flattened into the one the transposes split
+        grid, self.radial = split_radial(grid)
         self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         _warn_if_not_spectrally_accurate(self.grid)
@@ -192,7 +197,13 @@ class DistributedRealSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -205,7 +216,7 @@ class DistributedRealSHT(nn.Module):
     def forward(self, x: torch.Tensor):
 
         # a channel axis is required: the transposes split it across the ranks
-        check_field(x, self.shard, leading=(..., None))
+        check_field(x, self.shard, leading=(..., None), radial=self.radial)
 
         # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
         # must be at least as large as the azimuth group. Flatten all leading dims into that
@@ -324,6 +335,9 @@ class DistributedInverseRealSHT(nn.Module):
 
         super().__init__()
 
+        # on a SphericalProductGrid every shell is transformed alike; the radial axis is one
+        # more leading axis, flattened into the one the transposes split
+        grid, self.radial = split_radial(grid)
         self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         _warn_if_not_spectrally_accurate(self.grid)
@@ -377,7 +391,13 @@ class DistributedInverseRealSHT(nn.Module):
         self.register_buffer("pct", pct, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -389,7 +409,7 @@ class DistributedInverseRealSHT(nn.Module):
     @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
-        check_coeffs(x, self.lmax_local, self.mmax_local, leading=(..., None))
+        check_coeffs(x, self.lmax_local, self.mmax_local, leading=(..., None), radial=self.radial)
 
         # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
         # must be at least as large as the azimuth group. Flatten all leading dims into that
@@ -487,6 +507,9 @@ class DistributedRealVectorSHT(nn.Module):
 
         super().__init__()
 
+        # on a SphericalProductGrid every shell is transformed alike; the radial axis is one
+        # more leading axis, flattened into the one the transposes split
+        grid, self.radial = split_radial(grid)
         self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         _warn_if_not_spectrally_accurate(self.grid)
@@ -557,7 +580,13 @@ class DistributedRealVectorSHT(nn.Module):
         self.register_buffer("weights", weights, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -569,7 +598,12 @@ class DistributedRealVectorSHT(nn.Module):
     @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
-        check_field(x, self.shard, leading=(..., None, 2))
+        check_field(x, self.shard, leading=(..., None, 2), radial=self.radial)
+
+        # a product field is (..., 2, nr, *spatial); the radial axis moves in front of the
+        # component one, where it is just another leading axis, and back at the end
+        if self.radial is not None:
+            x = x.movedim(-3, -4)
 
         # the transposes below redistribute the leading (channel/batch) axis across the
         # process grid, so it must be at least as large as the larger comm group. Flatten
@@ -623,6 +657,9 @@ class DistributedRealVectorSHT(nn.Module):
         # drop padding and restore the original leading dims
         x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=3)
 
+        if self.radial is not None:
+            x = x.movedim(-4, -3).contiguous()
+
         return x
 
 
@@ -675,6 +712,9 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
         super().__init__()
 
+        # on a SphericalProductGrid every shell is transformed alike; the radial axis is one
+        # more leading axis, flattened into the one the transposes split
+        grid, self.radial = split_radial(grid)
         self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
         _warn_if_not_spectrally_accurate(self.grid)
@@ -725,7 +765,13 @@ class DistributedInverseRealVectorSHT(nn.Module):
         self.register_buffer("dpct", dpct, persistent=False)
 
     def extra_repr(self):
-        return f"grid={self.grid!r},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        radial = "" if self.radial is None else f",\nradial={self.radial!r}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -737,7 +783,12 @@ class DistributedInverseRealVectorSHT(nn.Module):
     @torch.compiler.disable()
     def forward(self, x: torch.Tensor):
 
-        check_coeffs(x, self.lmax_local, self.mmax_local, leading=(..., None, 2))
+        check_coeffs(x, self.lmax_local, self.mmax_local, leading=(..., None, 2), radial=self.radial)
+
+        # a product field is (..., 2, nr, *spatial); the radial axis moves in front of the
+        # component one, where it is just another leading axis, and back at the end
+        if self.radial is not None:
+            x = x.movedim(-3, -4)
 
         # the transposes below redistribute the leading (channel/batch) axis across the
         # process grid, so it must be at least as large as the larger comm group. Flatten
@@ -790,5 +841,8 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
         # drop padding and restore the original leading dims
         x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=3)
+
+        if self.radial is not None:
+            x = x.movedim(-4, -3).contiguous()
 
         return x

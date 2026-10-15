@@ -31,6 +31,7 @@
 
 import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
@@ -38,6 +39,7 @@ from testutils import compare_tensors, set_seed
 
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, trapezoidal_weights
+from torch_harmonics.utils import recast_buffers_for
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -273,6 +275,106 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
                 out = quad(field)
                 self.assertEqual(out.shape, torch.Size(leading))
                 self.assertTrue(compare_tensors(f"integral {leading}", out, amplitudes * expected_integral, atol=1e-5, rtol=1e-5))
+
+
+@parameterized_class(("device",), _devices)
+class TestQuadratureS2Dtypes(unittest.TestCase):
+    """The weights are kept in float64 and cast at use, as the SHTs keep their Legendre weights."""
+
+    def test_float64_field_integrates_in_float64(self):
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        area = th.QuadratureS2(grid).to(self.device)(torch.ones(grid.shape, dtype=torch.float64, device=self.device))
+        self.assertEqual(area.dtype, torch.float64)
+        # float32 weights would hold this to about 1e-7
+        self.assertAlmostEqual(area.item() / (4.0 * math.pi), 1.0, places=13)
+
+    @parameterized.expand([[torch.float32, torch.float32], [torch.float16, torch.float32], [torch.bfloat16, torch.float32]])
+    def test_lower_precision_promotes_as_before(self, dtype, expected):
+        """Exactly the promotion a float32 weight buffer gave: lower-precision fields integrate in float32."""
+        grid = th.as_grid("equiangular", nlat=9, nlon=16)
+        quad = th.QuadratureS2(grid).to(self.device)
+        self.assertEqual(quad(torch.ones(grid.shape, dtype=dtype, device=self.device)).dtype, expected)
+
+
+def _float64_layers():
+    grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+    product = th.SphericalProductGrid(grid, th.LegendreGaussRadialGrid(nr=3, r_inner=1.0, r_outer=2.0))
+    return [
+        ["quadrature", lambda: th.QuadratureS2(grid), (2, *grid.shape), torch.float32],
+        ["quadrature_volume", lambda: th.QuadratureVolume(product), (2, *product.shape), torch.float32],
+        ["sht", lambda: th.RealSHT(grid), (2, *grid.shape), torch.float32],
+        ["inverse_sht", lambda: th.InverseRealSHT(grid, lmax=5, mmax=5), (2, 5, 5), torch.complex64],
+        ["vector_sht", lambda: th.RealVectorSHT(grid), (2, 2, *grid.shape), torch.float32],
+        ["inverse_vector_sht", lambda: th.InverseRealVectorSHT(grid, lmax=5, mmax=5), (2, 2, 5, 5), torch.complex64],
+    ]
+
+
+class TestFloat64BuffersOnDevicesWithout(unittest.TestCase):
+    """Layers keeping float64 weights downcast them when moved to a device without float64, such as MPS."""
+
+    @parameterized.expand(_float64_layers())
+    def test_downcast_on_the_move(self, name, build, shape, dtype):
+        layer = build()
+        self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} keeps no float64 weights")
+        x = torch.randn(shape, dtype=dtype)
+        expected = layer(x)
+
+        # pretend the CPU is such a device, so the move takes the MPS path here
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            layer = layer.to("cpu")
+        self.assertFalse(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} kept a float64 buffer")
+        # the inputs are float32, which the weights were cast to at use anyway
+        self.assertTrue(torch.equal(layer(x), expected))
+
+    @parameterized.expand(_float64_layers())
+    def test_other_moves_keep_float64(self, name, build, shape, dtype):
+        layer = build().to("cpu")
+        self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} lost its float64 weights")
+
+    def test_recast_reaches_layers_inside_a_model(self):
+        """A model's move reaches its layers through _apply, not through their to(), which is why the recast hooks _apply."""
+        grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+        model = torch.nn.Sequential(th.SpectralConvS2(grid, grid, 4, 4, bias=True), torch.nn.Sequential(th.QuadratureS2(grid)))
+        self.assertTrue(any(b.dtype == torch.float64 for b in model.buffers()))
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            model = model.to("cpu")
+        self.assertFalse(any(b.dtype == torch.float64 for b in model.buffers()))
+
+    def test_probe_ignores_a_float64_default(self):
+        """The destination probe is float32 whatever the default dtype, or it would fail on MPS itself."""
+        seen = []
+
+        def fn(t):
+            seen.append(t.dtype)
+            return t
+
+        default = torch.get_default_dtype()
+        torch.set_default_dtype(torch.float64)
+        try:
+            recast_buffers_for(th.QuadratureS2(th.as_grid("legendre-gauss", nlat=8, nlon=16)), fn)
+        finally:
+            torch.set_default_dtype(default)
+        self.assertEqual(seen, [torch.float32])
+
+    def test_probe_ignores_the_default_device(self):
+        """The probe starts on CPU whatever the default device, so a dtype-only conversion never touches another device."""
+        seen = []
+
+        def fn(t):
+            seen.append(t.device.type)
+            return t
+
+        layer = th.QuadratureS2(th.as_grid("legendre-gauss", nlat=8, nlon=16))
+        # meta stands in for MPS: any default device but the layer's own
+        with torch.device("meta"):
+            recast_buffers_for(layer, fn)
+        self.assertEqual(seen, ["cpu"])
+
+    @unittest.skipUnless(torch.backends.mps.is_available(), "needs an MPS device")
+    def test_quadrature_moves_to_mps(self):
+        grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+        area = th.QuadratureS2(grid).to("mps")(torch.ones(grid.shape, device="mps"))
+        self.assertAlmostEqual(area.item() / (4.0 * math.pi), 1.0, places=5)
 
 
 class TestQuadratureWeightPrecision(unittest.TestCase):

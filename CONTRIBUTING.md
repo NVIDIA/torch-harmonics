@@ -366,6 +366,13 @@ C/C++/CUDA sources use `//` comments instead of `#`.
 - Prefer extending existing helpers over duplicating logic.
 - Use `parameterized` for multi-configuration unit tests (see `tests/test_attention.py`).
 - Shared test utilities live in `tests/testutils.py`.
+- Weights a layer derives from a grid (quadrature weights, Legendre polynomials, radial
+  weights, ...) are built in float64, kept as float64 buffers, and cast at use to
+  `torch.promote_types(x.dtype, torch.float32)`, so a float64 input computes in float64 and
+  every other dtype as with float32 weights. A module holding such buffers calls
+  `recast_buffers_for(self, fn)` first thing in its `_apply` (not in `to()`, which a parent
+  model's move never reaches), so that it can still move to MPS, which has no float64. See
+  `torch_harmonics/utils.py`.
 
 ### Naming conventions
 

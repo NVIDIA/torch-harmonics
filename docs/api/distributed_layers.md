@@ -20,6 +20,7 @@ which do not.
 | `NeighborhoodAttentionS2`           | `DistributedNeighborhoodAttentionS2`           |                                          |
 | `ResampleS2`                        | `DistributedResampleS2`                        |                                          |
 | `QuadratureS2`                      | `DistributedQuadratureS2`                      |                                          |
+| `QuadratureVolume`                  | `DistributedQuadratureVolume`                  |                                          |
 | `AttentionS2`                       | —                                              | Global attention; no distributed version |
 | `GaussianRandomFieldS2`             | —                                              | Sampling utility                         |
 
@@ -42,6 +43,7 @@ which do not.
    DistributedNeighborhoodAttentionS2
    DistributedResampleS2
    DistributedQuadratureS2
+   DistributedQuadratureVolume
 ```
 
 ```{note}

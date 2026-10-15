@@ -37,7 +37,7 @@ from parameterized import parameterized, parameterized_class
 from testutils import accepted_leadings, rejected_shapes, requires_torch_compile, shape_name
 
 import torch_harmonics as th
-from torch_harmonics import HealpixGrid, as_grid
+from torch_harmonics import HealpixGrid, LegendreGaussRadialGrid, SphericalProductGrid, as_grid
 from torch_harmonics._field_contract import check_coeffs, check_field
 
 _devices = [(torch.device("cpu"),)]
@@ -48,6 +48,21 @@ _C = 4
 _C_OUT = 6
 _REGULAR = as_grid("legendre-gauss", nlat=8, nlon=16)
 _HEALPIX = HealpixGrid(nside=2)
+_RADIAL = LegendreGaussRadialGrid(nr=3, r_inner=1.0, r_outer=2.0)
+
+
+def _product(grid):
+    return SphericalProductGrid(grid, _RADIAL)
+
+
+# on a product grid a layer builds on the angular factor, and every field gains the radial
+# axis in front of the angular ones -- the spectral ones included
+def _angular(grid):
+    return grid.angular if isinstance(grid, SphericalProductGrid) else grid
+
+
+def _radial(grid):
+    return (grid.nr,) if isinstance(grid, SphericalProductGrid) else ()
 
 
 # Each case names a layer, the grid it runs on and the leading contract it declares. The
@@ -57,31 +72,40 @@ _HEALPIX = HealpixGrid(nside=2)
 # same ways.
 def _sht(grid):
     layer = th.RealSHT(grid)
-    return layer, grid.shape, lambda lead: (*lead, layer.lmax, layer.mmax), torch.float32
+    return layer, grid.shape, lambda lead: (*lead, *_radial(grid), layer.lmax, layer.mmax), torch.float32
 
 
 def _isht(grid):
     layer = th.InverseRealSHT(grid)
-    return layer, (layer.lmax, layer.mmax), lambda lead: (*lead, *grid.shape), torch.complex64
+    return layer, (*_radial(grid), layer.lmax, layer.mmax), lambda lead: (*lead, *grid.shape), torch.complex64
 
 
 def _vsht(grid):
     layer = th.RealVectorSHT(grid)
-    return layer, grid.shape, lambda lead: (*lead, layer.lmax, layer.mmax), torch.float32
+    return layer, grid.shape, lambda lead: (*lead, *_radial(grid), layer.lmax, layer.mmax), torch.float32
 
 
 def _ivsht(grid):
     layer = th.InverseRealVectorSHT(grid)
-    return layer, (layer.lmax, layer.mmax), lambda lead: (*lead, *grid.shape), torch.complex64
+    return layer, (*_radial(grid), layer.lmax, layer.mmax), lambda lead: (*lead, *grid.shape), torch.complex64
 
 
 def _quadrature(grid):
-    # the spatial axes are reduced and nothing else; in particular no leading axis is added
-    return th.QuadratureS2(grid), grid.shape, lambda lead: lead, torch.float32
+    # the spatial axes are reduced and nothing else; in particular no leading axis is added,
+    # and on a product grid the radial axis is kept, one integral per shell
+    return th.QuadratureS2(grid), grid.shape, lambda lead: (*lead, *_radial(grid)), torch.float32
+
+
+def _quadrature_volume(grid):
+    # the radial and the angular axes are reduced and nothing else
+    return th.QuadratureVolume(grid), grid.shape, lambda lead: lead, torch.float32
 
 
 def _resample(grid):
-    grid_out = as_grid("equiangular", nlat=grid.nlat + 2, nlon=grid.nlon)
+    angular = _angular(grid)
+    grid_out = as_grid("equiangular", nlat=angular.nlat + 2, nlon=angular.nlon)
+    if isinstance(grid, SphericalProductGrid):
+        grid_out = SphericalProductGrid(grid_out, grid.radial)
     return th.ResampleS2(grid, grid_out), grid.shape, lambda lead: (*lead, *grid_out.shape), torch.float32
 
 
@@ -133,6 +157,15 @@ _CASES = [
     ["neighborhood_attention_healpix", _neighborhood_attention, _HEALPIX, (None, _C)],
 ]
 
+# and every one of them again on the product of its grid with a radial grid
+_CASES += [[f"{name}_product", factory, _product(grid), spec] for name, factory, grid, spec in _CASES]
+
+# and the layers that exist only on a product grid
+_CASES += [
+    ["quadrature_volume", _quadrature_volume, _product(_REGULAR), (...,)],
+    ["quadrature_volume_healpix", _quadrature_volume, _product(_HEALPIX), (...,)],
+]
+
 
 _SHAPE_CASES = [[f"{name}_{shape_name(leading)}", factory, grid, leading] for name, factory, grid, spec in _CASES for leading in accepted_leadings(spec)]
 
@@ -162,6 +195,39 @@ class TestFieldContract(unittest.TestCase):
                     layer(x)
 
 
+_ATTENTION_LAYERS = [
+    ["attention", lambda grid: th.AttentionS2(grid, grid, in_channels=_C, num_heads=1)],
+    ["neighborhood_attention_reference", lambda grid: th.NeighborhoodAttentionS2(grid, grid, in_channels=_C, optimized_kernel=False)],
+    ["neighborhood_attention_optimized", lambda grid: th.NeighborhoodAttentionS2(grid, grid, in_channels=_C, optimized_kernel=True)],
+]
+_ATTENTION_BATCH_CASES = [[f"{name}_{gname}", build, grid] for name, build in _ATTENTION_LAYERS for gname, grid in (("angular", _REGULAR), ("product", _product(_REGULAR)))]
+
+
+@parameterized_class(("device",), _devices)
+class TestAttentionBatchContract(unittest.TestCase):
+    """Query, key and value share one batch size; attention does not broadcast it."""
+
+    @parameterized.expand(_ATTENTION_BATCH_CASES)
+    def test_rejects_a_shared_key_value_batch(self, _, build, grid):
+        """
+        A key/value batch of one is not broadcast against the query's, on any path.
+
+        SDPA and the torch reference used to broadcast it on the angular grid while the
+        compiled kernels refused it, and on a product grid the radius is folded into the
+        batch, after which it cannot broadcast at all; every path now refuses it alike.
+        """
+        layer = build(grid).to(self.device)
+        query = torch.randn(2, _C, *grid.shape, device=self.device)
+        shared = torch.randn(1, _C, *grid.shape, device=self.device)
+        for how, key, value in (("key and value", shared, shared), ("key", shared, query), ("value", query, shared)):
+            with self.subTest(shared=how):
+                with self.assertRaisesRegex(RuntimeError, "query's batch size 2, got 1"):
+                    layer(query, key, value)
+        # expanded to the query's batch, the same inputs are accepted
+        expanded = shared.expand(2, *shared.shape[1:])
+        self.assertEqual(layer(query, expanded, expanded).shape[0], 2)
+
+
 class TestFieldContractHelper(unittest.TestCase):
     """The helper itself: what it accepts, and what it reports."""
 
@@ -184,6 +250,15 @@ class TestFieldContractHelper(unittest.TestCase):
         check_field(torch.zeros(3, *shard.shape), shard)
         with self.assertRaises(RuntimeError):
             check_field(torch.zeros(3, *_REGULAR.shape), shard)
+
+    def test_radial_axis_precedes_the_grid(self):
+        check_field(torch.zeros(2, _RADIAL.nr, *_REGULAR.shape), _REGULAR, radial=_RADIAL)
+        check_coeffs(torch.zeros(2, _RADIAL.nr, 5, 3), 5, 3, radial=_RADIAL)
+        with self.assertRaises(RuntimeError) as ctx:
+            check_field(torch.zeros(2, _RADIAL.nr + 1, *_REGULAR.shape), _REGULAR, radial=_RADIAL)
+        message = str(ctx.exception)
+        self.assertIn(f"(..., {_RADIAL.nr}, 8, 16)", message)
+        self.assertIn(repr(_RADIAL), message)
 
     def test_ellipsis_only_leads(self):
         with self.assertRaises(ValueError):
