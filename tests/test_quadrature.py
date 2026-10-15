@@ -34,7 +34,7 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, set_seed
+from testutils import compare_tensors, requires_torch_compile, set_seed
 
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, trapezoidal_weights
@@ -369,6 +369,7 @@ class TestQuadratureBatchingAndAutograd(unittest.TestCase):
         torch.testing.assert_close(gradient, expected)
         self.assertTrue(torch.autograd.gradcheck(quad, (values[0].detach().requires_grad_(),)))
 
+    @requires_torch_compile
     def test_compiled_forward_and_backward_preserve_spatial_only_reduction(self):
         quad = th.QuadratureS2(th.as_grid("equiangular", nlat=8, nlon=16), normalize=True).to(self.device)
         compiled = torch.compile(quad, backend="aot_eager", fullgraph=True)
