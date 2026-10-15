@@ -1,0 +1,483 @@
+// coding=utf-8
+//
+// SPDX-FileCopyrightText: Copyright (c) 2026 The torch-harmonics Authors. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution.
+//
+// 3. Neither the name of the copyright holder nor the names of its
+// contributors may be used to endorse or promote products derived from
+// this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+// FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+// DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+// SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+// OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+// =====================================================================================
+// Upsample (scatter-style) attention backward, RING-STEP variants — CUDA
+// =====================================================================================
+//
+// Ring counterpart of attention_cuda_bwd_upsample.cu, used by
+// DistributedNeighborhoodAttentionS2 in the upsample direction. See
+// attention_cuda_fwd_ring_upsample.cu for the psi conventions (local halo-keyed
+// rows, local-output-row arcs, arc starts pre-shifted by -lon_lo_out).
+//
+// Unlike the serial upsample backward, no max-recomputation pass is needed:
+// the forward saves the FINAL (globally reduced) alpha_sum and qdotk_max
+// buffers, which are passed back in here. That leaves two ring sweeps:
+//
+//   pass 1 (stats): per coarse chunk cell, scatter with the fixed forward max
+//                   alpha       -> (implicitly known: forward alpha_sum)
+//                   alpha*g     -> atomicAdd integral_buf[b,ho,wo]     (g = dy.v)
+//                   alpha*k     -> atomicAdd alpha_k_buf[b,ho,wo,:]
+//                   alpha*g*k   -> atomicAdd alpha_kvw_buf[b,ho,wo,:]
+//                   dqy is finalized in Python from these buffers:
+//                   dqy = (alpha_sum*alpha_kvw - integral*alpha_k) / alpha_sum^2
+//
+//   pass 2 (dkdv):  per coarse chunk cell, accumulate locally over its row
+//                   dvx += (alpha/S)*dy and dkx += q*(g - integral_norm)*(alpha/S)
+//                   with integral_norm = integral/S precomputed in Python.
+//                   dkx/dvx are chunk-shaped, direct write (no atomics); Python
+//                   adds each step's chunk into an accumulator that travels
+//                   around the ring with the chunk it belongs to (_ring_grad in
+//                   distributed_attention.py), a ring reduce-scatter.
+//
+// Generic-only (scalar loads): correctness path.
+//
+// Heads are packed along the channel dim as in the serial kernels: kx/vx/qy/dy,
+// alpha_k/alpha_kvw and dkx/dvx are (B, H, W, nheads * nchan), gridDim.y spans
+// batch * nheads, and nchan_in / nchan_out are per-head counts. The softmax stats
+// (alpha_sum, qdotk_max, integral) are (B, nheads, H, W).
+// =====================================================================================
+
+#include "../common/attention_cuda.cuh"
+#include <ATen/Dispatch.h>
+#include <ATen/cuda/CUDAUtils.h>
+#include <c10/cuda/CUDAException.h>
+
+#include <cuda_runtime.h>
+#include <cfloat>
+
+#include "../common/cudamacro.h"
+#include "../common/attention_cuda_utils.cuh"
+
+#define THREADS (64)
+
+namespace attention_kernels
+{
+
+    // map a coarse longitude wi + (shifted) canonical fine longitude to the fine
+    // longitude relative to lon_lo_out; see bwd_scatter_wo in attention_cuda_bwd_upsample.cu
+    __device__ __forceinline__ int bwd_ring_up_scatter_wo(int wo_canonical, int wi, int pscale_out, int nlon_out)
+    {
+        int wo = wo_canonical + pscale_out * wi; // < 2*nlon_out
+        if (wo >= nlon_out) { wo -= nlon_out; }
+        return wo;
+    }
+
+    // pass 1: per coarse chunk cell, scatter the softmax stats (integral, alpha_k,
+    // alpha_kvw) to the local fine output cells, using the saved forward max.
+    template <int THREADS_PER_BLOCK, typename STORAGE_T>
+    __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_bwd_ring_upsample_stats_k(
+        int nheads, int nchan_in, int nchan_out, int nlat_halo, int nlon_kx, int nlon_out_global, int pscale_out,
+        int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
+        const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const STORAGE_T *__restrict__ dy,
+        const int32_t *__restrict__ seg, const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights,
+        const float *__restrict__ qdotk_max_buf, float *__restrict__ integral_buf, float *__restrict__ alpha_k_buf,
+        float *__restrict__ alpha_kvw_buf)
+    {
+        extern __shared__ float shext[];
+        float *sh_k = shext + threadIdx.y * (nchan_in + nchan_out);
+        float *sh_v = sh_k + nchan_in;
+
+        // one block row per (batch, head) pair
+        const int bh = blockIdx.y;
+        const int batch = bh / nheads;
+        const int head = bh - (batch * nheads);
+        const int64_t ldi = int64_t(nheads) * nchan_in;
+        const int64_t ldo = int64_t(nheads) * nchan_out;
+
+        const int wid = blockIdx.x * blockDim.y + threadIdx.y;
+        if (wid >= nlat_halo * nlon_kx) { return; }
+
+        const int tidx = threadIdx.x;
+        const int hi = wid / nlon_kx; // LOCAL halo row
+        const int wi_local = wid - hi * nlon_kx;
+        const int wi_global = lon_lo_kx + wi_local;
+
+        const int seg_beg = seg_off[hi];
+        const int seg_end = seg_off[hi + 1];
+        if (seg_beg == seg_end) { return; } // empty row (e.g. pole padding)
+
+        kx += int64_t(batch) * nlat_halo * nlon_kx * ldi + (int64_t(hi) * nlon_kx + wi_local) * ldi
+            + int64_t(head) * nchan_in;
+        vx += int64_t(batch) * nlat_halo * nlon_kx * ldo + (int64_t(hi) * nlon_kx + wi_local) * ldo
+            + int64_t(head) * nchan_out;
+        qy += int64_t(batch) * nlat_out * nlon_out * ldi + int64_t(head) * nchan_in;
+        dy += int64_t(batch) * nlat_out * nlon_out * ldo + int64_t(head) * nchan_out;
+        qdotk_max_buf += int64_t(bh) * nlat_out * nlon_out;
+        integral_buf += int64_t(bh) * nlat_out * nlon_out;
+        alpha_k_buf += int64_t(batch) * nlat_out * nlon_out * ldi + int64_t(head) * nchan_in;
+        alpha_kvw_buf += int64_t(batch) * nlat_out * nlon_out * ldi + int64_t(head) * nchan_in;
+
+        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { sh_k[chan] = vload(kx, chan); }
+        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { sh_v[chan] = vload(vx, chan); }
+
+        // ring_weights is indexed by the GLOBAL input latitude
+        const float qw = ring_weights[lat_halo_start + hi];
+
+        for (int sg = seg_beg; sg < seg_end; sg++) {
+
+            const int ho = seg[3 * sg + 0]; // LOCAL output row
+            const int seg_lo = seg[3 * sg + 1];
+            const int seg_len = seg[3 * sg + 2];
+
+            // the part of the arc on this rank's output longitudes
+            int2 piece[2];
+            const int npiece = clip_arc(bwd_ring_up_scatter_wo(seg_lo, wi_global, pscale_out, nlon_out_global), seg_len,
+                                        nlon_out_global, 0, nlon_out, piece);
+
+            for (int pc = 0; pc < npiece; pc++) {
+
+                int wo = piece[pc].x;
+
+                for (int j = 0; j < piece[pc].y; j++, wo++) {
+
+                    const int64_t cell = int64_t(ho) * nlon_out + wo;
+                    const STORAGE_T *_qy = qy + cell * ldi;
+                    const STORAGE_T *_dy = dy + cell * ldo;
+
+                    float qd = 0.f, gd = 0.f;
+                    for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+                    for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { gd += sh_v[chan] * vload(_dy, chan); }
+                    qd = __warp_sum(qd);
+                    gd = __warp_sum(gd);
+
+                    const float alpha = expf(qd - qdotk_max_buf[cell]) * qw;
+                    const float ag = alpha * gd;
+                    if (tidx == 0) { atomicAdd(&integral_buf[cell], ag); }
+                    float *_alpha_k = alpha_k_buf + cell * ldi;
+                    float *_alpha_kvw = alpha_kvw_buf + cell * ldi;
+                    for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
+                        atomicAdd(&_alpha_k[chan], alpha * sh_k[chan]);
+                        atomicAdd(&_alpha_kvw[chan], ag * sh_k[chan]);
+                    }
+                }
+            }
+        }
+    }
+
+    // pass 2: per coarse chunk cell, accumulate dkx/dvx locally over its row and
+    // write into the chunk-shaped gradient buffers (no atomics).
+    template <int THREADS_PER_BLOCK, typename STORAGE_T>
+    __global__ __launch_bounds__(THREADS_PER_BLOCK) void s2_attn_bwd_ring_upsample_dkv_k(
+        int nheads, int nchan_in, int nchan_out, int nlat_halo, int nlon_kx, int nlon_out_global, int pscale_out,
+        int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out, const STORAGE_T *__restrict__ kx,
+        const STORAGE_T *__restrict__ vx, const STORAGE_T *__restrict__ qy, const STORAGE_T *__restrict__ dy,
+        const int32_t *__restrict__ seg, const int32_t *__restrict__ seg_off, const float *__restrict__ ring_weights,
+        const float *__restrict__ alpha_sum_buf, const float *__restrict__ qdotk_max_buf,
+        const float *__restrict__ integral_norm_buf, float *__restrict__ dkx, float *__restrict__ dvx)
+    {
+        extern __shared__ float shext[];
+        float *sh_k = shext + threadIdx.y * (2 * nchan_in + 2 * nchan_out);
+        float *sh_v = sh_k + nchan_in;
+        float *sh_dk = sh_v + nchan_out;
+        float *sh_dv = sh_dk + nchan_in;
+
+        // one block row per (batch, head) pair
+        const int bh = blockIdx.y;
+        const int batch = bh / nheads;
+        const int head = bh - (batch * nheads);
+        const int64_t ldi = int64_t(nheads) * nchan_in;
+        const int64_t ldo = int64_t(nheads) * nchan_out;
+
+        const int wid = blockIdx.x * blockDim.y + threadIdx.y;
+        if (wid >= nlat_halo * nlon_kx) { return; }
+
+        const int tidx = threadIdx.x;
+        const int hi = wid / nlon_kx; // LOCAL halo row
+        const int wi_local = wid - hi * nlon_kx;
+        const int wi_global = lon_lo_kx + wi_local;
+
+        const int seg_beg = seg_off[hi];
+        const int seg_end = seg_off[hi + 1];
+        if (seg_beg == seg_end) { return; } // empty row: dkx/dvx stay zero (buffers pre-zeroed)
+
+        kx += int64_t(batch) * nlat_halo * nlon_kx * ldi + (int64_t(hi) * nlon_kx + wi_local) * ldi
+            + int64_t(head) * nchan_in;
+        vx += int64_t(batch) * nlat_halo * nlon_kx * ldo + (int64_t(hi) * nlon_kx + wi_local) * ldo
+            + int64_t(head) * nchan_out;
+        qy += int64_t(batch) * nlat_out * nlon_out * ldi + int64_t(head) * nchan_in;
+        dy += int64_t(batch) * nlat_out * nlon_out * ldo + int64_t(head) * nchan_out;
+        alpha_sum_buf += int64_t(bh) * nlat_out * nlon_out;
+        qdotk_max_buf += int64_t(bh) * nlat_out * nlon_out;
+        integral_norm_buf += int64_t(bh) * nlat_out * nlon_out;
+        dkx += int64_t(batch) * nlat_halo * nlon_kx * ldi + (int64_t(hi) * nlon_kx + wi_local) * ldi
+            + int64_t(head) * nchan_in;
+        dvx += int64_t(batch) * nlat_halo * nlon_kx * ldo + (int64_t(hi) * nlon_kx + wi_local) * ldo
+            + int64_t(head) * nchan_out;
+
+        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
+            sh_k[chan] = vload(kx, chan);
+            sh_dk[chan] = 0.f;
+        }
+        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
+            sh_v[chan] = vload(vx, chan);
+            sh_dv[chan] = 0.f;
+        }
+
+        // ring_weights is indexed by the GLOBAL input latitude
+        const float qw = ring_weights[lat_halo_start + hi];
+
+        for (int sg = seg_beg; sg < seg_end; sg++) {
+
+            const int ho = seg[3 * sg + 0]; // LOCAL output row
+            const int seg_lo = seg[3 * sg + 1];
+            const int seg_len = seg[3 * sg + 2];
+
+            // the part of the arc on this rank's output longitudes
+            int2 piece[2];
+            const int npiece = clip_arc(bwd_ring_up_scatter_wo(seg_lo, wi_global, pscale_out, nlon_out_global), seg_len,
+                                        nlon_out_global, 0, nlon_out, piece);
+
+            for (int pc = 0; pc < npiece; pc++) {
+
+                int wo = piece[pc].x;
+
+                for (int j = 0; j < piece[pc].y; j++, wo++) {
+
+                    const int64_t cell = int64_t(ho) * nlon_out + wo;
+                    const STORAGE_T *_qy = qy + cell * ldi;
+                    const STORAGE_T *_dy = dy + cell * ldo;
+
+                    float qd = 0.f, gd = 0.f;
+                    for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { qd += sh_k[chan] * vload(_qy, chan); }
+                    for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { gd += sh_v[chan] * vload(_dy, chan); }
+                    qd = __warp_sum(qd);
+                    gd = __warp_sum(gd);
+
+                    const float alpha_norm = expf(qd - qdotk_max_buf[cell]) * qw / alpha_sum_buf[cell];
+                    const float scale_dk = (gd - integral_norm_buf[cell]) * alpha_norm;
+
+                    for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) {
+                        sh_dv[chan] += alpha_norm * vload(_dy, chan);
+                    }
+                    for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) {
+                        sh_dk[chan] += scale_dk * vload(_qy, chan);
+                    }
+                }
+            }
+        }
+
+        for (int chan = tidx; chan < nchan_in; chan += WARP_SIZE) { dkx[chan] = sh_dk[chan]; }
+        for (int chan = tidx; chan < nchan_out; chan += WARP_SIZE) { dvx[chan] = sh_dv[chan]; }
+    }
+
+    void s2_attention_bwd_ring_step_upsample_pass1_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                                        at::Tensor qdotk_max_buf, at::Tensor integral_buf,
+                                                        at::Tensor alpha_k_buf, at::Tensor alpha_kvw_buf,
+                                                        at::Tensor ring_weights, at::Tensor psi_seg,
+                                                        at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                                                        int64_t nlon_out_global, int64_t lon_lo_kx,
+                                                        int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out)
+    {
+        CHECK_CUDA_INPUT_TENSOR(kx);
+        CHECK_CUDA_INPUT_TENSOR(vx);
+        CHECK_CUDA_INPUT_TENSOR(qy);
+        CHECK_CUDA_INPUT_TENSOR(dy);
+        CHECK_CUDA_TENSOR(qdotk_max_buf);
+        CHECK_CUDA_TENSOR(integral_buf);
+        CHECK_CUDA_TENSOR(alpha_k_buf);
+        CHECK_CUDA_TENSOR(alpha_kvw_buf);
+        CHECK_CUDA_TENSOR(ring_weights);
+
+        // run on the inputs' device: without this, the current stream, the scratch
+        // allocations and the per-device queries (ensure_dyn_shmem, getPtxver) would all
+        // resolve to whichever CUDA device happens to be current
+        const at::cuda::OptionalCUDAGuard device_guard(kx.device());
+        // devices, shapes, index and weight dtypes, dense layouts; the arc rows are the
+        // chunk's halo-padded input latitudes
+        TORCH_CHECK(kx.dim() == 4, "kx must be 4-D (B, nlat_halo, nlon_chunk, channels), got ", kx.dim(), " dims");
+        check_ring_step_inputs(kx, vx, qy, ring_weights, psi_seg, psi_seg_off, num_heads, nlat_out, nlon_out, kx.size(1));
+        check_output_grad(dy, kx, vx, qy);
+        check_state_buffer(qdotk_max_buf, kx, "qdotk_max_buf", {kx.size(0), num_heads, nlat_out, nlon_out});
+        check_state_buffer(integral_buf, kx, "integral_buf", {kx.size(0), num_heads, nlat_out, nlon_out});
+        check_state_buffer(alpha_k_buf, kx, "alpha_k_buf", {kx.size(0), nlat_out, nlon_out, qy.size(3)});
+        check_state_buffer(alpha_kvw_buf, kx, "alpha_kvw_buf", {kx.size(0), nlat_out, nlon_out, qy.size(3)});
+
+        // NHWC ABI, as in the serial kernels: kx, vx, qy, dy are physically
+        // (B, H, W, num_heads * nchan) and contiguous, with the heads packed along the
+        // channel dim; the per-output vectors and dkx/dvx are packed the same way and
+        // the softmax stats are (B, num_heads, H, W).
+        const int batch_size = kx.size(0);
+        const int nlat_halo = kx.size(1);
+        const int nlon_kx = kx.size(2);
+        // per-head channel counts; the packed extent is num_heads times these
+        const size_t nchans_in = qy.size(3) / num_heads;
+        const size_t nchans_out = vx.size(3) / num_heads;
+
+        // the p-shift ratio, derived as the serial ops derive it but from the GLOBAL
+        // output width: nlon_out is this rank's
+        TORCH_CHECK(nlon_in > 0 && nlon_out_global % nlon_in == 0, "nlon_out_global (", nlon_out_global,
+                    ") must be an integer multiple of nlon_in (", nlon_in, ")");
+        const int64_t pscale_out = nlon_out_global / nlon_in;
+
+        auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+        int32_t *_seg = reinterpret_cast<int32_t *>(psi_seg.data_ptr());
+        int32_t *_seg_off = reinterpret_cast<int32_t *>(psi_seg_off.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
+        float *_qdotk_max = reinterpret_cast<float *>(qdotk_max_buf.data_ptr());
+        float *_integral = reinterpret_cast<float *>(integral_buf.data_ptr());
+        float *_alpha_k = reinterpret_cast<float *>(alpha_k_buf.data_ptr());
+        float *_alpha_kvw = reinterpret_cast<float *>(alpha_kvw_buf.data_ptr());
+
+        AT_DISPATCH_FLOATING_TYPES_AND2(
+            at::kHalf, at::kBFloat16, qy.scalar_type(), "s2_attention_bwd_ring_step_upsample_pass1_cuda", [&] {
+                using storage_t = scalar_t;
+
+                torch::Tensor kxP = kx;
+                torch::Tensor vxP = vx;
+                torch::Tensor qyP = qy;
+                torch::Tensor dyP = dy;
+
+                storage_t *_kxp = reinterpret_cast<storage_t *>(kxP.data_ptr());
+                storage_t *_vxp = reinterpret_cast<storage_t *>(vxP.data_ptr());
+                storage_t *_qyp = reinterpret_cast<storage_t *>(qyP.data_ptr());
+                storage_t *_dyp = reinterpret_cast<storage_t *>(dyP.data_ptr());
+
+                dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
+                // one block row per (batch, head) pair
+                dim3 grid_in(DIV_UP(nlat_halo * nlon_kx, block.y), batch_size * num_heads);
+
+                const size_t sh_stats = sizeof(float) * (nchans_in + nchans_out) * block.y;
+
+                launch_dyn_shmem(&s2_attn_bwd_ring_upsample_stats_k<THREADS, storage_t>, grid_in, block, sh_stats, stream,
+                                 static_cast<int>(num_heads), static_cast<int>(nchans_in), static_cast<int>(nchans_out),
+                                 nlat_halo, nlon_kx, static_cast<int>(nlon_out_global), static_cast<int>(pscale_out),
+                                 static_cast<int>(lon_lo_kx), static_cast<int>(lat_halo_start),
+                                 static_cast<int>(nlat_out), static_cast<int>(nlon_out), _kxp, _vxp, _qyp, _dyp, _seg,
+                                 _seg_off, _quad_weights, _qdotk_max, _integral, _alpha_k, _alpha_kvw);
+                CHECK_ERROR("s2_attn_bwd_ring_upsample_stats_k");
+            });
+
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+    }
+
+    void s2_attention_bwd_ring_step_upsample_pass2_cuda(at::Tensor kx, at::Tensor vx, at::Tensor qy, at::Tensor dy,
+                                                        at::Tensor alpha_sum_buf, at::Tensor qdotk_max_buf,
+                                                        at::Tensor integral_norm_buf, at::Tensor dkx, at::Tensor dvx,
+                                                        at::Tensor ring_weights, at::Tensor psi_seg,
+                                                        at::Tensor psi_seg_off, int64_t num_heads, int64_t nlon_in,
+                                                        int64_t nlon_out_global, int64_t lon_lo_kx,
+                                                        int64_t lat_halo_start, int64_t nlat_out, int64_t nlon_out)
+    {
+        CHECK_CUDA_INPUT_TENSOR(kx);
+        CHECK_CUDA_INPUT_TENSOR(vx);
+        CHECK_CUDA_INPUT_TENSOR(qy);
+        CHECK_CUDA_INPUT_TENSOR(dy);
+        CHECK_CUDA_TENSOR(alpha_sum_buf);
+        CHECK_CUDA_TENSOR(qdotk_max_buf);
+        CHECK_CUDA_TENSOR(integral_norm_buf);
+        CHECK_CUDA_TENSOR(dkx);
+        CHECK_CUDA_TENSOR(dvx);
+        CHECK_CUDA_TENSOR(ring_weights);
+
+        // run on the inputs' device: without this, the current stream, the scratch
+        // allocations and the per-device queries (ensure_dyn_shmem, getPtxver) would all
+        // resolve to whichever CUDA device happens to be current
+        const at::cuda::OptionalCUDAGuard device_guard(kx.device());
+        // devices, shapes, index and weight dtypes, dense layouts; the arc rows are the
+        // chunk's halo-padded input latitudes
+        TORCH_CHECK(kx.dim() == 4, "kx must be 4-D (B, nlat_halo, nlon_chunk, channels), got ", kx.dim(), " dims");
+        check_ring_step_inputs(kx, vx, qy, ring_weights, psi_seg, psi_seg_off, num_heads, nlat_out, nlon_out, kx.size(1));
+        check_output_grad(dy, kx, vx, qy);
+        check_state_buffer(alpha_sum_buf, kx, "alpha_sum_buf", {kx.size(0), num_heads, nlat_out, nlon_out});
+        check_state_buffer(qdotk_max_buf, kx, "qdotk_max_buf", {kx.size(0), num_heads, nlat_out, nlon_out});
+        check_state_buffer(integral_norm_buf, kx, "integral_norm_buf", {kx.size(0), num_heads, nlat_out, nlon_out});
+        check_state_buffer(dkx, kx, "dkx", kx.sizes());
+        check_state_buffer(dvx, kx, "dvx", vx.sizes());
+
+        // NHWC ABI, as in the serial kernels: kx, vx, qy, dy are physically
+        // (B, H, W, num_heads * nchan) and contiguous, with the heads packed along the
+        // channel dim; the per-output vectors and dkx/dvx are packed the same way and
+        // the softmax stats are (B, num_heads, H, W).
+        const int batch_size = kx.size(0);
+        const int nlat_halo = kx.size(1);
+        const int nlon_kx = kx.size(2);
+        // per-head channel counts; the packed extent is num_heads times these
+        const size_t nchans_in = qy.size(3) / num_heads;
+        const size_t nchans_out = vx.size(3) / num_heads;
+
+        // the p-shift ratio, derived as the serial ops derive it but from the GLOBAL
+        // output width: nlon_out is this rank's
+        TORCH_CHECK(nlon_in > 0 && nlon_out_global % nlon_in == 0, "nlon_out_global (", nlon_out_global,
+                    ") must be an integer multiple of nlon_in (", nlon_in, ")");
+        const int64_t pscale_out = nlon_out_global / nlon_in;
+
+        auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+        int32_t *_seg = reinterpret_cast<int32_t *>(psi_seg.data_ptr());
+        int32_t *_seg_off = reinterpret_cast<int32_t *>(psi_seg_off.data_ptr());
+        float *_quad_weights = reinterpret_cast<float *>(ring_weights.data_ptr());
+        float *_alpha_sum = reinterpret_cast<float *>(alpha_sum_buf.data_ptr());
+        float *_qdotk_max = reinterpret_cast<float *>(qdotk_max_buf.data_ptr());
+        float *_integral_norm = reinterpret_cast<float *>(integral_norm_buf.data_ptr());
+        // gradient chunk buffers are always fp32, channels-last [B, nlat_halo, nlon_kx, num_heads * C]
+        float *_dkx = reinterpret_cast<float *>(dkx.data_ptr());
+        float *_dvx = reinterpret_cast<float *>(dvx.data_ptr());
+
+        AT_DISPATCH_FLOATING_TYPES_AND2(
+            at::kHalf, at::kBFloat16, qy.scalar_type(), "s2_attention_bwd_ring_step_upsample_pass2_cuda", [&] {
+                using storage_t = scalar_t;
+
+                torch::Tensor kxP = kx;
+                torch::Tensor vxP = vx;
+                torch::Tensor qyP = qy;
+                torch::Tensor dyP = dy;
+
+                storage_t *_kxp = reinterpret_cast<storage_t *>(kxP.data_ptr());
+                storage_t *_vxp = reinterpret_cast<storage_t *>(vxP.data_ptr());
+                storage_t *_qyp = reinterpret_cast<storage_t *>(qyP.data_ptr());
+                storage_t *_dyp = reinterpret_cast<storage_t *>(dyP.data_ptr());
+
+                dim3 block(WARP_SIZE, THREADS / WARP_SIZE);
+                // one block row per (batch, head) pair
+                dim3 grid_in(DIV_UP(nlat_halo * nlon_kx, block.y), batch_size * num_heads);
+
+                const size_t sh_dkv = sizeof(float) * (2 * nchans_in + 2 * nchans_out) * block.y;
+
+                launch_dyn_shmem(&s2_attn_bwd_ring_upsample_dkv_k<THREADS, storage_t>, grid_in, block, sh_dkv, stream,
+                                 static_cast<int>(num_heads), static_cast<int>(nchans_in), static_cast<int>(nchans_out),
+                                 nlat_halo, nlon_kx, static_cast<int>(nlon_out_global), static_cast<int>(pscale_out),
+                                 static_cast<int>(lon_lo_kx), static_cast<int>(lat_halo_start),
+                                 static_cast<int>(nlat_out), static_cast<int>(nlon_out), _kxp, _vxp, _qyp, _dyp, _seg,
+                                 _seg_off, _quad_weights, _alpha_sum, _qdotk_max, _integral_norm, _dkx, _dvx);
+                CHECK_ERROR("s2_attn_bwd_ring_upsample_dkv_k");
+            });
+
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+    }
+
+    TORCH_LIBRARY_IMPL(attention_kernels, CUDA, m)
+    {
+        m.impl("backward_ring_step_upsample_pass1", &s2_attention_bwd_ring_step_upsample_pass1_cuda);
+        m.impl("backward_ring_step_upsample_pass2", &s2_attention_bwd_ring_step_upsample_pass2_cuda);
+    }
+
+} // namespace attention_kernels

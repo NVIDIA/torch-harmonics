@@ -118,12 +118,8 @@ class TestDistributedResampling(unittest.TestCase):
 
         set_seed(334)
         res_args = dict(
-            nlat_in=16,
-            nlon_in=1,
-            nlat_out=24,
-            nlon_out=nlon_out,
-            grid_in="equiangular",
-            grid_out="equiangular",
+            grid_in=th.as_grid("equiangular", nlat=16, nlon=1),
+            grid_out=th.as_grid("equiangular", nlat=24, nlon=nlon_out),
             mode=mode,
         )
         res_local = th.ResampleS2(**res_args).to(self.device)
@@ -176,12 +172,8 @@ class TestDistributedResampling(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
 
         res_args = dict(
-            nlat_in=nlat_in,
-            nlon_in=nlon_in,
-            nlat_out=nlat_out,
-            nlon_out=nlon_out,
-            grid_in=grid_in,
-            grid_out=grid_out,
+            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
             mode=mode,
         )
 

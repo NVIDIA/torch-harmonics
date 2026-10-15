@@ -35,6 +35,7 @@ import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
 from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
+from torch_harmonics.grid import require_regular_grid
 
 
 class SphericalFourierNeuralOperatorBlock(nn.Module):
@@ -179,14 +180,13 @@ class SphericalFourierNeuralOperator(nn.Module):
 
     Parameters
     ----------
-    img_size : tuple, optional
-        Shape of the input channels, by default (128, 256)
-    grid : str, optional
-        Input grid type, by default "equiangular"
-    grid_internal : str, optional
-        Internal grid type for computations, by default "legendre-gauss"
-    scale_factor : int, optional
-        Scale factor to use, by default 3
+    grid : RegularGridS2
+        Grid the input and output fields live on, e.g.
+        ``as_grid("equiangular", nlat=128, nlon=256)``.
+    grid_internal : RegularGridS2
+        Grid the spectral blocks operate on, usually coarser than ``grid``, e.g.
+        ``as_grid("legendre-gauss", nlat=43, nlon=86)``. The first block projects from
+        ``grid`` onto it and the last back.
     in_chans : int, optional
         Number of input channels, by default 3
     out_chans : int, optional
@@ -220,9 +220,10 @@ class SphericalFourierNeuralOperator(nn.Module):
 
     Examples
     --------
+    >>> from torch_harmonics import as_grid
     >>> model = SphericalFourierNeuralOperator(
-    ...         img_size=(128, 256),
-    ...         scale_factor=4,
+    ...         grid=as_grid("equiangular", nlat=128, nlon=256),
+    ...         grid_internal=as_grid("legendre-gauss", nlat=32, nlon=64),
     ...         in_chans=2,
     ...         out_chans=2,
     ...         embed_dim=16,
@@ -238,10 +239,8 @@ class SphericalFourierNeuralOperator(nn.Module):
 
     def __init__(
         self,
-        img_size=(128, 256),
-        grid="equiangular",
-        grid_internal="legendre-gauss",
-        scale_factor=3,
+        grid,
+        grid_internal,
         in_chans=3,
         out_chans=3,
         embed_dim=256,
@@ -261,10 +260,9 @@ class SphericalFourierNeuralOperator(nn.Module):
 
         super().__init__()
 
-        self.img_size = img_size
-        self.grid = grid
-        self.grid_internal = grid_internal
-        self.scale_factor = scale_factor
+        self.grid = require_regular_grid(grid, "grid")
+        self.grid_internal = require_regular_grid(grid_internal, "grid_internal")
+        self.img_size = self.grid.shape
         self.in_chans = in_chans
         self.out_chans = out_chans
         self.embed_dim = embed_dim
@@ -286,22 +284,20 @@ class SphericalFourierNeuralOperator(nn.Module):
         else:
             raise ValueError(f"Unknown activation function {activation_function}")
 
-        # compute downsampled image size. We assume that the latitude-grid includes both poles
-        self.h = (self.img_size[0] - 1) // scale_factor + 1
-        self.w = self.img_size[1] // scale_factor
+        self.h, self.w = self.grid_internal.shape
 
         # dropout
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
         if pos_embed == "sequence":
-            self.pos_embed = SequencePositionEmbedding(self.img_size, grid=grid, num_chans=self.embed_dim)
+            self.pos_embed = SequencePositionEmbedding(self.grid, num_chans=self.embed_dim)
         elif pos_embed == "spectral":
-            self.pos_embed = SpectralPositionEmbedding(self.img_size, grid=grid, num_chans=self.embed_dim)
+            self.pos_embed = SpectralPositionEmbedding(self.grid, num_chans=self.embed_dim)
         elif pos_embed == "learnable lat":
-            self.pos_embed = LearnablePositionEmbedding(self.img_size, grid=grid, num_chans=self.embed_dim, embed_type="lat")
+            self.pos_embed = LearnablePositionEmbedding(self.grid, num_chans=self.embed_dim, embed_type="lat")
         elif pos_embed == "learnable latlon":
-            self.pos_embed = LearnablePositionEmbedding(self.img_size, grid=grid, num_chans=self.embed_dim, embed_type="latlon")
+            self.pos_embed = LearnablePositionEmbedding(self.grid, num_chans=self.embed_dim, embed_type="latlon")
         elif pos_embed == "none":
             self.pos_embed = nn.Identity()
         else:
@@ -337,10 +333,10 @@ class SphericalFourierNeuralOperator(nn.Module):
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans_down = RealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
-        self.itrans_up = InverseRealSHT(*self.img_size, lmax=modes_lat, mmax=modes_lon, grid=self.grid).float()
-        self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-        self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        self.trans_down = RealSHT(self.grid, lmax=modes_lat, mmax=modes_lon).float()
+        self.itrans_up = InverseRealSHT(self.grid, lmax=modes_lat, mmax=modes_lon).float()
+        self.trans = RealSHT(self.grid_internal, lmax=modes_lat, mmax=modes_lon).float()
+        self.itrans = InverseRealSHT(self.grid_internal, lmax=modes_lat, mmax=modes_lon).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):

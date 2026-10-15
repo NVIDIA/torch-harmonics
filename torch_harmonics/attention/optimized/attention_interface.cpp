@@ -62,8 +62,9 @@ namespace attention_kernels
     //   nlon_in    K/V longitude count
     //   nlat_out   Q   latitude  count   (output-side grid)
     //   nlon_out   Q   longitude count
-    //   psi (col_idx + row_off) encodes the spherical neighborhood pattern. The
-    //   exact indexing convention depends on the op family — see each block below.
+    //   psi (seg + seg_off) encodes the spherical neighborhood pattern as contiguous
+    //   longitude arcs. The exact indexing convention depends on the op family — see
+    //   each block below.
     //
     TORCH_LIBRARY(attention_kernels, m)
     {
@@ -105,92 +106,108 @@ namespace attention_kernels
         //   qy     : [B, nlat_out, nlon_out, num_heads * C_k]
         //   y      : [B, nlat_out, nlon_out, num_heads * C_v]
         // psi convention (canonical at wo=0):
-        //   row_off : indexed by ho in [0, nlat_out],  length nlat_out + 1
-        //   col_idx : hi * nlon_in + wi_canonical
-        //             (input-lon offset for the canonical wo=0; the kernel
+        //   seg_off : indexed by ho in [0, nlat_out],  length nlat_out + 1
+        //   seg     : (hi, wi_canonical, len) arcs
+        //             (input-lon start for the canonical wo=0; the kernel
         //              applies the integer p-shift  wip = wi + pscale*wo  internally,
         //              where pscale = nlon_in / nlon_out).
         // Requires nlon_in % nlon_out == 0.
-        // seg / seg_off are the contiguous-arc form of psi (see _build_psi_segments):
-        // seg is (nsegs, 3) int32 holding (input_lat, lon_start, arc_len), seg_off maps
-        // an output row to its segment range. The CUDA kernels use them instead of
-        // col_idx; col_idx and row_off stay because the CPU and torch reference paths
-        // still consume them -- which is what keeps the reference independent.
-        m.def("forward(Tensor kx, Tensor vx, Tensor qy, Tensor quad_weights, Tensor col_idx, Tensor row_off, "
+        // seg / seg_off are the contiguous-arc form of psi: seg is (nsegs, 3) int32
+        // holding (input_lat, lon_start, arc_len), and seg_off maps an output row to its
+        // segment range. Both the CUDA and the CPU kernels read this form, so it is the
+        // only one declared here. The torch reference takes the column list instead, and
+        // has its own operator -- which is what keeps it independent of this derivation
+        // rather than merely documented as being so.
+        m.def("forward_regular(Tensor kx, Tensor vx, Tensor qy, Tensor ring_weights, "
               "Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
-        m.def("backward(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor quad_weights, Tensor col_idx, Tensor "
-              "row_off, Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> "
+        m.def("backward_regular(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor ring_weights, "
+              "Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlat_out, int nlon_out) -> "
               "(Tensor, Tensor, Tensor)",
               {at::Tag::pt2_compliant_tag});
 
-        // ---- Ring-step variants for DistributedNeighborhoodAttentionS2 ----
-        // K/V are sharded along longitude across an azimuth process group; each
-        // step processes one rotating chunk and accumulates state buffers for
-        // online softmax. lon_lo_kx is the global longitude offset of the
-        // currently-held kx/vx chunk; pscale is the GLOBAL nlon_in / nlon_out
-        // (must be passed explicitly, since the kernel's own nlon_out arg is the
-        // LOCAL output width and would give the wrong ratio when az_size > 1).
-        // col_idx must have wi pre-shifted by pscale * lon_lo_out — see
-        // _build_local_psi in distributed_attention.py.
-        // split_csr_rows precomputes the long/short row split for a fixed psi
-        // (returns n_long_rows, max_row_len, mid_row_len). Called once from the
-        // module constructor; the result is passed into the ring-step ops below
-        // as the trailing (n_long_rows, max_row_len, mid_row_len) ints, hoisting
-        // it out of the per-step hot path (where it otherwise cost a 24-byte D2H
-        // sync/step). NOT pt2-compliant and intentionally has no fake/meta impl:
-        // it is a setup-time host-side scalar computation that is never traced.
-        m.def("split_csr_rows(Tensor row_idx, Tensor row_off, int nlat_out) -> (int, int, int)");
-        m.def("forward_ring_step(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) alpha_sum_buf, "
-              "Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int "
-              "nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out, int n_long_rows, "
-              "int max_row_len, int mid_row_len) -> ()",
+        // Ragged counterparts, for a grid whose rings differ in length (HEALPix, reduced
+        // Gaussian). Two differences from the regular schemas above, both forced by the
+        // absence of longitudinal translation invariance:
+        //
+        //  - there is no (nlat, nlon) to address by, so the extent is one npoints_out and
+        //    the ring tables carry what nlon used to give arithmetically;
+        //  - the forward returns its softmax bookkeeping (y_hi, alpha_sum, qdotk_max)
+        //    rather than recomputing it, because the backward walks a neighbour list it
+        //    cannot cheaply re-derive. These are fp32 whatever the activations are.
+        m.def("forward_ragged(Tensor kx, Tensor vx, Tensor qy, Tensor ring_weights, Tensor psi_seg, "
+              "Tensor psi_seg_off, Tensor ring_base, Tensor ring_size, int num_heads, int npoints_out) -> "
+              "(Tensor, Tensor, Tensor, Tensor)",
               {at::Tag::pt2_compliant_tag});
-        // Backward is split into two passes: pass1 finalizes per-output softmax
-        // statistics (alpha_sum, qdotk_max, integral, alpha_k, alpha_kvw), pass2
-        // scatters dkx/dvx into the current chunk using those finalized stats.
+        m.def("backward_ragged(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor y, Tensor y_hi, Tensor alpha_sum, "
+              "Tensor qdotk_max, Tensor ring_weights, Tensor psi_seg, Tensor psi_seg_off, Tensor ring_base, "
+              "Tensor ring_size, int num_heads, int npoints_out) -> (Tensor, Tensor, Tensor)",
+              {at::Tag::pt2_compliant_tag});
+
+        // ---- Ring-step variants for DistributedNeighborhoodAttentionS2 ----
+        // The serial ops above, one K/V chunk at a time. K/V are sharded along
+        // longitude across an azimuth process group and rotate around it; each step
+        // folds the chunk it holds into online-softmax state that persists across
+        // steps. Everything the serial ops take is taken here in the same form -- the
+        // NHWC ABI with heads packed along channels, the arc form of psi -- plus:
+        //   - the state buffers, (B, H, W, num_heads * C) for the per-channel ones and
+        //     (B, num_heads, H, W) for the softmax statistics;
+        //   - where the chunk sits in the global grid: lon_lo_kx for its first
+        //     longitude, lat_halo_start for its first (halo) latitude;
+        //   - nlon_out_global, because nlat_out / nlon_out are this rank's extents and
+        //     the serial ops' p-shift ratio needs the global one when az_size > 1.
+        // All six take the same integer arguments.
+        // seg / seg_off are this rank's output rows of the serial arcs, with the arc
+        // starts pre-shifted by pscale * lon_lo_out; see RingGatherBackend in
+        // distributed_attention.py.
+        m.def("forward_ring_step(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) alpha_sum_buf, "
+              "Tensor(c!) qdotk_max_buf, Tensor ring_weights, Tensor seg, Tensor seg_off, int num_heads, int nlon_in, "
+              "int nlon_out_global, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()",
+              {at::Tag::pt2_compliant_tag});
+        // The serial backward's two neighbour loops, one pass each: pass1 accumulates
+        // the softmax statistics (alpha_sum, qdotk_max, integral, alpha_k, alpha_kvw)
+        // across the ring, pass2 scatters dkx/dvx into the current chunk using them
+        // once final.
         m.def("backward_ring_step_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor(a!) alpha_sum_buf, "
               "Tensor(b!) qdotk_max_buf, Tensor(c!) integral_buf, Tensor(d!) alpha_k_buf, Tensor(e!) alpha_kvw_buf, "
-              "Tensor quad_weights, Tensor col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int "
-              "lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out, int n_long_rows, int max_row_len, int "
-              "mid_row_len) -> ()",
+              "Tensor ring_weights, Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlon_out_global, int "
+              "lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()",
               {at::Tag::pt2_compliant_tag});
         m.def("backward_ring_step_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, Tensor "
-              "qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, Tensor "
-              "col_idx, Tensor row_off, Tensor row_idx, int nlon_in, int pscale, int lon_lo_kx, int lat_halo_start, "
-              "int nlat_out, int nlon_out, int n_long_rows, int max_row_len, int mid_row_len) -> ()",
+              "qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor ring_weights, Tensor "
+              "seg, Tensor seg_off, int num_heads, int nlon_in, int nlon_out_global, int lon_lo_kx, int "
+              "lat_halo_start, int nlat_out, int nlon_out) -> ()",
               {at::Tag::pt2_compliant_tag});
 
         // ---- Ring-step variants for the UPSAMPLE (input-keyed scatter) direction ----
         // Used by DistributedNeighborhoodAttentionS2 when nlon_out % nlon_in == 0.
         // K/V live on the coarse input grid and rotate along the azimuth ring; Q and
         // the softmax state buffers live on the fine output grid and stay local.
-        // psi convention (see _build_local_psi_upsample in distributed_attention.py):
-        //   row_off : indexed by hi_local in [0, nlat_halo] (halo-padded local input
+        // psi is the serial scatter arc form, sliced to this rank (see
+        // RingUpsampleBackend in distributed_attention.py):
+        //   seg_off : indexed by hi_local in [0, nlat_halo] (halo-padded local input
         //             rows; hi_global = lat_halo_start + hi_local)
-        //   col_idx : ho_local * nlon_out_global + wo_shifted, with
-        //             wo_shifted = (wo_canonical - lon_lo_out) mod nlon_out_global.
-        // The kernel maps wo_shifted -> (wo_shifted + pscale_out * (lon_lo_kx + wi_local))
-        // mod nlon_out_global and treats the cell as local iff the result < nlon_out
-        // (the LOCAL output width). pscale_out is the GLOBAL nlon_out / nlon_in.
+        //   seg     : (ho_local, lo, len) arcs, only those on local output rows, with
+        //             lo pre-shifted by -lon_lo_out (mod nlon_out_global).
+        // The serial shift of an arc start by pscale_out * wi then lands relative to
+        // lon_lo_out, and the arc is clipped to the LOCAL output width nlon_out.
         // A single forward step runs the 3-phase max/rescale/accumulate scheme so the
         // online softmax stays consistent across ring steps despite the scatter form.
-        m.def("forward_ring_step_upsample(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) "
-              "alpha_sum_buf, Tensor(c!) qdotk_max_buf, Tensor quad_weights, Tensor col_idx, Tensor row_off, int "
-              "nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int lat_halo_start, int nlat_out, int "
-              "nlon_out) -> ()",
+        m.def("forward_ring_step_upsample(Tensor kx, Tensor vx, Tensor qy, Tensor(a!) y_acc, Tensor(b!) alpha_sum_buf, "
+              "Tensor(c!) qdotk_max_buf, Tensor ring_weights, Tensor seg, Tensor seg_off, int num_heads, int nlon_in, "
+              "int nlon_out_global, int lon_lo_kx, int lat_halo_start, int nlat_out, int nlon_out) -> ()",
               {at::Tag::pt2_compliant_tag});
         // Backward reuses the forward-final alpha_sum / qdotk_max (no max recompute):
         // pass1 scatters the per-output stats (integral, alpha_k, alpha_kvw) needed for
-        // dqy; pass2 accumulates chunk-local dkx/dvx (allreduced in Python).
+        // dqy; pass2 writes the chunk-local dkx/dvx, which Python accumulates.
         m.def("backward_ring_step_upsample_pass1(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor qdotk_max_buf, "
-              "Tensor(a!) integral_buf, Tensor(b!) alpha_k_buf, Tensor(c!) alpha_kvw_buf, Tensor quad_weights, Tensor "
-              "col_idx, Tensor row_off, int nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int "
+              "Tensor(a!) integral_buf, Tensor(b!) alpha_k_buf, Tensor(c!) alpha_kvw_buf, Tensor ring_weights, Tensor "
+              "seg, Tensor seg_off, int num_heads, int nlon_in, int nlon_out_global, int lon_lo_kx, int "
               "lat_halo_start, int nlat_out, int nlon_out) -> ()",
               {at::Tag::pt2_compliant_tag});
         m.def("backward_ring_step_upsample_pass2(Tensor kx, Tensor vx, Tensor qy, Tensor dy, Tensor alpha_sum_buf, "
-              "Tensor qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor quad_weights, "
-              "Tensor col_idx, Tensor row_off, int nlon_in, int nlon_out_global, int pscale_out, int lon_lo_kx, int "
+              "Tensor qdotk_max_buf, Tensor integral_norm_buf, Tensor(a!) dkx, Tensor(b!) dvx, Tensor ring_weights, "
+              "Tensor seg, Tensor seg_off, int num_heads, int nlon_in, int nlon_out_global, int lon_lo_kx, int "
               "lat_halo_start, int nlat_out, int nlon_out) -> ()",
               {at::Tag::pt2_compliant_tag});
     }

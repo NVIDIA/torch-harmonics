@@ -56,15 +56,15 @@ class TestQuadrature(unittest.TestCase):
             [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", True, 1e-6, 1e-6],
-            [64, 128, 2, 3, "equiangular-trapezoidal", False, 1e-6, 1e-6],
-            [64, 128, 2, 3, "equiangular-trapezoidal", True, 1e-6, 1e-6],
+            [64, 128, 2, 3, "trapezoidal", False, 1e-6, 1e-6],
+            [64, 128, 2, 3, "trapezoidal", True, 1e-6, 1e-6],
         ]
     )
     def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
 
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
 
         data = torch.ones((batch_size, num_chan, nlat, nlon), dtype=torch.float32, device=self.device)
         out = quad(data)
@@ -80,7 +80,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
-            [64, 128, "equiangular-trapezoidal"],
+            [64, 128, "trapezoidal"],
         ]
     )
     def test_odd_latitude_integral(self, nlat, nlon, grid, verbose=False):
@@ -91,7 +91,7 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
 
         # cos(theta) on the grid: precompute_latitudes returns colatitude angles
         # theta in [0, pi], so cos(theta) in [-1, 1]
@@ -111,7 +111,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular", 1e-5, 1e-5],
             [65, 128, "legendre-gauss", 1e-5, 1e-5],
             [65, 128, "lobatto", 1e-5, 1e-5],
-            [64, 128, "equiangular-trapezoidal", 1e-2, 1e-2],
+            [64, 128, "trapezoidal", 1e-2, 1e-2],
         ]
     )
     def test_polynomial_latitude_integral(self, nlat, nlon, grid, atol, rtol, verbose=False):
@@ -119,7 +119,7 @@ class TestQuadrature(unittest.TestCase):
 
         Analytically: 2*pi * integral_{-1}^{1} t^2 dt = 2*pi * 2/3 = 4*pi/3.
         Gauss-type quadrature rules integrate quadratic polynomials in cos-theta
-        exactly; the trapezoidal rule (equiangular-trapezoidal) has O(h^2) error.
+        exactly; the trapezoidal rule (trapezoidal) has O(h^2) error.
         """
         set_seed(333)
 
@@ -128,7 +128,7 @@ class TestQuadrature(unittest.TestCase):
         f = cos2_theta.view(1, 1, nlat, 1).expand(1, 1, nlat, nlon)
 
         for normalize, expected_val in [(False, 4.0 * math.pi / 3.0), (True, 1.0 / 3.0)]:
-            quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+            quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
             out = quad(f)
             expected = torch.full((1, 1), expected_val, device=self.device)
             self.assertTrue(
@@ -148,7 +148,7 @@ class TestQuadrature(unittest.TestCase):
             [64, 128, "equiangular"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
-            [64, 128, "equiangular-trapezoidal"],
+            [64, 128, "trapezoidal"],
         ]
     )
     def test_zero_longitude_mean(self, nlat, nlon, grid, verbose=False):
@@ -160,7 +160,7 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
 
         lons = precompute_longitudes(nlon).to(self.device)  # shape [nlon], in [0, 2*pi)
         cos_phi = torch.cos(lons).to(torch.float32)
@@ -185,8 +185,8 @@ class TestQuadrature(unittest.TestCase):
         """
         set_seed(333)
 
-        quad_raw = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=False).to(self.device)
-        quad_norm = th.QuadratureS2(img_shape=(nlat, nlon), grid=grid, normalize=True).to(self.device)
+        quad_raw = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
+        quad_norm = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=True).to(self.device)
 
         data = torch.randn(batch_size, num_chan, nlat, nlon, device=self.device)
 
@@ -205,6 +205,76 @@ class TestQuadrature(unittest.TestCase):
         )
 
 
+class TestQuadratureS2Constructor(unittest.TestCase):
+    """
+    The constructor contract after the switch to grid descriptors.
+
+    The numerical tests above all build their grid with :func:`as_grid`, so two
+    things go unexercised there: that a directly constructed grid works just as
+    well, and that the arguments the old signature took now fail with an error
+    that says what to write instead. The latter matters because this is a
+    breaking change -- without it a caller passing the old ``(nlat, nlon)`` shape
+    gets ``AttributeError: 'tuple' object has no attribute 'shape'`` from deep
+    inside the constructor.
+    """
+
+    def test_takes_a_directly_constructed_grid(self):
+        """as_grid is a convenience, not the only way in."""
+        direct = th.LegendreGaussGrid(nlat=32, nlon=64)
+        via_helper = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        self.assertTrue(compare_tensors("direct vs as_grid", th.QuadratureS2(direct).quad_weight, th.QuadratureS2(via_helper).quad_weight))
+
+    @parameterized.expand(
+        [
+            # a shape is the pre-v1.0.0 call, QuadratureS2(img_shape, grid=...), answered
+            # with the replacement built from it
+            [(32, 64), "Write QuadratureS2(as_grid('equiangular', nlat=32, nlon=64)) instead"],
+            # so is a bare resolution, though it does not say what the other one was
+            [32, "no longer takes (img_shape, grid=...)"],
+            # a grid name alone was never a valid old call either; the descriptor guard
+            # answers it, naming the replacement all the same
+            ["legendre-gauss", "as_grid('legendre-gauss'"],
+        ]
+    )
+    def test_old_style_arguments_explain_themselves(self, bad_grid, expected_fragment):
+        with self.assertRaises(TypeError) as ctx:
+            th.QuadratureS2(bad_grid)
+        message = str(ctx.exception)
+        self.assertIn(expected_fragment, message)
+        self.assertIn("as_grid", message, msg="the error should name the replacement")
+        self.assertNotIn("multiple values", message, msg="the binding error must never reach the caller")
+
+
+@parameterized_class(("device",), _devices)
+class TestQuadratureLeadingDimensions(unittest.TestCase):
+    """
+    Only the spatial axes are reduced. The weight buffer must not broadcast extra
+    leading axes onto an input that has fewer than two of its own -- a single field or a
+    plain batch -- on a regular grid, whose fields are ``(..., nlat, nlon)``, or on a
+    ragged one, whose fields are ``(..., npoints)``.
+    """
+
+    @parameterized.expand(
+        [
+            ["equiangular", False],
+            ["legendre-gauss", True],
+            ["healpix", False],
+            ["healpix", True],
+        ]
+    )
+    def test_only_the_spatial_axes_are_reduced(self, grid_name, normalize):
+        grid = th.HealpixGrid(nside=4) if grid_name == "healpix" else th.as_grid(grid_name, nlat=8, nlon=16)
+        quad = th.QuadratureS2(grid, normalize=normalize).to(self.device)
+        expected_integral = 1.0 if normalize else 4.0 * math.pi
+        for leading in ((), (3,), (2, 3), (2, 1, 3), (0,)):
+            with self.subTest(leading=leading):
+                amplitudes = torch.arange(1, math.prod(leading) + 1, dtype=torch.float32, device=self.device).reshape(leading)
+                field = amplitudes.reshape(*leading, *([1] * len(grid.shape))) * torch.ones(grid.shape, device=self.device)
+                out = quad(field)
+                self.assertEqual(out.shape, torch.Size(leading))
+                self.assertTrue(compare_tensors(f"integral {leading}", out, amplitudes * expected_integral, atol=1e-5, rtol=1e-5))
+
+
 class TestQuadratureWeightPrecision(unittest.TestCase):
     """Every quadrature rule must carry its weights in the same precision as its nodes."""
 
@@ -213,7 +283,7 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
             ["equiangular"],
             ["legendre-gauss"],
             ["lobatto"],
-            ["equiangular-trapezoidal"],
+            ["trapezoidal"],
         ]
     )
     def test_latitude_weight_dtype(self, grid):
@@ -253,7 +323,7 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
 
 
 @parameterized_class(("device",), _devices)
-class TestQuadratureLeadingDimensions(unittest.TestCase):
+class TestQuadratureBatchingAndAutograd(unittest.TestCase):
     """Only the spatial axes are removed from scalar or batched fields."""
 
     @parameterized.expand(
@@ -264,13 +334,13 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
             ["legendre-gauss", True],
             ["lobatto", False],
             ["lobatto", True],
-            ["equiangular-trapezoidal", False],
-            ["equiangular-trapezoidal", True],
+            ["trapezoidal", False],
+            ["trapezoidal", True],
         ]
     )
     def test_output_shape_and_integrals_for_arbitrary_leading_dimensions(self, grid, normalize):
         nlat, nlon = 8, 16
-        quad = th.QuadratureS2((nlat, nlon), grid=grid, normalize=normalize).to(self.device)
+        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
         original = quad.quad_weight.clone()
         lats, _ = precompute_latitudes(nlat, grid=grid)
         field = (1.0 + torch.cos(lats)).float().to(self.device)[:, None].expand(nlat, nlon)
@@ -283,16 +353,16 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
                 self.assertEqual(output.shape, leading)
                 expected = amplitudes * (1.0 if normalize else 4.0 * math.pi)
                 torch.testing.assert_close(output, expected, rtol=2e-6, atol=1e-6)
-        self.assertEqual(quad.quad_weight.shape, (1, 1, nlat, nlon))
+        self.assertEqual(quad.quad_weight.shape, (nlat, nlon))
         torch.testing.assert_close(quad.quad_weight, original, rtol=0, atol=0)
 
     def test_scalar_gradients_and_vmap_do_not_gain_singleton_dimensions(self):
-        quad = th.QuadratureS2((8, 16), grid="legendre-gauss", normalize=True).to(self.device).double()
+        quad = th.QuadratureS2(th.as_grid("legendre-gauss", nlat=8, nlon=16), normalize=True).to(self.device).double()
         values = torch.arange(3 * 8 * 16, device=self.device, dtype=torch.float64).reshape(3, 8, 16) / 30.0
         values.requires_grad_()
         mapped = torch.func.vmap(quad)(values)
         self.assertEqual(mapped.shape, (3,))
-        reference = (values * quad.quad_weight[0, 0]).sum(dim=(-2, -1))
+        reference = (values * quad.quad_weight).sum(dim=(-2, -1))
         torch.testing.assert_close(mapped, reference)
         (gradient,) = torch.autograd.grad(mapped.square().sum(), values)
         (expected,) = torch.autograd.grad(reference.square().sum(), values)
@@ -300,7 +370,7 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
         self.assertTrue(torch.autograd.gradcheck(quad, (values[0].detach().requires_grad_(),)))
 
     def test_compiled_forward_and_backward_preserve_spatial_only_reduction(self):
-        quad = th.QuadratureS2((8, 16), normalize=True).to(self.device)
+        quad = th.QuadratureS2(th.as_grid("equiangular", nlat=8, nlon=16), normalize=True).to(self.device)
         compiled = torch.compile(quad, backend="aot_eager", fullgraph=True)
         for leading in ((), (2,), (2, 3)):
             with self.subTest(leading=leading):
@@ -309,7 +379,7 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
                 self.assertEqual(output.shape, leading)
                 torch.testing.assert_close(output, torch.ones(leading, device=self.device))
                 (gradient,) = torch.autograd.grad(output.sum(), values)
-                expected = quad.quad_weight[0, 0].expand_as(values)
+                expected = quad.quad_weight.expand_as(values)
                 torch.testing.assert_close(gradient, expected)
 
 

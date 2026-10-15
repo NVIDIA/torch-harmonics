@@ -41,7 +41,7 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import set_seed
+from testutils import requires_torch_compile, set_seed
 
 from torch_harmonics.attention import optimized_kernels_is_available
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
@@ -174,6 +174,7 @@ class TestAttentionLayout(unittest.TestCase):
         self.assertTrue(torch.equal(x.grad, grad.permute(0, 3, 1, 2).contiguous()))
 
     @parameterized.expand(_shapes)
+    @requires_torch_compile
     def test_compile(self, B, C, H, W):
         """Both directions compile in a single graph and match eager bitwise."""
 
@@ -220,6 +221,19 @@ class TestAttentionLayout(unittest.TestCase):
 
                 z = torch.randn(B, H, W, C, device=self.device, dtype=dtype, requires_grad=True)
                 torch.library.opcheck(torch.ops.attention_kernels.permute_to_nchw.default, (z,))
+
+
+@unittest.skipUnless(torch.backends.mps.is_available(), "needs a device the compiled permutes have no kernel for")
+class TestAttentionLayoutUncompiledDevice(unittest.TestCase):
+    """On a device the extension registers no kernel for, the conversions fall back to torch."""
+
+    def test_round_trip(self):
+        x = torch.randn(2, 8, 6, 12, device="mps", requires_grad=True)
+        y = to_nhwc(x)
+        self.assertTrue(torch.equal(y, x.permute(0, 2, 3, 1)))
+        self.assertTrue(torch.equal(to_nchw(y), x))
+        y.backward(torch.ones_like(y))
+        self.assertTrue(torch.equal(x.grad, torch.ones_like(x)))
 
 
 if __name__ == "__main__":

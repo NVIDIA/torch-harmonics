@@ -35,6 +35,7 @@ import torch
 import torch.distributed as dist
 from parameterized import parameterized
 from testutils import (
+    all_gather_tensors,
     compare_tensors,
     reduce_success,
     set_seed,
@@ -240,17 +241,15 @@ class TestDistributedReduce(unittest.TestCase):
         setup_class_from_context(cls, _DIST_CTX)
 
     # ------------------------------------------------------------------
-    # Reference helpers – use dist.all_gather so we never call the op
-    # under test as part of the reference computation.
+    # Reference helpers – plain torch.distributed (testutils.all_gather_tensors), so we
+    # never call the op under test as part of the reference computation.
     # ------------------------------------------------------------------
 
     def _polar_gather_sum(self, x_local):
         """Global sum over the polar group via all_gather + Python sum."""
         polar_size = thd.polar_group_size()
         if polar_size > 1:
-            x_all = [torch.empty_like(x_local) for _ in range(polar_size)]
-            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.polar_group())
-            return torch.stack(x_all, dim=0).sum(dim=0)
+            return torch.stack(all_gather_tensors(x_local, thd.polar_group()), dim=0).sum(dim=0)
         else:
             return x_local.detach().clone()
 
@@ -258,9 +257,7 @@ class TestDistributedReduce(unittest.TestCase):
         """Global sum over the azimuth group via all_gather + Python sum."""
         az_size = thd.azimuth_group_size()
         if az_size > 1:
-            x_all = [torch.empty_like(x_local) for _ in range(az_size)]
-            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.azimuth_group())
-            return torch.stack(x_all, dim=0).sum(dim=0)
+            return torch.stack(all_gather_tensors(x_local, thd.azimuth_group()), dim=0).sum(dim=0)
         else:
             return x_local.detach().clone()
 
@@ -367,13 +364,7 @@ class TestReduceScatter(unittest.TestCase):
         if polar_size <= 1:
             return x_local.detach().clone()
 
-        out_list = []
-        local_shape = list(x_local.shape)
-        for s in shapes:
-            local_shape[dim] = s
-            out_list.append(torch.empty(local_shape, dtype=x_local.dtype, device=x_local.device))
-        dist.all_gather(out_list, x_local.detach().contiguous(), group=thd.polar_group())
-        return torch.cat(out_list, dim=dim)
+        return torch.cat(all_gather_tensors(x_local, thd.polar_group(), dim=dim, shapes=shapes), dim=dim)
 
     def _azimuth_all_gather(self, x_local, dim, shapes):
         """All-gather across the azimuth group; mirrors _polar_all_gather."""
@@ -381,13 +372,7 @@ class TestReduceScatter(unittest.TestCase):
         if az_size <= 1:
             return x_local.detach().clone()
 
-        out_list = []
-        local_shape = list(x_local.shape)
-        for s in shapes:
-            local_shape[dim] = s
-            out_list.append(torch.empty(local_shape, dtype=x_local.dtype, device=x_local.device))
-        dist.all_gather(out_list, x_local.detach().contiguous(), group=thd.azimuth_group())
-        return torch.cat(out_list, dim=dim)
+        return torch.cat(all_gather_tensors(x_local, thd.azimuth_group(), dim=dim, shapes=shapes), dim=dim)
 
     @parameterized.expand(
         [
@@ -422,9 +407,7 @@ class TestReduceScatter(unittest.TestCase):
 
         # Forward reference: gather-and-sum, then slice my own chunk.
         if polar_size > 1:
-            x_all = [torch.empty_like(x_local) for _ in range(polar_size)]
-            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.polar_group())
-            x_full = torch.stack(x_all, dim=0).sum(dim=0)
+            x_full = torch.stack(all_gather_tensors(x_local, thd.polar_group()), dim=0).sum(dim=0)
         else:
             x_full = x_local.detach().clone()
 
@@ -500,9 +483,7 @@ class TestReduceScatter(unittest.TestCase):
         my_expected = expected_shapes[self.wrank]
 
         if az_size > 1:
-            x_all = [torch.empty_like(x_local) for _ in range(az_size)]
-            dist.all_gather(x_all, x_local.detach().contiguous(), group=thd.azimuth_group())
-            x_full = torch.stack(x_all, dim=0).sum(dim=0)
+            x_full = torch.stack(all_gather_tensors(x_local, thd.azimuth_group()), dim=0).sum(dim=0)
         else:
             x_full = x_local.detach().clone()
 
@@ -748,6 +729,51 @@ class TestPolarHalo(unittest.TestCase):
             expected_bot = x_full[:, :, end : end + r_lat, :]
         ok = compare_tensors("halo bottom", bot, expected_bot, atol=0.0, rtol=0.0, verbose=False)
         self.assertTrue(reduce_success(ok, self.device), "halo bottom rows")
+
+    @parameterized.expand(
+        [
+            # B, C,  H,  W, r_lat of the exchange that follows
+            [8, 3, 18, 72, 2],
+            [2, 4, 33, 64, 1],
+        ],
+        skip_on_empty=True,
+    )
+    def test_zero_radius_is_identity_and_leaves_no_message_behind(self, B, C, H, W, r_lat_next):
+        """A zero-width halo is an identity and posts no P2P, so a later exchange is unaffected.
+
+        A layer whose support stays within the local rows gets r_lat == 0 (makani's SNO encoder,
+        36 x 72 -> 4 x 9, on two polar ranks). Up to v0.9.3 the exchange sliced ``x[..., -0:, :]``
+        -- the whole tensor -- and sent it against the neighbour's 0-row receive. The surplus of
+        that unmatched send could be delivered to the next halo receive on the polar
+        communicator, so the zero-radius layer itself came out right and a *later* one was
+        corrupted. Hence the second exchange here, checked against the global tensor.
+        """
+
+        set_seed(333)
+        comm_size = thd.polar_group_size()
+        rank = thd.polar_group_rank()
+        if comm_size == 1:
+            self.skipTest("halo exchange is an identity on a single polar rank")
+
+        x0 = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        ok = compare_tensors("zero halo gather", polar_halo_exchange(x0, 0), x0, atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "zero-width halo gather is not the identity")
+        ok = compare_tensors("zero halo reduce", polar_halo_reduce(x0, 0, H), x0, atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "zero-width halo reduce is not the identity")
+
+        # the exchange that follows on the same communicator must see only its own data
+        shapes = compute_split_shapes(H * comm_size, comm_size)
+        x_full = torch.randn(B, C, H * comm_size, W, device=self.device, dtype=torch.float64)
+        offset = sum(shapes[:rank])
+        end = offset + shapes[rank]
+        got = polar_halo_exchange(x_full[:, :, offset:end, :].contiguous(), r_lat_next)
+
+        expected_top = torch.zeros_like(got[:, :, :r_lat_next, :]) if rank == 0 else x_full[:, :, offset - r_lat_next : offset, :]
+        expected_bot = torch.zeros_like(got[:, :, -r_lat_next:, :]) if rank == comm_size - 1 else x_full[:, :, end : end + r_lat_next, :]
+        ok = compare_tensors("halo top after zero halo", got[:, :, :r_lat_next, :], expected_top, atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "halo top rows after a zero-width exchange")
+        ok = compare_tensors("halo bottom after zero halo", got[:, :, -r_lat_next:, :], expected_bot, atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "halo bottom rows after a zero-width exchange")
 
 
 if __name__ == "__main__":

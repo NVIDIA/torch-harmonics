@@ -33,11 +33,13 @@ from math import ceil
 
 import torch
 
+from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
+
 from .shallow_water_equations import ShallowWaterSolver
 
 
-class PdeDataset(torch.utils.data.Dataset):
-    """Custom Dataset class for PDE training data
+class ShallowWaterDataset(torch.utils.data.Dataset):
+    """Custom Dataset class for shallow water training data
 
     Parameters
     ----------
@@ -45,12 +47,8 @@ class PdeDataset(torch.utils.data.Dataset):
         Time step
     nsteps : int
         Number of solver steps
-    dims : tuple, optional
-        Number of latitude and longitude points, by default (384, 768)
-    grid : str, optional
-        Grid type, by default "equiangular"
-    pde : str, optional
-        PDE type, by default "shallow water equations"
+    grid : RegularGridS2
+        Grid the samples are generated on, e.g. ``as_grid("equiangular", nlat=384, nlon=768)``.
     initial_condition : str, optional
         Initial condition type, by default "random"
     num_examples : int, optional
@@ -61,6 +59,8 @@ class PdeDataset(torch.utils.data.Dataset):
         Whether to normalize the input and target, by default True
     stream : torch.cuda.Stream, optional
         CUDA stream to use, by default None
+    compile : bool, optional
+        Whether to compile the solver time step with torch.compile, by default False
 
     Returns
     -------
@@ -70,38 +70,40 @@ class PdeDataset(torch.utils.data.Dataset):
         Target tensor
     """
 
+    @_rejects_legacy_signature(
+        'dt, nsteps, dims=(384, 768), grid="equiangular", pde="shallow water equations", initial_condition="random", '
+        'num_examples=32, device=torch.device("cpu"), normalize=True, stream=None',
+        grid="dims",
+    )
     def __init__(
         self,
         dt,
         nsteps,
-        dims=(384, 768),
-        grid="equiangular",
-        pde="shallow water equations",
+        grid,
         initial_condition="random",
         num_examples=32,
         device=torch.device("cpu"),
         normalize=True,
         stream=None,
+        compile=False,
     ):
         self.num_examples = num_examples
         self.device = device
         self.stream = stream
 
-        self.nlat = dims[0]
-        self.nlon = dims[1]
-        self.grid = grid
+        self.grid = require_regular_grid(grid)
+        self.nlat, self.nlon = self.grid.shape
 
         # number of solver steps used to compute the target
         self.nsteps = nsteps
         self.normalize = normalize
 
-        if pde == "shallow water equations":
-            lmax = ceil(self.nlat / 3)
-            mmax = lmax
-            dt_solver = dt / float(self.nsteps)
-            self.solver = ShallowWaterSolver(self.nlat, self.nlon, dt_solver, lmax=lmax, mmax=mmax, grid=grid).to(self.device).float()
-        else:
-            raise NotImplementedError
+        lmax = ceil(self.nlat / 3)
+        mmax = lmax
+        dt_solver = dt / float(self.nsteps)
+        self.solver = ShallowWaterSolver(self.grid, dt_solver, lmax=lmax, mmax=mmax).to(self.device).float()
+        if compile:
+            self.solver.compile()
 
         self.set_initial_condition(ictype=initial_condition)
 

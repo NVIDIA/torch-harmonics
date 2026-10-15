@@ -35,6 +35,7 @@ import torch
 import torch.nn as nn
 from natten import NeighborhoodAttention2D as NeighborhoodAttention
 
+from torch_harmonics import as_grid
 from torch_harmonics.examples.models._layers import MLP, DropPath, LayerNorm, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralPositionEmbedding
 
 
@@ -406,14 +407,16 @@ class Transformer(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
+        # the position embeddings are defined on a spherical grid of the latent resolution
+        pos_grid = as_grid(grid_internal, nlat=self.h, nlon=self.w)
         if pos_embed == "sequence":
-            self.pos_embed = SequencePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+            self.pos_embed = SequencePositionEmbedding(pos_grid, num_chans=self.embed_dim)
         elif pos_embed == "spectral":
-            self.pos_embed = SpectralPositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+            self.pos_embed = SpectralPositionEmbedding(pos_grid, num_chans=self.embed_dim)
         elif pos_embed == "learnable lat":
-            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="lat")
+            self.pos_embed = LearnablePositionEmbedding(pos_grid, num_chans=self.embed_dim, embed_type="lat")
         elif pos_embed == "learnable latlon":
-            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="latlon")
+            self.pos_embed = LearnablePositionEmbedding(pos_grid, num_chans=self.embed_dim, embed_type="latlon")
         elif pos_embed == "none":
             self.pos_embed = nn.Identity()
         else:

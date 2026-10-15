@@ -28,16 +28,19 @@ dynamic = ["version"]
 
 description = "Differentiable signal processing on the sphere for PyTorch."
 license = { file = "LICENSE.txt" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 
 dependencies = [
-    "torch>=2.6.0",
+    "torch>=2.9.0",
     "numpy>=1.22.4",
 ]
 
@@ -86,6 +89,16 @@ docs = [
     "h5py",
 ]
 
+[tool.pytest.ini_options]
+# The suite exercises the post-0.9 defaults deliberately, so the migration
+# notices announcing them are expected here and would otherwise account for
+# most of the warning summary. The tests that assert the notices still fire
+# use assertWarns / catch_warnings, which override these filters.
+filterwarnings = [
+    "ignore:Default SHT truncation changed:UserWarning",
+    "ignore:Default theta_cutoff changed:UserWarning",
+]
+
 [tool.black]
 line-length = 180
 
@@ -115,8 +128,8 @@ ignore = [
 known-first-party = ["torch_harmonics"]
 
 [tool.cibuildwheel]
-# Build for Python 3.10, 3.11, 3.12
-build = ["cp310-*", "cp311-*", "cp312-*"]
+# Build for Python 3.11, 3.12, 3.13, 3.14
+build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
 build-frontend = "pip; args: --no-build-isolation"
 
 # Use manylinux for Linux wheels

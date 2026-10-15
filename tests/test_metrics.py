@@ -36,6 +36,7 @@ import torch
 from parameterized import parameterized
 from testutils import compare_tensors
 
+from torch_harmonics import as_grid
 from torch_harmonics.examples.metrics import AccuracyS2, IntersectionOverUnionS2, _get_stats_multiclass
 
 
@@ -81,7 +82,7 @@ class TestMulticlassStats(unittest.TestCase):
             target[0, :, ::3] = ignore_index
             target[-1] = ignore_index  # a fully ignored sample
 
-        metric = AccuracyS2(8, 16, grid=grid, ignore_index=ignore_index)
+        metric = AccuracyS2(as_grid(grid, nlat=8, nlon=16), ignore_index=ignore_index)
         actual = _get_stats_multiclass(output, target, 4, metric.quad_weights, ignore_index)
         expected = confusion_reference(output, target, 4, metric.quad_weights, ignore_index)
 
@@ -95,7 +96,7 @@ class TestMulticlassStats(unittest.TestCase):
         output = torch.randint(0, 3, (2, 8, 16), generator=generator)
         target[:, 5:, :] = -100
 
-        metric = AccuracyS2(8, 16)
+        metric = AccuracyS2(as_grid("equiangular", nlat=8, nlon=16))
         counts = _get_stats_multiclass(output, target, 3, metric.quad_weights, -100)
         total = sum(counts)
         scored = torch.where(target == -100, 0.0, metric.quad_weights.expand_as(target.double()).double())
@@ -110,7 +111,7 @@ class TestAccuracyS2(unittest.TestCase):
         generator = torch.Generator().manual_seed(33)
         target = torch.randint(0, 3, (2, 8, 16), generator=generator)
         target[:, 6:, :] = -100
-        metric = AccuracyS2(8, 16, grid=grid, mode=mode)
+        metric = AccuracyS2(as_grid(grid, nlat=8, nlon=16), mode=mode)
         score = metric(confident_logits(target.clamp(min=0), 3), target)
         self.assertTrue(compare_tensors("perfect prediction scores one", score.double(), torch.tensor(1.0, dtype=torch.float64), atol=1e-6, rtol=0))
 
@@ -123,7 +124,7 @@ class TestAccuracyS2(unittest.TestCase):
         target = torch.full((1, 8, 16), -100, dtype=torch.long)
         target[..., :4] = 0  # only a quarter of the sphere is scored
         logits = confident_logits(torch.ones_like(target), 2)  # always predicts class 1
-        metric = AccuracyS2(8, 16, mode="micro")
+        metric = AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), mode="micro")
         self.assertTrue(compare_tensors("ignored area is not credited as correct", metric(logits, target).double(), torch.tensor(0.0, dtype=torch.float64), atol=1e-6, rtol=0))
 
     def test_ignored_predictions_do_not_change_the_score(self):
@@ -133,14 +134,14 @@ class TestAccuracyS2(unittest.TestCase):
         logits = torch.randn((1, 3, 8, 16), dtype=torch.float64, generator=generator)
         changed = logits.clone()
         changed[:, :, 3:5, :] = 50 * torch.randn((1, 3, 2, 16), dtype=torch.float64, generator=generator)
-        metric = AccuracyS2(8, 16)
+        metric = AccuracyS2(as_grid("equiangular", nlat=8, nlon=16))
         self.assertTrue(compare_tensors("ignored predictions do not change the score", metric(logits, target), metric(changed, target), atol=0, rtol=0))
 
     def test_unmasked_score_is_the_area_weighted_correct_fraction(self):
         generator = torch.Generator().manual_seed(35)
         target = torch.randint(0, 2, (1, 8, 16), generator=generator)
         output = torch.randint(0, 2, (1, 8, 16), generator=generator)
-        metric = AccuracyS2(8, 16, mode="micro")
+        metric = AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), mode="micro")
         expected = (metric.quad_weights * (target == output)).sum().double()
         self.assertTrue(
             compare_tensors("unmasked score is the area weighted correct fraction", metric(confident_logits(output, 2), target).double(), expected, atol=1e-7, rtol=1e-6)
@@ -154,7 +155,7 @@ class TestIntersectionOverUnionS2(unittest.TestCase):
         generator = torch.Generator().manual_seed(36)
         target = torch.randint(0, 3, (2, 8, 16), generator=generator)
         target[:, 6:, :] = -100
-        metric = IntersectionOverUnionS2(8, 16, mode=mode)
+        metric = IntersectionOverUnionS2(as_grid("equiangular", nlat=8, nlon=16), mode=mode)
         score = metric(confident_logits(target.clamp(min=0), 3), target)
         self.assertTrue(compare_tensors("perfect prediction scores one", score.double(), torch.tensor(1.0, dtype=torch.float64), atol=1e-6, rtol=0))
 
@@ -165,7 +166,7 @@ class TestIntersectionOverUnionS2(unittest.TestCase):
         output = torch.randint(0, 2, (1, 8, 16), generator=generator)
         target[:, 5:, :] = -100
 
-        metric = IntersectionOverUnionS2(8, 16, mode="micro")
+        metric = IntersectionOverUnionS2(as_grid("equiangular", nlat=8, nlon=16), mode="micro")
         tp, fp, fn, _ = confusion_reference(output, target, 2, metric.quad_weights, -100)
         expected = (tp.mean(dim=1) / (tp + fp + fn).mean(dim=1)).mean()
         self.assertTrue(compare_tensors("matches the iou definition", metric(confident_logits(output, 2), target).double(), expected, atol=1e-7, rtol=1e-6))
@@ -185,8 +186,10 @@ class TestMetricConventions(unittest.TestCase):
         target = torch.full((1, 8, 16), -100, dtype=torch.long)
         logits = torch.randn((1, 2, 8, 16), generator=generator)
 
-        self.assertTrue(torch.isnan(AccuracyS2(8, 16, mode="micro")(logits, target)))
-        self.assertTrue(compare_tensors("fully ignored, macro", AccuracyS2(8, 16, mode="macro")(logits, target), torch.tensor(0.0), atol=0, rtol=0))
+        self.assertTrue(torch.isnan(AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), mode="micro")(logits, target)))
+        self.assertTrue(
+            compare_tensors("fully ignored, macro", AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), mode="macro")(logits, target), torch.tensor(0.0), atol=0, rtol=0)
+        )
 
     def test_macro_class_weights_are_not_normalized(self):
         """Macro sums score * weight without dividing by the weight total, so weights
@@ -198,13 +201,13 @@ class TestMetricConventions(unittest.TestCase):
         small = torch.tensor([0.2, 0.3, 0.5])
 
         for mode, invariant in (("micro", True), ("macro", False)):
-            unit = AccuracyS2(8, 16, weight=small, mode=mode)(logits, target)
-            tenfold = AccuracyS2(8, 16, weight=10 * small, mode=mode)(logits, target)
+            unit = AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), weight=small, mode=mode)(logits, target)
+            tenfold = AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), weight=10 * small, mode=mode)(logits, target)
             expected = unit if invariant else 10 * unit
             self.assertTrue(compare_tensors(f"{mode} under weight rescaling", tenfold, expected, atol=1e-6, rtol=1e-5))
 
         # the concrete consequence: an accuracy above one
-        self.assertGreater(AccuracyS2(8, 16, weight=10 * small, mode="macro")(logits, target).item(), 1.0)
+        self.assertGreater(AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), weight=10 * small, mode="macro")(logits, target).item(), 1.0)
 
     def test_an_unrecognized_mode_yields_neither_micro_nor_macro(self):
         """A mistyped mode is a silent misconfiguration with its own behavior.
@@ -219,8 +222,8 @@ class TestMetricConventions(unittest.TestCase):
         target = torch.randint(0, 3, (1, 8, 16), generator=generator)
         logits = torch.randn((1, 3, 8, 16), generator=generator)
 
-        mistyped = AccuracyS2(8, 16, mode="Micro")(logits, target)
-        macro = AccuracyS2(8, 16, mode="macro")(logits, target)
+        mistyped = AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), mode="Micro")(logits, target)
+        macro = AccuracyS2(as_grid("equiangular", nlat=8, nlon=16), mode="macro")(logits, target)
 
         self.assertEqual(macro.shape, torch.Size([]))
         self.assertEqual(mistyped.shape, torch.Size([3]))

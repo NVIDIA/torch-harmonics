@@ -29,13 +29,20 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import subprocess
+import sys
+import tempfile
+import textwrap
 import unittest
+import unittest.mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, set_seed
+from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
 
+from torch_harmonics import as_grid
 from torch_harmonics.spectral_convolution import SpectralConvS2
+from torch_harmonics.utils import compile_if_supported, torch_compile_supported
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -79,13 +86,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv.eval()
 
@@ -131,13 +136,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv_grouped = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv_grouped.eval()
 
@@ -148,13 +151,11 @@ class TestSpectralConvS2(unittest.TestCase):
         group_convs = []
         for g in range(num_groups):
             gc = SpectralConvS2(
-                in_shape=(nlat, nlon),
-                out_shape=(nlat, nlon),
+                as_grid("equiangular", nlat=nlat, nlon=nlon),
+                as_grid("equiangular", nlat=nlat, nlon=nlon),
                 in_channels=ic_per_group,
                 out_channels=oc_per_group,
                 num_groups=1,
-                grid_in="equiangular",
-                grid_out="equiangular",
             ).to(self.device)
             # weight shape: [num_groups, ic_per_group, oc_per_group, lmax]
             gc.weight.data = conv_grouped.weight[g : g + 1].clone()
@@ -202,12 +203,10 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv.eval()
 
@@ -247,13 +246,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv.eval()
 
@@ -292,13 +289,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
         ).to(self.device)
         conv.eval()
 
@@ -346,25 +341,21 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv_no_bias = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=False,
         ).to(self.device)
 
         set_seed(333)
         conv_bias = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
         ).to(self.device)
         # spectral_bias is zero-initialised; weights must match
@@ -392,13 +383,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
         ).to(self.device)
 
@@ -428,13 +417,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=channels,
             out_channels=channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
         ).to(self.device)
 
@@ -466,13 +453,11 @@ class TestSpectralConvS2(unittest.TestCase):
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=True,
         ).to(self.device)
 
@@ -516,19 +501,18 @@ class TestSpectralConvS2(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
+    @requires_torch_compile
     def test_compile(self, nlat, nlon, in_channels, out_channels, num_groups, bias, verbose=False):
         """The layer compiles and matches eager, forward and backward."""
 
         set_seed(333)
 
         conv = SpectralConvS2(
-            in_shape=(nlat, nlon),
-            out_shape=(nlat, nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
+            as_grid("equiangular", nlat=nlat, nlon=nlon),
             in_channels=in_channels,
             out_channels=out_channels,
             num_groups=num_groups,
-            grid_in="equiangular",
-            grid_out="equiangular",
             bias=bias,
         ).to(self.device)
         conv.eval()
@@ -552,6 +536,70 @@ class TestSpectralConvS2(unittest.TestCase):
 
         self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
         self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+
+
+class TestCompileIfSupported(unittest.TestCase):
+    """compile_if_supported must not fail where torch.compile refuses to run at all."""
+
+    # torch_compile_supported caches its answer; each test patches torch.compile, so it
+    # must see a fresh check, and must not leave a patched answer behind.
+    def setUp(self):
+        torch_compile_supported.cache_clear()
+
+    def tearDown(self):
+        torch_compile_supported.cache_clear()
+
+    def test_falls_back_when_torch_compile_refuses(self):
+        # what torch 2.9 does on Python 3.14, raised when torch.compile is called
+        def refuse(fn, *args, **kwargs):
+            raise RuntimeError("torch.compile is not supported on Python 3.14+")
+
+        def fn(x):
+            return x + 1
+
+        with unittest.mock.patch.object(torch, "compile", refuse):
+            self.assertIs(compile_if_supported(fn), fn)
+
+    def test_other_errors_are_raised(self):
+        # anything but the refusal is a real problem, not a reason to run uncompiled
+        def broken(fn, *args, **kwargs):
+            raise RuntimeError("inductor misconfigured")
+
+        with unittest.mock.patch.object(torch, "compile", broken):
+            with self.assertRaisesRegex(RuntimeError, "inductor misconfigured"):
+                compile_if_supported(lambda x: x)
+
+    def test_import_with_torch_compile_refused(self):
+        # The failure this guards against happened at import, when the class bodies applied
+        # the decorator, so import both layers in a fresh interpreter in which torch.compile
+        # already refuses. Run outside the repository, so the installed package is imported.
+        code = textwrap.dedent(
+            """
+            import torch
+
+            def refuse(*args, **kwargs):
+                raise RuntimeError("torch.compile is not supported on Python 3.14+")
+
+            torch.compile = refuse
+
+            from torch_harmonics.spectral_convolution import SpectralConvS2
+            from torch_harmonics.distributed.distributed_spectral_convolution import DistributedSpectralConvS2
+
+            for cls in (SpectralConvS2, DistributedSpectralConvS2):
+                fn = cls.__dict__["_contract_lwise"]
+                assert not hasattr(fn, "_torchdynamo_orig_callable"), f"{cls.__name__} was compiled"
+            """
+        )
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=tempfile.gettempdir())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_compiles_where_supported(self):
+        def fn(x):
+            return x + 1
+
+        sentinel = object()
+        with unittest.mock.patch.object(torch, "compile", lambda f, *a, **k: sentinel):
+            self.assertIs(compile_if_supported(fn), sentinel)
 
 
 if __name__ == "__main__":

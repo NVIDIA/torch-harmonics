@@ -36,12 +36,21 @@ import torch.amp as amp
 import torch.nn as nn
 
 from torch_harmonics import DiscreteContinuousConvS2, InverseRealSHT, RealSHT, ResampleS2
-from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
+from torch_harmonics.examples.models._layers import (
+    MLP,
+    DropPath,
+    LearnablePositionEmbedding,
+    SequencePositionEmbedding,
+    SpectralConvS2,
+    SpectralPositionEmbedding,
+)
+from torch_harmonics.grid import require_regular_grid
 
 
 # heuristic for finding theta_cutoff
 def _compute_cutoff_radius(nlat, kernel_shape, basis_type):
-    theta_cutoff_factor = {"piecewise linear": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
+    # "morlet" is the deprecated unnormalized alias of "harmonic", with the same support
+    theta_cutoff_factor = {"piecewise linear": 0.5, "harmonic": 0.5, "morlet": 0.5, "zernike": math.sqrt(2.0)}
 
     return (kernel_shape[0] + 1) * theta_cutoff_factor[basis_type] * math.pi / float(nlat - 1)
 
@@ -55,14 +64,10 @@ class DiscreteContinuousEncoder(nn.Module):
 
     Parameters
     ----------
-    in_shape : tuple, optional
-        Input shape (nlat, nlon), by default (721, 1440)
-    out_shape : tuple, optional
-        Output shape (nlat, nlon), by default (480, 960)
-    grid_in : str, optional
-        Input grid type, by default "equiangular"
-    grid_out : str, optional
-        Output grid type, by default "equiangular"
+    grid_in : RegularGridS2
+        Grid of the input field.
+    grid_out : RegularGridS2
+        Grid of the output field, usually coarser.
     inp_chans : int, optional
         Number of input channels, by default 2
     out_chans : int, optional
@@ -70,7 +75,7 @@ class DiscreteContinuousEncoder(nn.Module):
     kernel_shape : tuple, optional
         Kernel shape for convolution, by default (3, 3)
     basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     groups : int, optional
         Number of groups for grouped convolution, by default 1
     bias : bool, optional
@@ -79,14 +84,12 @@ class DiscreteContinuousEncoder(nn.Module):
 
     def __init__(
         self,
-        in_shape=(721, 1440),
-        out_shape=(480, 960),
-        grid_in="equiangular",
-        grid_out="equiangular",
+        grid_in,
+        grid_out,
         inp_chans=2,
         out_chans=2,
         kernel_shape=(3, 3),
-        basis_type="morlet",
+        basis_type="harmonic",
         groups=1,
         bias=False,
     ):
@@ -94,17 +97,15 @@ class DiscreteContinuousEncoder(nn.Module):
 
         # set up local convolution
         self.conv = DiscreteContinuousConvS2(
+            grid_in,
+            grid_out,
             inp_chans,
             out_chans,
-            in_shape=in_shape,
-            out_shape=out_shape,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_in,
-            grid_out=grid_out,
             groups=groups,
             bias=bias,
-            theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
+            theta_cutoff=_compute_cutoff_radius(grid_in.nlat, kernel_shape, basis_type),
         )
 
     def forward(self, x):
@@ -128,14 +129,10 @@ class DiscreteContinuousDecoder(nn.Module):
 
     Parameters
     ----------
-    in_shape : tuple, optional
-        Input shape (nlat, nlon), by default (480, 960)
-    out_shape : tuple, optional
-        Output shape (nlat, nlon), by default (721, 1440)
-    grid_in : str, optional
-        Input grid type, by default "equiangular"
-    grid_out : str, optional
-        Output grid type, by default "equiangular"
+    grid_in : RegularGridS2
+        Grid of the input field, usually the coarser one.
+    grid_out : RegularGridS2
+        Grid of the output field.
     inp_chans : int, optional
         Number of input channels, by default 2
     out_chans : int, optional
@@ -143,7 +140,7 @@ class DiscreteContinuousDecoder(nn.Module):
     kernel_shape : tuple, optional
         Kernel shape for convolution, by default (3, 3)
     basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     groups : int, optional
         Number of groups for grouped convolution, by default 1
     bias : bool, optional
@@ -154,14 +151,12 @@ class DiscreteContinuousDecoder(nn.Module):
 
     def __init__(
         self,
-        in_shape=(480, 960),
-        out_shape=(721, 1440),
-        grid_in="equiangular",
-        grid_out="equiangular",
+        grid_in,
+        grid_out,
         inp_chans=2,
         out_chans=2,
         kernel_shape=(3, 3),
-        basis_type="morlet",
+        basis_type="harmonic",
         groups=1,
         bias=False,
         upsample_sht=False,
@@ -170,25 +165,23 @@ class DiscreteContinuousDecoder(nn.Module):
 
         # set up upsampling
         if upsample_sht:
-            self.sht = RealSHT(*in_shape, grid=grid_in).float()
-            self.isht = InverseRealSHT(*out_shape, lmax=self.sht.lmax, mmax=self.sht.mmax, grid=grid_out).float()
+            self.sht = RealSHT(grid_in).float()
+            self.isht = InverseRealSHT(grid_out, lmax=self.sht.lmax, mmax=self.sht.mmax).float()
             self.upsample = nn.Sequential(self.sht, self.isht)
         else:
-            self.upsample = ResampleS2(*in_shape, *out_shape, grid_in=grid_in, grid_out=grid_out)
+            self.upsample = ResampleS2(grid_in, grid_out)
 
         # set up DISCO convolution
         self.conv = DiscreteContinuousConvS2(
+            grid_out,
+            grid_out,
             inp_chans,
             out_chans,
-            in_shape=out_shape,
-            out_shape=out_shape,
             kernel_shape=kernel_shape,
             basis_type=basis_type,
-            grid_in=grid_out,
-            grid_out=grid_out,
             groups=groups,
             bias=False,
-            theta_cutoff=_compute_cutoff_radius(in_shape[0], kernel_shape, basis_type),
+            theta_cutoff=_compute_cutoff_radius(grid_in.nlat, kernel_shape, basis_type),
         )
 
     def forward(self, x):
@@ -239,7 +232,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
     disco_kernel_shape : tuple, optional
         Kernel shape for discrete-continuous convolution, by default (3, 3)
     disco_basis_type : str, optional
-        Filter basis type for discrete-continuous convolution, by default "morlet"
+        Filter basis type for discrete-continuous convolution, by default "harmonic"
     bias : bool, optional
         Whether to use bias, by default False
 
@@ -265,7 +258,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
         outer_skip="identity",
         use_mlp=True,
         disco_kernel_shape=(3, 3),
-        disco_basis_type="morlet",
+        disco_basis_type="harmonic",
         bias=False,
     ):
         super().__init__()
@@ -282,14 +275,12 @@ class SphericalNeuralOperatorBlock(nn.Module):
         if conv_type == "local":
             theta_cutoff = 2.0 * _compute_cutoff_radius(forward_transform.nlat, disco_kernel_shape, disco_basis_type)
             self.local_conv = DiscreteContinuousConvS2(
+                forward_transform.grid,
+                inverse_transform.grid,
                 input_dim,
                 output_dim,
-                in_shape=(forward_transform.nlat, forward_transform.nlon),
-                out_shape=(inverse_transform.nlat, inverse_transform.nlon),
                 kernel_shape=disco_kernel_shape,
                 basis_type=disco_basis_type,
-                grid_in=forward_transform.grid,
-                grid_out=inverse_transform.grid,
                 bias=bias,
                 theta_cutoff=theta_cutoff,
             )
@@ -385,14 +376,13 @@ class LocalSphericalNeuralOperator(nn.Module):
 
     Parameters
     ----------
-    img_size : tuple, optional
-        Input image size (nlat, nlon), by default (128, 256)
-    grid : str, optional
-        Grid type for input/output, by default "equiangular"
-    grid_internal : str, optional
-        Grid type for internal processing, by default "legendre-gauss"
-    scale_factor : int, optional
-        Scale factor for resolution changes, by default 3
+    grid : RegularGridS2
+        Grid the input and output fields live on, e.g.
+        ``as_grid("equiangular", nlat=128, nlon=256)``.
+    grid_internal : RegularGridS2
+        Grid the operator blocks work on, usually coarser than ``grid``, e.g.
+        ``as_grid("legendre-gauss", nlat=43, nlon=86)``. The DISCO encoder maps
+        ``grid`` onto it and the decoder back.
     in_chans : int, optional
         Number of input channels, by default 3
     out_chans : int, optional
@@ -408,7 +398,7 @@ class LocalSphericalNeuralOperator(nn.Module):
     encoder_kernel_shape : tuple, optional
         Kernel shape for encoder, by default (3, 3)
     filter_basis_type : str, optional
-        Filter basis type, by default "morlet"
+        Filter basis type, by default "harmonic"
     use_mlp : bool, optional
         Whether to use MLP layers, by default True
     mlp_ratio : float, optional
@@ -434,9 +424,10 @@ class LocalSphericalNeuralOperator(nn.Module):
 
     Examples
     --------
+    >>> from torch_harmonics import as_grid
     >>> model = LocalSphericalNeuralOperator(
-    ...         img_size=(128, 256),
-    ...         scale_factor=4,
+    ...         grid=as_grid("equiangular", nlat=128, nlon=256),
+    ...         grid_internal=as_grid("legendre-gauss", nlat=32, nlon=64),
     ...         in_chans=2,
     ...         out_chans=2,
     ...         embed_dim=16,
@@ -452,10 +443,8 @@ class LocalSphericalNeuralOperator(nn.Module):
 
     def __init__(
         self,
-        img_size=(128, 256),
-        grid="equiangular",
-        grid_internal="legendre-gauss",
-        scale_factor=3,
+        grid,
+        grid_internal,
         in_chans=3,
         out_chans=3,
         embed_dim=256,
@@ -463,7 +452,7 @@ class LocalSphericalNeuralOperator(nn.Module):
         activation_function="gelu",
         kernel_shape=(3, 3),
         encoder_kernel_shape=(3, 3),
-        filter_basis_type="morlet",
+        filter_basis_type="harmonic",
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -478,10 +467,9 @@ class LocalSphericalNeuralOperator(nn.Module):
     ):
         super().__init__()
 
-        self.img_size = img_size
-        self.grid = grid
-        self.grid_internal = grid_internal
-        self.scale_factor = scale_factor
+        self.grid = require_regular_grid(grid, "grid")
+        self.grid_internal = require_regular_grid(grid_internal, "grid_internal")
+        self.img_size = self.grid.shape
         self.in_chans = in_chans
         self.out_chans = out_chans
         self.embed_dim = embed_dim
@@ -503,22 +491,20 @@ class LocalSphericalNeuralOperator(nn.Module):
         else:
             raise ValueError(f"Unknown activation function {activation_function}")
 
-        # compute downsampled image size. We assume that the latitude-grid includes both poles
-        self.h = (self.img_size[0] - 1) // scale_factor + 1
-        self.w = self.img_size[1] // scale_factor
+        self.h, self.w = self.grid_internal.shape
 
         # dropout
         self.pos_drop = nn.Dropout(p=drop_rate) if drop_rate > 0.0 else nn.Identity()
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.num_layers)]
 
         if pos_embed == "sequence":
-            self.pos_embed = SequencePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+            self.pos_embed = SequencePositionEmbedding(self.grid_internal, num_chans=self.embed_dim)
         elif pos_embed == "spectral":
-            self.pos_embed = SpectralPositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal)
+            self.pos_embed = SpectralPositionEmbedding(self.grid_internal, num_chans=self.embed_dim)
         elif pos_embed == "learnable lat":
-            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="lat")
+            self.pos_embed = LearnablePositionEmbedding(self.grid_internal, num_chans=self.embed_dim, embed_type="lat")
         elif pos_embed == "learnable latlon":
-            self.pos_embed = LearnablePositionEmbedding((self.h, self.w), num_chans=self.embed_dim, grid=grid_internal, embed_type="latlon")
+            self.pos_embed = LearnablePositionEmbedding(self.grid_internal, num_chans=self.embed_dim, embed_type="latlon")
         elif pos_embed == "none":
             self.pos_embed = nn.Identity()
         else:
@@ -526,10 +512,8 @@ class LocalSphericalNeuralOperator(nn.Module):
 
         # encoder
         self.encoder = DiscreteContinuousEncoder(
-            in_shape=self.img_size,
-            out_shape=(self.h, self.w),
-            grid_in=grid,
-            grid_out=grid_internal,
+            grid_in=self.grid,
+            grid_out=self.grid_internal,
             inp_chans=self.in_chans,
             out_chans=self.embed_dim,
             kernel_shape=self.encoder_kernel_shape,
@@ -545,8 +529,8 @@ class LocalSphericalNeuralOperator(nn.Module):
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans = RealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
-        self.itrans = InverseRealSHT(self.h, self.w, lmax=modes_lat, mmax=modes_lon, grid=grid_internal).float()
+        self.trans = RealSHT(self.grid_internal, lmax=modes_lat, mmax=modes_lon).float()
+        self.itrans = InverseRealSHT(self.grid_internal, lmax=modes_lat, mmax=modes_lon).float()
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
@@ -572,10 +556,8 @@ class LocalSphericalNeuralOperator(nn.Module):
 
         # decoder
         self.decoder = DiscreteContinuousDecoder(
-            in_shape=(self.h, self.w),
-            out_shape=self.img_size,
-            grid_in=grid_internal,
-            grid_out=grid,
+            grid_in=self.grid_internal,
+            grid_out=self.grid,
             inp_chans=self.embed_dim,
             out_chans=self.out_chans,
             kernel_shape=self.encoder_kernel_shape,

@@ -11,6 +11,7 @@ maxdepth: 1
 caption: Fundamentals
 ---
 getting_started
+grid_descriptors
 plot_spherical_harmonics
 quadrature
 partial_derivatives

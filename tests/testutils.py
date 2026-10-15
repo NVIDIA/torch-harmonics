@@ -30,13 +30,24 @@
 #
 
 import contextlib
+import math
 import os
+import unittest
+from dataclasses import dataclass
+from typing import ClassVar
 
 import torch
 import torch.distributed as dist
-from packaging import version
 
 import torch_harmonics.distributed as thd
+from torch_harmonics import GridS2, as_grid
+from torch_harmonics.grid import _GRID_REGISTRY
+from torch_harmonics.utils import torch_compile_supported
+
+# For tests that call torch.compile themselves: torch refuses it outright on some
+# PyTorch/Python combinations (torch 2.9 on Python 3.14), which is not a failure of the code
+# under test. Goes directly on the test function, below @parameterized.expand.
+requires_torch_compile = unittest.skipUnless(torch_compile_supported(), "torch.compile is unavailable with this PyTorch and Python")
 
 
 def _is_sm90():
@@ -53,6 +64,26 @@ def _is_sm100():
         return False
     major, _ = torch.cuda.get_device_capability()
     return major == 10
+
+
+def regular_grid_types():
+    """
+    Registered grid families whose descriptors are :class:`RegularGridS2`.
+
+    Most of the library addresses a field as a dense ``(nlat, nlon)`` array and is
+    guarded by ``require_regular_grid``, so a test that sweeps "every grid" means every
+    grid those routines accept -- and constructs them with ``nlat``/``nlon``, which a
+    ragged family does not take.
+
+    Derived from the registry by subclass rather than by listing names, so a grid family
+    added later lands on the correct side of this without anyone remembering to come
+    back. HEALPix is excluded here and exercised where it is actually supported, which
+    today is attention; as other backends gain ragged support their tests should sweep
+    the full registry instead of this.
+    """
+    from torch_harmonics.grid import _GRID_REGISTRY, RegularGridS2
+
+    return tuple(name for name, cls in _GRID_REGISTRY.items() if issubclass(cls, RegularGridS2))
 
 
 def set_seed(seed=333):
@@ -78,16 +109,11 @@ def set_seed(seed=333):
 
 
 def disable_tf32():
-    # the api for this was changed lately in pytorch
     if torch.cuda.is_available():
-        if version.parse(torch.__version__) >= version.parse("2.9.0"):
-            torch.backends.cuda.matmul.fp32_precision = "ieee"
-            torch.backends.cudnn.fp32_precision = "ieee"
-            torch.backends.cudnn.conv.fp32_precision = "ieee"
-            torch.backends.cudnn.rnn.fp32_precision = "ieee"
-        else:
-            torch.backends.cuda.matmul.allow_tf32 = False
-            torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.fp32_precision = "ieee"
+        torch.backends.cudnn.fp32_precision = "ieee"
+        torch.backends.cudnn.conv.fp32_precision = "ieee"
+        torch.backends.cudnn.rnn.fp32_precision = "ieee"
     return
 
 
@@ -174,7 +200,11 @@ def setup_distributed_context(ctx):
         print(f"Running distributed tests on grid H x W = {ctx.grid_size_h} x {ctx.grid_size_w}")
 
     thd.init(ctx.h_group, ctx.w_group)
-    torch.cuda.set_device(ctx.device.index)
+
+    # gloo on a CPU-only host gives every rank a plain "cpu" device, whose index is
+    # None -- set_device would reject it and take the whole module down at setup.
+    if ctx.device.type == "cuda":
+        torch.cuda.set_device(ctx.device.index)
 
     return
 
@@ -242,31 +272,51 @@ def split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=1, wsize=1, hrank=0, wrank=0
     return tensor_local
 
 
+def all_gather_tensors(tensor, group, dim=0, shapes=None):
+    """
+    All-gather ``tensor`` from every rank of ``group``; returns the pieces in rank order.
+
+    ``shapes`` gives each rank's extent along ``dim`` (default: all equal to ``tensor``'s).
+    gloo requires every rank's piece to have the same shape, so under gloo uneven pieces are
+    zero-padded to the largest along ``dim``, gathered, and trimmed back; other backends
+    gather them as they are.
+
+    Deliberately plain ``torch.distributed``: the tests use this to build the reference for
+    the distributed primitives, so it must not go through ``torch_harmonics.distributed``.
+    """
+    tensor = tensor.detach().contiguous()
+    comm_size = dist.get_world_size(group=group)
+    if shapes is None:
+        shapes = [tensor.shape[dim]] * comm_size
+
+    def shaped(size):
+        shape = list(tensor.shape)
+        shape[dim] = size
+        return shape
+
+    if len(set(shapes)) > 1 and dist.get_backend(group) == dist.Backend.GLOO:
+        max_size = max(shapes)
+        padded = tensor
+        if tensor.shape[dim] < max_size:
+            padded = torch.cat([tensor, tensor.new_zeros(shaped(max_size - tensor.shape[dim]))], dim=dim)
+        gathered = [tensor.new_empty(shaped(max_size)) for _ in range(comm_size)]
+        dist.all_gather(gathered, padded.contiguous(), group=group)
+        return [g.narrow(dim, 0, size) for g, size in zip(gathered, shapes)]
+
+    gathered = [tensor.new_empty(shaped(size)) for size in shapes]
+    dist.all_gather(gathered, tensor, group=group)
+    return gathered
+
+
 def gather_tensor_hw(tensor, hdim=-2, wdim=-1, hshapes=[], wshapes=[], hsize=1, wsize=1, hrank=0, wrank=0, hgroup=None, wgroup=None):
     """Gather tensor along height/width according to process grid ranks and shapes."""
     with torch.no_grad():
         tensor = tensor.contiguous()
         if wsize > 1:
-            local_shape = list(tensor.shape)
-            gather_shapes = []
-            for w in wshapes:
-                local_shape[wdim] = w
-                gather_shapes.append(tuple(local_shape))
-            olist = [torch.empty(shape, dtype=tensor.dtype, device=tensor.device) for shape in gather_shapes]
-            olist[wrank] = tensor
-            dist.all_gather(olist, tensor, group=wgroup)
-            tensor = torch.cat(olist, dim=wdim)
+            tensor = torch.cat(all_gather_tensors(tensor, wgroup, dim=wdim, shapes=wshapes), dim=wdim)
 
         if hsize > 1:
-            local_shape = list(tensor.shape)
-            gather_shapes = []
-            for h in hshapes:
-                local_shape[hdim] = h
-                gather_shapes.append(tuple(local_shape))
-            olist = [torch.empty(shape, dtype=tensor.dtype, device=tensor.device) for shape in gather_shapes]
-            olist[hrank] = tensor
-            dist.all_gather(olist, tensor, group=hgroup)
-            tensor = torch.cat(olist, dim=hdim)
+            tensor = torch.cat(all_gather_tensors(tensor, hgroup, dim=hdim, shapes=hshapes), dim=hdim)
 
     return tensor
 
@@ -304,11 +354,16 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
         allclose = False
         if verbose:
             print("tensor1 is not None and tensor2 is None")
-    elif tensor1.dtype == torch.long and tensor2.dtype == torch.long:
+    elif not (tensor1.is_floating_point() or tensor1.is_complex()) and not (tensor2.is_floating_point() or tensor2.is_complex()):
+        # integers of any width (or bools): exact, and no mean/relative error, which
+        # integer tensors do not support
         allclose = torch.all(tensor1 == tensor2)
         if not allclose and verbose:
-            diff = torch.abs(tensor1 - tensor2)
-            print(f"Element values with max difference on {msg}: {tensor1.flatten()[diff.argmax()]} and {tensor2.flatten()[diff.argmax()]}")
+            # the first mismatch rather than the largest: bools cannot be subtracted, and
+            # unsigned differences wrap around
+            mismatch = (tensor1 != tensor2).flatten()
+            first = int(mismatch.nonzero()[0])
+            print(f"{int(mismatch.sum())} mismatching elements on {msg}, first at flat index {first}: {tensor1.flatten()[first]} and {tensor2.flatten()[first]}")
     else:
         diff = torch.abs(tensor1 - tensor2)
         abs_diff = torch.mean(diff, dim=0)
@@ -325,3 +380,197 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False):
             print(f"Worst allclose condition violation: {diff_bad} <= {atol} + {rtol} * {tensor2_abs_bad} = {atol + rtol * tensor2_abs_bad}")
 
     return allclose
+
+
+def build_psi_segments(col_idx: torch.Tensor, roff_idx: torch.Tensor, nlon: int):
+    """
+    Re-express a column list as contiguous longitude arcs, by brute force.
+
+    A test oracle. The library computes the arcs natively in
+    :func:`torch_harmonics.neighborhood.precompute_neighborhood_arcs_s2`; this recovers
+    them from a column list instead, sharing none of that code, so the two can be held
+    against each other.
+
+    psi's sparsity is a union of arcs: for a given output row and input latitude, the
+    neighbor longitudes are contiguous on the circle (possibly wrapping). This is
+    geometric -- a geodesic ball meets a latitude circle in one arc -- and is pinned by
+    TestPsiArcStructure.
+
+    That lets a kernel iterate (hi, lo, len) segments and derive each neighbor's column
+    by counting, instead of loading it from col_idx and recovering hi with a 64-bit
+    integer division. The GPU has no integer divide instruction, so that division costs
+    ~70-100 emulated instructions per neighbor against roughly four instructions of
+    useful math, which leaves the forward kernel instruction-bound on address
+    arithmetic rather than on math.
+
+    Returns
+    -------
+    seg : int32 tensor of shape (nsegs, 3), columns (hi, lo, len)
+    seg_off : int32 tensor of shape (nrows + 1,), row -> segment range
+
+    Notes
+    -----
+    Relies on col_idx being sorted ascending within each row, which is how both
+    _precompute_convolution_tensor_s2 and NeighborhoodArcsS2.to_csr emit it. A wrapping arc therefore appears as
+    two runs at the ends of the sorted list, which is handled explicitly.
+    """
+
+    col = col_idx.cpu().to(torch.int64)
+    roff = roff_idx.cpu().to(torch.int64)
+    nrows = roff.numel() - 1
+
+    seg_rows = []
+    segs = []
+    for row in range(nrows):
+        beg, end = int(roff[row]), int(roff[row + 1])
+        n_before = len(segs)
+        if end > beg:
+            cols = col[beg:end]
+            hi = torch.div(cols, nlon, rounding_mode="floor")
+            wi = cols - hi * nlon
+            for h in torch.unique(hi):
+                w = torch.unique(wi[hi == h]).sort().values
+                count = int(w.numel())
+                lo, hi_w = int(w[0]), int(w[-1])
+                if hi_w - lo + 1 == count:
+                    # plain arc
+                    start, length = lo, count
+                else:
+                    # wraps the seam: sorted as [0..a] u [b..nlon-1]; the arc starts at
+                    # b, which is one past the single interior gap
+                    gaps = torch.diff(w)
+                    split = int(torch.argmax(gaps))
+                    start = int(w[split + 1])
+                    length = count
+                segs.append((int(h), start, length))
+        seg_rows.append(len(segs) - n_before)
+
+    seg = torch.tensor(segs, dtype=torch.int32).reshape(-1, 3)
+    seg_off = torch.zeros(nrows + 1, dtype=torch.int32)
+    seg_off[1:] = torch.tensor(seg_rows, dtype=torch.int32).cumsum(0)
+    return seg, seg_off
+
+
+def expand_psi_segments(seg: torch.Tensor, seg_off: torch.Tensor, nlon: int):
+    """Expand segments back to a per-row column list. Inverse of build_psi_segments,
+    used to verify the two representations describe the same sparsity."""
+
+    out = []
+    for row in range(seg_off.numel() - 1):
+        cols = []
+        for s in range(int(seg_off[row]), int(seg_off[row + 1])):
+            hi, lo, length = (int(x) for x in seg[s])
+            for j in range(length):
+                cols.append(hi * nlon + (lo + j) % nlon)
+        out.append(sorted(cols))
+    return out
+
+
+@dataclass(frozen=True, eq=False)
+class _ProductGridAsRagged(GridS2):
+    """
+    An equiangular grid presented through the ragged interface.
+
+    Every ring carries the same number of longitudes, so this *is* a product grid --
+    it simply declines to say so, which routes it down the ragged path. That makes the
+    two implementations comparable on identical geometry: any difference between them
+    is the implementation, since the points, the weights and the neighbourhood are the
+    same tensors either way.
+
+    It is a test fixture rather than a library grid because nothing in the library
+    would want it: a real product grid should be a RegularGridS2 and take the faster
+    path. Its whole purpose is to be the control in that comparison. Shared by the
+    attention and DISCO tests, whose ragged paths it controls alike.
+    """
+
+    nlat: int
+    nlon: int
+    grid_type: ClassVar[str] = "test-product-as-ragged"
+
+    @property
+    def is_regular(self):
+        # Deliberately false. GridS2 computes this from the geometry -- every ring the
+        # same length means regular -- so a uniform grid cannot be ragged by accident,
+        # and saying so here is the only way to route identical geometry down the other
+        # path. That is the whole point of the fixture: the lie is the experiment.
+        return False
+
+    @property
+    def nrings(self):
+        return self.nlat
+
+    @property
+    def nlon_per_lat(self):
+        return torch.full((self.nlat,), self.nlon, dtype=torch.int64)
+
+    @property
+    def colats(self):
+        return as_grid("equiangular", nlat=self.nlat, nlon=self.nlon).colats
+
+    @property
+    def colat_weights(self):
+        return as_grid("equiangular", nlat=self.nlat, nlon=self.nlon).colat_weights
+
+    def lons(self, ilat=None):
+        return torch.arange(self.nlon, dtype=torch.float64) * (2.0 * math.pi / self.nlon)
+
+
+# Defining a GridS2 subclass with a grid_type registers it, and the registry is global:
+# left in place this fixture would be swept up by every test elsewhere that parameterizes
+# over grid_types() and constructs with nlat/nlon. It is only ever built directly, by name
+# it has no business being discoverable, so it is withdrawn immediately -- the class object
+# keeps working, only as_grid("test-product-as-ragged") stops resolving.
+_GRID_REGISTRY.pop(_ProductGridAsRagged.grid_type, None)
+
+
+# Shape contracts of the layers, see torch_harmonics._field_contract. A contract is a
+# tuple of exact extents (int) and free ones (None), optionally led by `...`. Both the
+# serial and the distributed contract tests derive the shapes they feed from it.
+
+
+def accepted_leadings(spec, free=1):
+    """
+    Leading shapes the contract admits: the minimum first, then expansions of it.
+
+    The minimum fills every free extent with ``free`` and adds no optional axes. A ``...``
+    contract then grows by one, two and three leading axes, one of them of size 1; an
+    exact-rank contract instead grows its free extents.
+    """
+    variadic = spec[0] is Ellipsis
+    fixed = spec[1:] if variadic else spec
+    minimum = tuple(free if d is None else d for d in fixed)
+    if variadic:
+        return [minimum, (3, *minimum), (2, 3, *minimum), (2, 1, 3, *minimum)]
+    grown = tuple(max(free, 3) if d is None else d for d in fixed)
+    return [minimum] if grown == minimum else [minimum, grown]
+
+
+def rejected_shapes(spec, leading, trailing):
+    """Shapes around an accepted one that break the contract, each with how it breaks it."""
+    variadic = spec[0] is Ellipsis
+    fixed = spec[1:] if variadic else spec
+    offset = len(leading) - len(fixed)
+    bad = []
+    for i, extent in enumerate(trailing):
+        wrong = list(trailing)
+        wrong[i] = extent + 1
+        bad.append((f"trailing axis {i} too long", (*leading, *wrong)))
+        # the broadcast trap: a size-1 axis that a weight buffer would silently expand
+        if extent != 1:
+            wrong[i] = 1
+            bad.append((f"trailing axis {i} of size 1", (*leading, *wrong)))
+    for i, extent in enumerate(fixed):
+        if extent is not None:
+            wrong = list(leading)
+            wrong[offset + i] = extent + 1
+            bad.append((f"leading axis {offset + i} wrong", (*wrong, *trailing)))
+    # fewer axes than any reading of the contract admits
+    bad.append(("too few axes", tuple(trailing[1:])))
+    if not variadic:
+        bad.append(("extra axis", (1, *leading, *trailing)))
+    return bad
+
+
+def shape_name(shape):
+    """A shape as a test-name suffix, e.g. ``2x3``."""
+    return "x".join(str(d) for d in shape) or "none"
