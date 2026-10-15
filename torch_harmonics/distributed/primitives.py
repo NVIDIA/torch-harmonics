@@ -1140,6 +1140,14 @@ def _halo_gather(x, r_lat):
     the inner-product identity asserted in the distributed primitives tests.
     """
 
+    # Nothing to borrow, so post nothing. This is not just a shortcut: every op below is a P2P
+    # that the neighbour has to match, and with r_lat == 0 the slices degenerate (x[..., -0:, :]
+    # is the whole tensor), so the send would be unmatched by the neighbour's 0-row receive and
+    # NCCL could deliver its surplus to the next halo receive on this communicator -- corrupting
+    # a later layer rather than this one.
+    if r_lat == 0:
+        return x
+
     group_size = polar_group_size()
     group_rank = polar_group_rank()
     prev_rank, next_rank = get_group_neighbors(polar_group())
@@ -1149,7 +1157,7 @@ def _halo_gather(x, r_lat):
 
     # setup send buffers
     send_top = x[:, :, :r_lat, :].contiguous()  # top r_lat rows → rank-1
-    send_bot = x[:, :, -r_lat:, :].contiguous()  # bottom r_lat rows → rank+1
+    send_bot = x[:, :, H - r_lat :, :].contiguous()  # bottom r_lat rows → rank+1
 
     # setup recv buffers
     recv_top = torch.zeros(B, C, r_lat, W, device=device, dtype=dtype)
@@ -1183,6 +1191,10 @@ def _halo_reduce(y, r_lat, H):
     At the polar boundary the outward slice has no owner and is dropped, which is exactly the
     adjoint of :func:`_halo_gather` zero-padding that side.
     """
+
+    # no halo rows to send home; skip the P2P exchange entirely, as _halo_gather does
+    if r_lat == 0:
+        return y
 
     group_size = polar_group_size()
     group_rank = polar_group_rank()

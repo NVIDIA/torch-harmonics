@@ -367,6 +367,42 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
+            # K, Ho, (ker, row) of each entry, in the order given to preprocess_psi
+            # a single output row: every basis function lives on row 0 (a polar rank owning one output latitude)
+            [3, 1, [(0, 0), (0, 0), (1, 0), (1, 0), (2, 0)]],
+            # several rows, but basis 0 ends on the row basis 1 starts on
+            [2, 3, [(0, 0), (0, 1), (0, 2), (1, 2), (1, 2)]],
+        ],
+        skip_on_empty=True,
+    )
+    def test_preprocess_psi_starts_a_row_per_kernel_and_latitude(self, K, Ho, entries):
+        """preprocess_psi opens a CSR row whenever ker *or* row changes.
+
+        It used to compare the row alone, so consecutive basis functions sharing a row were merged
+        into one CSR row, which the kernels then filed entirely under the first basis function --
+        the other basis outputs came out zero. With a single output row that is always the case:
+        a 4 x 9 output split over 4 polar ranks gave every rank one latitude and a wrong result.
+        """
+
+        ker_idx = torch.tensor([k for k, _ in entries], dtype=torch.int64)
+        row_idx = torch.tensor([r for _, r in entries], dtype=torch.int64)
+        col_idx = torch.arange(len(entries), dtype=torch.int64)
+        vals = torch.ones(len(entries), dtype=torch.float32)
+
+        roff_idx = preprocess_psi(K, Ho, ker_idx, row_idx, col_idx, vals)
+
+        expected_rows = len(set(entries))
+        self.assertEqual(roff_idx.shape[0] - 1, expected_rows, f"roff_idx={roff_idx.tolist()}")
+        # each CSR row holds a single (ker, row) pair, and every pair gets its own row
+        seen = set()
+        for start, end in zip(roff_idx[:-1].tolist(), roff_idx[1:].tolist()):
+            pairs = set(zip(ker_idx[start:end].tolist(), row_idx[start:end].tolist()))
+            self.assertEqual(len(pairs), 1, f"CSR row [{start}, {end}) mixes {sorted(pairs)}")
+            seen |= pairs
+        self.assertEqual(seen, set(entries))
+
+    @parameterized.expand(
+        [
             # fp32 tests
             # regular convolution
             [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, False, 1e-4, 1e-4],

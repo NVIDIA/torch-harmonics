@@ -155,7 +155,7 @@ def _distributed_disco_fwd_a2a(
 
     # Borrow the input rows this rank's output rows reach into. psi's columns were keyed to
     # the padded band at construction, so the contraction below reads it directly.
-    if use_halo and comm_size_polar > 1:
+    if use_halo and comm_size_polar > 1 and r_lat > 0:
         x = polar_halo_exchange(x, r_lat)
 
     _kpacked_ok = optimized_kernel and psi_kpacked_K_pad in (8, 16) and x.dtype in (torch.float16, torch.bfloat16) and x.is_cuda and kpacked_device_supported
@@ -299,7 +299,7 @@ def _distributed_disco_fwd_a2a_reordered(
 
     # (halo) borrow the input rows this rank's output rows reach into; psi's columns were
     # keyed to the padded band at construction. See _distributed_disco_fwd_a2a.
-    if use_halo and comm_size_polar > 1:
+    if use_halo and comm_size_polar > 1 and r_lat > 0:
         x = polar_halo_exchange(x, r_lat)
     local_in_channels = x.shape[1]
     chan_start = ([0] + list(accumulate(compute_split_shapes(in_channels, comm_size_azimuth)[:-1])))[comm_rank_azimuth] if comm_size_azimuth > 1 else 0

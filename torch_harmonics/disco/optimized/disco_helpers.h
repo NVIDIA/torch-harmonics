@@ -85,7 +85,11 @@ void preprocess_psi_kernel(int64_t nnz, int64_t K, int64_t Ho, int64_t *ker_h, i
     roff_h[0] = 0;
     for (int64_t i = 1; i < nnz; i++) {
 
-        if (row_h[i - 1] == row_h[i]) continue;
+        // a CSR row is one (ker, row) pair, so a new one starts when either changes. Comparing
+        // the row alone merges consecutive basis functions whenever one ends on the row the next
+        // starts on -- always the case with a single output row, e.g. a polar rank that owns one
+        // output latitude -- and the kernels then file all of them under the first one's ker.
+        if (ker_h[i - 1] == ker_h[i] && row_h[i - 1] == row_h[i]) continue;
 
         // Checked before the store, not after: roff_h holds Ho*K+1 entries, so writing at
         // index Ho*K is the last legal slot and anything beyond it is out of bounds. Raise
