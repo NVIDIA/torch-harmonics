@@ -39,14 +39,16 @@ equiangular grid raises instead of being ignored.
 | `"trapezoidal"`    | `TrapezoidalGrid`   | `nlat`,`nlon` | equispaced in `cos(colatitude)`                            | yes   | only at low truncation       |
 | `"healpix"`        | `HealpixGrid`       | `nside`       | `12 * nside**2` equal-area pixels on `4 * nside - 1` rings | no    | no                           |
 
-The first four are latitude-longitude grids: `nlat` latitude rings with `nlon`
+The first five are latitude-longitude grids: `nlat` latitude rings with `nlon`
 equispaced longitudes each. They differ only in where the rings sit and in the
 quadrature rule that goes with them. All layers accept them.
 
 **Equiangular.** Rings equally spaced in colatitude, including both poles, with
-Clenshaw-Curtis quadrature. This is the layout of most reanalysis and climate
-data, for example ERA5 at 0.25 degrees (`nlat=721, nlon=1440`). Its default SHT
-truncation is `lmax = (nlat + 1) // 2`.
+Clenshaw-Curtis quadrature. Regular latitude-longitude reanalysis fields, such
+as ERA5 at 0.25 degrees (`nlat=721, nlon=1440`), use this layout. The native
+SHT latitude bound is `grid.max_exact_degree = (nlat + 1) // 2`. Explicitly
+higher bounds use folded analysis when the degree and order limits below are
+satisfied.
 
 **Fejér-1.** Rings are equally spaced in colatitude at
 `theta[j] = pi * (j + 0.5) / nlat`, so neither pole is sampled. Fejér's first
@@ -55,6 +57,33 @@ quadrature rule integrates polynomials through degree `nlat - 1` for even
 the exclusive native bound `grid.max_exact_degree = (nlat + 1) // 2` (T89 on a
 180-ring grid).
 
+**Legendre-Gauss.** Rings at the Gauss-Legendre nodes, which exclude the poles.
+The quadrature is exact up to degree `2 * nlat - 1`, the best achievable with
+`nlat` rings, so it supports the highest truncation, `lmax = nlat`. This is the
+regular Gaussian grid used by spectral weather models.
+
+**Lobatto.** Rings at the Gauss-Lobatto nodes, which include both poles. Exact up
+to degree `2 * nlat - 3`, with default `lmax = nlat - 1`. The rings cluster
+toward the equator, so the polar spacing is coarser than on an equiangular grid
+with the same `nlat`.
+
+**Trapezoidal.** Rings equally spaced in `cos(colatitude)`, which cuts the
+sphere into bands of equal area, with the trapezoidal rule. The rule converges
+only algebraically, so an SHT on this grid is accurate only at a truncation far
+below the default; pass a small `lmax` explicitly. It works well for quadrature
+and the localized operators. This grid was called `"equiangular-trapezoidal"`
+before v1.0.0.
+
+**HEALPix.** The HEALPix pixelization in RING order: equal-area pixels on rings
+whose length grows from 4 at the poles to `4 * nside` at the equator. Its
+quadrature integrates only constants exactly, so it does not support an SHT.
+It is accepted by `AttentionS2`, `NeighborhoodAttentionS2` and `QuadratureS2`;
+the SHTs, spectral and DISCO convolutions, resampling, random fields and the
+distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
+builds the grid with `nside = 2**k`.
+
+## Folded high-bandwidth SHT analysis
+
 `RealSHT`, `RealVectorSHT`, `DistributedRealSHT` and
 `DistributedRealVectorSHT` support folded high-bandwidth analysis on both
 equiangular and Fejér-1 grids when explicit `lmax` exceeds
@@ -62,8 +91,8 @@ equiangular and Fejér-1 grids when explicit `lmax` exceeds
 complementary Clenshaw-Curtis nodes from a fine grid with `2*nlat + 1` rings for
 F1, then folds the quadrature and interpolation into real Legendre projection
 weights, following the doubled-meridian method of {cite}`Reinecke2023`.
-For F1 the exclusive recovery limits are `lmax <= nlat` and
-`mmax <= (nlon + 1) // 2`; for equiangular they remain `lmax <= nlat - 1`.
+The exclusive latitude recovery limits are `lmax <= nlat - 1` for equiangular
+and `lmax <= nlat` for Fejér-1. Both require `mmax <= (nlon + 1) // 2`.
 The order limit excludes the even-longitude Nyquist mode, which cannot recover
 a complex coefficient. For example, `lmax=mmax=180` on a 180 by 360 F1 grid
 represents degrees and orders through 179. Larger requested dimensions,
@@ -111,8 +140,15 @@ isht = th.InverseRealSHT(grid, lmax=72, mmax=72)
 # Degrees and orders through 71; sht.grid_out == th.SpectralGrid(72, 72).
 ```
 
-The default remains degree/order limits of 37 on this equiangular grid. Its
-`max_exact_degree` continues to describe the native direct quadrature limit.
+The default is `lmax=mmax=37` on the equiangular grid above. On the Fejér-1
+grid below, the default is `lmax=mmax=36`:
+
+```python
+f1 = th.as_grid("fejer1", nlat=72, nlon=144)
+f1_sht = th.RealSHT(f1, lmax=72, mmax=72)  # degrees and orders through 71
+```
+
+`max_exact_degree` describes the native direct quadrature limit on both grids.
 Analysis within that limit uses the original direct path, and synthesis
 continues to evaluate harmonics directly on the requested grid. The extended
 analysis paths are intended for float32 and float64. Their constructor
@@ -121,36 +157,10 @@ and `2 * nlat` for F1.
 
 For either grid, folded analysis uses more constructor work and projection
 memory than native quadrature, while avoiding meridional resampling during each
-forward call. At `nlat=180`, one float64 table is about 44.5 MiB for scalar
-analysis and the two vector tables together are about 89 MiB; temporary
+forward call. On a 180 by 360 Fejér-1 grid with `lmax=mmax=180`, a float64
+scalar projection is about 44.5 MiB and a vector projection about 89 MiB; temporary
 construction memory is block bounded. The cache may retain two projections.
 Synthesis evaluates Legendre functions directly on the requested grid.
-
-**Legendre-Gauss.** Rings at the Gauss-Legendre nodes, which exclude the poles.
-The quadrature is exact up to degree `2 * nlat - 1`, the best achievable with
-`nlat` rings, so it supports the highest truncation, `lmax = nlat`. This is the
-regular Gaussian grid used by spectral weather models.
-
-**Lobatto.** Rings at the Gauss-Lobatto nodes, which include both poles. Exact up
-to degree `2 * nlat - 3`, with default `lmax = nlat - 1`. The rings cluster
-toward the equator, so the polar spacing is coarser than on an equiangular grid
-with the same `nlat`.
-
-**Trapezoidal.** Rings equally spaced in `cos(colatitude)`, which cuts the
-sphere into bands of equal area, with the trapezoidal rule. The rule converges
-only algebraically, so an SHT on this grid is accurate only at a truncation far
-below the default; pass a small `lmax` explicitly. It works well for quadrature
-and the localized operators. This grid was called `"equiangular-trapezoidal"`
-before v1.0.0.
-
-**HEALPix.** The HEALPix pixelization in RING order: equal-area pixels on rings
-whose length grows from 4 at the poles to `4 * nside` at the equator. Its
-quadrature integrates only constants exactly, so it does not support an SHT.
-It is accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
-`DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and
-`QuadratureS2`; the SHTs, spectral convolutions, resampling, random fields and
-the distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
-builds the grid with `nside = 2**k`.
 
 ## Field shapes
 
