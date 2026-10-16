@@ -38,6 +38,7 @@ import torch.nn as nn
 import torch_harmonics as th
 from torch_harmonics.grid import require_regular_grid
 from torch_harmonics.radial import RadialGrid, SphericalProductGrid
+from torch_harmonics.utils import recast_buffers_for
 
 
 class GreensOperator(nn.Module):
@@ -74,6 +75,11 @@ class GreensOperator(nn.Module):
 
         self.register_buffer("green", green)
 
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
+
     def _assemble(self, logr: torch.Tensor, quad: torch.Tensor) -> torch.Tensor:
         """Green's kernel of shape (lmax, nr, nr), assembled in log space."""
 
@@ -95,10 +101,10 @@ class GreensOperator(nn.Module):
     def forward(self, fspec: torch.Tensor) -> torch.Tensor:
         """Solve lap u = f in spectral space."""
 
-        # apply the operator in the precision of the input. the kernel is assembled in
-        # float64 because it is built from exponentials over several decades in r, but
-        # the caller decides what the solve runs in -- RadialPoissonDataset hands back float32
-        # samples, and einsum rejects a float32 operand against a float64 kernel outright
+        # apply the operator in the precision of the input. the kernel is assembled and kept
+        # in float64 because it is built from exponentials over several decades in r, and
+        # cast at use, so the caller decides what the solve runs in -- RadialPoissonDataset
+        # solves float32 sources. einsum also rejects mixed dtypes outright
         green = self.green.to(fspec.real.dtype)
 
         return torch.complex(
@@ -129,9 +135,10 @@ class RadialPoissonSolver(nn.Module):
 
     Notes
     -----
-    The solver is built in float64, since the Green's kernel spans several decades in r.
-    Cast it with ``.float()`` before moving it to a device without float64, such as MPS,
-    as ``RadialPoissonDataset`` does.
+    The solver keeps its buffers in float64, since the Green's kernel spans several decades
+    in r, and casts them at use: ``solve`` runs in the precision of its input, and the
+    sources are generated in the dtype they are asked for. Moved to a device without
+    float64, such as MPS, the buffers are downcast to float32.
     """
 
     # new in v1.0.0rc1, so there is no signature before the grid descriptors to reject
@@ -175,6 +182,11 @@ class RadialPoissonSolver(nn.Module):
         self.register_buffer("r", r)
         self.register_buffer("w", w)
 
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
+
     def grid2spec(self, ugrid):
         """Convert spatial data to spectral coefficients."""
         return self.sht(ugrid)
@@ -203,17 +215,25 @@ class RadialPoissonSolver(nn.Module):
 
         return aspec
 
-    def ball_source(self, radius=1.0, value=1.0) -> torch.Tensor:
-        """Source for the Poisson equation on a ball of radius `radius` and value `value`."""
-        f = torch.zeros(self.nr, self.nlat, self.nlon, dtype=self.r.dtype, device=self.r.device)
+    def ball_source(self, radius=1.0, value=1.0, dtype=None) -> torch.Tensor:
+        """Source for the Poisson equation on a ball of radius `radius` and value `value`, in `dtype`, by default the default dtype."""
+        dtype = torch.get_default_dtype() if dtype is None else dtype
+        f = torch.zeros(self.nr, self.nlat, self.nlon, dtype=dtype, device=self.r.device)
         f[self.r <= radius] = value
         return f
 
-    def random_bump_source(self, nblobs=4, l_src=8, margin=0.05, width=(0.03, 0.10)) -> torch.Tensor:
-        """Random multi-scale source. A sum of nblobs terms, each a radial bump in x = log r times a random band-limited angular field."""
+    def random_bump_source(self, nblobs=4, l_src=8, margin=0.05, width=(0.03, 0.10), dtype=None) -> torch.Tensor:
+        """
+        Random multi-scale source. A sum of nblobs terms, each a radial bump in x = log r times a random band-limited angular field.
 
+        The source is generated in the precision of the solver's buffers and returned in
+        `dtype`, by default the default dtype, so the same draw gives the same source in
+        any precision, rounded.
+        """
+
+        dtype = torch.get_default_dtype() if dtype is None else dtype
         device = self.r.device
-        dtype = self.r.dtype
+        work_dtype = self.r.dtype
 
         # range of source support
         x = self.x
@@ -233,10 +253,10 @@ class RadialPoissonSolver(nn.Module):
             )
 
         # random half width of blobs
-        half = width[0] * span + (width[1] - width[0]) * span * torch.rand(nblobs, dtype=dtype, device=device)
+        half = width[0] * span + (width[1] - width[0]) * span * torch.rand(nblobs, dtype=work_dtype, device=device)
         half = torch.clamp(half, max=0.5 * (xhi - xlo))
         # random centers of blobs
-        centers = xlo + half + (xhi - xlo - 2 * half) * torch.rand(nblobs, dtype=dtype, device=device)
+        centers = xlo + half + (xhi - xlo - 2 * half) * torch.rand(nblobs, dtype=work_dtype, device=device)
 
         # dim random angular center towards blob boundary, shape (nblobs, nr)
         t = (x.unsqueeze(0) - centers.unsqueeze(-1)) / half.unsqueeze(-1)
@@ -249,7 +269,7 @@ class RadialPoissonSolver(nn.Module):
         aspec = self._random_angular_spec((nblobs,), l_src=l_src)
         fspec = torch.einsum("blm,bk->klm", aspec, radial.to(aspec.dtype))
 
-        return self.spec2grid(fspec)
+        return self.spec2grid(fspec).to(dtype)
 
     def plot_sphere(self, data, ax, title="", cmap=None, vmin=None, vmax=None, projection="mollweide", colorbar=True):
         """One radial level of a grid field, on the sphere. Supports the "mollweide" projection."""

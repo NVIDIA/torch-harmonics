@@ -177,7 +177,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
         """
         radius = 1.0
         solver = make_solver(512, grid=grid, device=self.device)
-        actual = solver.solve(solver.ball_source(radius=radius).unsqueeze(0)).squeeze(0)[:, 0, 0]
+        actual = solver.solve(solver.ball_source(radius=radius, dtype=torch.float64).unsqueeze(0)).squeeze(0)[:, 0, 0]
 
         r = solver.r
         expected = torch.where(r <= radius, r**2 / 6 - radius**2 / 2, -(radius**3) / (3 * r))
@@ -226,7 +226,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
         """
         reference = make_solver(64, rmin=1e-1, device=self.device)
         solver = make_solver(64, rmin=1e-1, dtype=solver_dtype, device=self.device)
-        source = solver.random_bump_source(nblobs=4).to(input_dtype)
+        source = solver.random_bump_source(nblobs=4, dtype=input_dtype)
 
         out = solver.solve(source.unsqueeze(0)).squeeze(0)
         expected = reference.solve(source.double().unsqueeze(0)).squeeze(0)
@@ -262,7 +262,7 @@ class TestRadialPoissonSolver(unittest.TestCase):
         """
         l_src = 4
         solver = make_solver(64, rmin=1e-1, device=self.device)
-        source = solver.random_bump_source(nblobs=nblobs, l_src=l_src)
+        source = solver.random_bump_source(nblobs=nblobs, l_src=l_src, dtype=torch.float64)
 
         # exactly nblobs: the blobs' profiles and angular fields are drawn independently, so
         # combining them in any other way shows as a lower or a higher rank
@@ -293,11 +293,22 @@ class TestRadialPoissonSolver(unittest.TestCase):
         self.assertGreater(source[~outside].abs().max().item(), 0.0)
 
     @parameterized.expand([["bump"], ["ball"]])
-    def test_float32_solver_generates_float32_sources(self, source):
-        """A solver cast to float32 builds its sources in float32 too, so nothing on its device needs float64."""
-        solver = make_solver(64, rmin=1e-1, dtype=torch.float32, device=self.device)
-        f = solver.random_bump_source(nblobs=2) if source == "bump" else solver.ball_source(radius=1.0)
-        self.assertEqual(f.dtype, torch.float32)
+    def test_sources_come_in_the_requested_dtype(self, source):
+        """
+        A source comes in the dtype asked for, by default the default dtype, whatever the
+        precision of the solver's buffers; the same draw in float32 is the float64 one, rounded.
+        """
+        solver = make_solver(64, rmin=1e-1, device=self.device)
+
+        def generate(**kwargs):
+            set_seed(333)
+            return solver.random_bump_source(nblobs=2, **kwargs) if source == "bump" else solver.ball_source(radius=1.0, **kwargs)
+
+        self.assertEqual(generate().dtype, torch.get_default_dtype())
+        f64 = generate(dtype=torch.float64)
+        f32 = generate(dtype=torch.float32)
+        self.assertEqual((f64.dtype, f32.dtype), (torch.float64, torch.float32))
+        self.assertTrue(torch.equal(f32, f64.float()))
 
     @parameterized.expand([["bump"], ["ball"]])
     def test_dataset_samples_solve_the_equation(self, source, verbose=False):
@@ -333,19 +344,28 @@ class TestRadialPoissonSolver(unittest.TestCase):
         rms = dataset.sphere_mean(inp.double() ** 2).mean().sqrt().item()
         self.assertAlmostEqual(rms, 1.0, delta=1e-5)
 
-    def test_dataset_casts_its_solver_before_moving_it(self):
-        """The solver holds no float64 state when it is moved, so the dataset can be built on a device without float64 such as MPS."""
-        moved_with = []
-        original = RadialPoissonSolver.to
-
-        def to(solver, *args, **kwargs):
-            moved_with.append([name for name, b in solver.named_buffers() if b.dtype in (torch.float64, torch.complex128)])
-            return original(solver, *args, **kwargs)
-
+    def test_dataset_solver_keeps_float64_buffers(self):
+        """The dataset solves in float32 by casting at use, not by casting its solver, whose buffers stay float64."""
         grid = make_solver(64, rmin=1e-1).grid
-        with mock.patch.object(RadialPoissonSolver, "to", to):
-            RadialPoissonDataset(grid, num_examples=1, device=self.device)
-        self.assertEqual(moved_with, [[]])
+        solver = RadialPoissonDataset(grid, num_examples=1, device=self.device).solver
+        self.assertEqual({b.dtype for b in solver.buffers() if b.is_floating_point()}, {torch.float64})
+
+    def test_move_to_a_device_without_float64(self):
+        """
+        Moved to a device without float64 such as MPS, every buffer of the solver, its SHTs and
+        its Green's operator is downcast to float32, and a float32 solve gives the same result.
+        """
+        solver = make_solver(64, rmin=1e-1)
+        source = solver.random_bump_source(nblobs=2, dtype=torch.float32)
+        expected = solver.solve(source.unsqueeze(0))
+
+        # pretend the CPU is such a device, so the move takes the MPS path here
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            solver = solver.to("cpu")
+        self.assertFalse([name for name, b in solver.named_buffers() if b.dtype == torch.float64])
+        # the buffers were cast to float32 at use before the move, so nothing changes
+        self.assertTrue(torch.equal(solver.solve(source.unsqueeze(0)), expected))
+        self.assertEqual(solver.random_bump_source(nblobs=2, dtype=torch.float32).dtype, torch.float32)
 
     @parameterized.expand(
         [

@@ -81,10 +81,8 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
         self.normalize = normalize
         self.source = source
 
-        # the samples are float32, so they are solved in float32 too, which agrees with a float64
-        # solve to a few 1e-7 of the solution's maximum. Cast before moving: the solver is built
-        # in float64, which a device such as MPS cannot hold
-        self.solver = RadialPoissonSolver(grid).float().to(self.device)
+        # the solver keeps its buffers in float64 and solves in the precision of the source
+        self.solver = RadialPoissonSolver(grid).to(self.device)
 
         self.grid = self.solver.grid
         self.nr, self.nlat, self.nlon = self.grid.shape
@@ -96,19 +94,23 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
         return self.num_examples
 
     def _get_sample(self):
-        """Get one unscaled (r**2 f, u) pair in the precision of the solver."""
+        """Get one unscaled (r**2 f, u) pair in float32."""
+
+        # the samples are float32, so they are solved in float32 too, which agrees with a
+        # float64 solve to a few 1e-7 of the solution's maximum
+        dtype = torch.float32
 
         if self.source == "bump":
             nblobs = int(torch.randint(1, 9, ()).item())
-            f = self.solver.random_bump_source(nblobs=nblobs, l_src=8)
+            f = self.solver.random_bump_source(nblobs=nblobs, l_src=8, dtype=dtype)
         else:
             # random node in the middle of the grid
             ir = int(torch.randint(self.nr // 5, 4 * self.nr // 5, ()).item())
             r = self.solver.r[ir].item()
-            f = self.solver.ball_source(radius=r)
+            f = self.solver.ball_source(radius=r, dtype=dtype)
 
         u = self.solver.solve(f)
-        r2f = self.solver.r.reshape(-1, 1, 1) ** 2 * f
+        r2f = self.solver.r.to(dtype).reshape(-1, 1, 1) ** 2 * f
 
         return r2f, u
 
