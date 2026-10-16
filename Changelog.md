@@ -10,6 +10,7 @@
 
 * SHT transforms support independent non-inclusive `lmax`, `mmax`, and optional `lmmax` bounds for trapezoidal, rhomboidal, and pentagonal spectral truncation. The no-argument default remains triangular; `SpectralConvS2` and `DistributedSpectralConvS2` retain their square spectral dimensions and weight layouts.
 * New public, immutable `SpectralGrid` describes SHT coefficient support; forward and inverse transforms expose their input and output domains through `grid_in` and `grid_out`.
+* Fixed GaussianRandomFieldS2 computing its spectrum in the global default dtype instead of dtype, which lost float64 precision and zeroed spectra for large tau.
 * Fixed `RealVectorSHT` and `DistributedRealVectorSHT` computing the `1/(l(l+1))` degree factor of their analysis weights in float32, which limited float64 vector analysis to a relative accuracy of about 1e-7.
 * `polar_halo_exchange` and `polar_halo_reduce` take a `lat_dim` argument, so channels-last tensors can be exchanged directly.
 * `polar_halo_exchange` and `polar_halo_reduce` are the identity for a halo radius of 0 and post no point-to-point messages, and `DistributedDiscreteContinuousConvS2` skips the exchange then, as `DistributedNeighborhoodAttentionS2` already did. Up to v0.9.3 a zero-width exchange sent the whole band against a zero-row receive (fixed in v0.9.4).
