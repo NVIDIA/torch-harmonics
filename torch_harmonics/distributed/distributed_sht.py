@@ -104,13 +104,13 @@ class DistributedRealSHT(nn.Module):
         Non-inclusive maximum spherical harmonic degree.
     mmax : int, optional
         Non-inclusive maximum spherical harmonic order.
-    lmmax : int, optional
-        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
-        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
 
     Returns
     -------
@@ -348,13 +348,13 @@ class DistributedInverseRealSHT(nn.Module):
         Non-inclusive maximum spherical harmonic degree.
     mmax : int, optional
         Non-inclusive maximum spherical harmonic order.
-    lmmax : int, optional
-        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
-        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
 
     Returns
     -------
@@ -553,13 +553,13 @@ class DistributedRealVectorSHT(nn.Module):
         Non-inclusive maximum spherical harmonic degree.
     mmax : int, optional
         Non-inclusive maximum spherical harmonic order.
-    lmmax : int, optional
-        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
-        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
 
     Returns
     -------
@@ -791,13 +791,13 @@ class DistributedInverseRealVectorSHT(nn.Module):
         Non-inclusive maximum spherical harmonic degree.
     mmax : int, optional
         Non-inclusive maximum spherical harmonic order.
-    lmmax : int, optional
-        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
-        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
 
     Returns
     -------
