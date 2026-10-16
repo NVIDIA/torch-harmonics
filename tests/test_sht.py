@@ -319,31 +319,64 @@ class TestSpectralLegendreMask(unittest.TestCase):
 
 @parameterized_class(("device"), _devices)
 class TestPentagonalSHT(unittest.TestCase):
-    @parameterized.expand([(20, 9, None), (17, 9, 9), (12, 9, 9), (14, 9, 6)])
-    def test_scalar_and_vector_forward_inverse(self, lmax, mmax, lmmax):
+    @classmethod
+    def setUpClass(cls):
+        disable_tf32()
+
+    @parameterized.expand(
+        [
+            (lmax, mmax, lmmax, dtype)
+            for lmax, mmax, lmmax in [(16, 16, None), (20, 9, None), (17, 9, 9), (12, 9, 9), (14, 9, 6), (85, 43, 43), (64, 43, 43)]
+            for dtype in (torch.float32, torch.float64)
+        ]
+    )
+    def test_scalar_and_vector_forward_inverse(self, lmax, mmax, lmmax, dtype, verbose=False):
         set_seed(333)
-        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        nlat = max(32, lmax + 1)
+        grid = th.as_grid("legendre-gauss", nlat=nlat, nlon=2 * nlat)
         kwargs = dict(lmax=lmax, mmax=mmax, lmmax=lmmax)
         l = torch.arange(lmax, device=self.device)[:, None]
         m = torch.arange(mmax, device=self.device)[None, :]
         keep = m <= l
         if lmmax is not None:
             keep &= l - m < lmmax
+        complex_dtype = torch.complex128 if dtype == torch.float64 else torch.complex64
+        tol = 1e-7 if dtype == torch.float64 else 1e-5
 
         for forward_cls, inverse_cls, vector in ((th.RealSHT, th.InverseRealSHT, False), (th.RealVectorSHT, th.InverseRealVectorSHT, True)):
             with self.subTest(vector=vector):
-                forward = forward_cls(grid, **kwargs).to(self.device)
-                inverse = inverse_cls(grid, **kwargs).to(self.device)
+                forward = forward_cls(grid, **kwargs).to(device=self.device, dtype=dtype)
+                inverse = inverse_cls(grid, **kwargs).to(device=self.device, dtype=dtype)
+                forward_ref = forward_cls(grid, lmax=lmax, mmax=mmax).to(device=self.device, dtype=dtype)
+                inverse_ref = inverse_cls(grid, lmax=lmax, mmax=mmax).to(device=self.device, dtype=dtype)
                 shape = (1, 2, lmax, mmax) if vector else (1, lmax, mmax)
-                coeffs = torch.randn(shape, dtype=torch.complex128, device=self.device)
+                coeffs = torch.randn(shape, dtype=complex_dtype, device=self.device)
                 coeffs[..., 0] = coeffs[..., 0].real
                 if vector:
                     coeffs[..., 0, :] = 0
                 expected = coeffs * keep
+                coeffs.requires_grad_(True)
+                ref_coeffs = coeffs.detach().clone().requires_grad_(True)
                 signal = inverse(coeffs)
-                torch.testing.assert_close(signal, inverse(expected), atol=1e-11, rtol=1e-11)
-                tol = 1e-7 if vector else 1e-10
-                torch.testing.assert_close(forward(signal), expected, atol=tol, rtol=tol)
+                ref_signal = inverse_ref(ref_coeffs * keep)
+                self.assertTrue(compare_tensors("inverse", ref_signal, signal, atol=tol, rtol=tol, verbose=verbose))
+                recovered = forward(signal)
+                self.assertTrue(compare_tensors("round trip", expected, recovered, atol=tol, rtol=tol, verbose=verbose))
+                self.assertTrue(torch.equal(recovered[..., ~keep], torch.zeros_like(recovered[..., ~keep])))
+                spatial_grad = torch.randn_like(signal)
+                signal.backward(spatial_grad)
+                ref_signal.backward(spatial_grad)
+                self.assertTrue(compare_tensors("inverse gradient", ref_coeffs.grad, coeffs.grad, atol=tol, rtol=tol, verbose=verbose))
+
+                inp = torch.randn_like(signal, requires_grad=True)
+                ref_inp = inp.detach().clone().requires_grad_(True)
+                output = forward(inp)
+                ref_output = forward_ref(ref_inp) * keep
+                self.assertTrue(compare_tensors("forward", ref_output, output, atol=tol, rtol=tol, verbose=verbose))
+                spectral_grad = torch.randn_like(output)
+                output.backward(spectral_grad)
+                ref_output.backward(spectral_grad)
+                self.assertTrue(compare_tensors("forward gradient", ref_inp.grad, inp.grad, atol=tol, rtol=tol, verbose=verbose))
 
 
 @parameterized_class(("device"), _devices)
