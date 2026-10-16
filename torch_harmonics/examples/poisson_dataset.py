@@ -96,7 +96,7 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
         return self.num_examples
 
     def _get_sample(self):
-        """Get one unscaled (r**2 f, u) pair in float64."""
+        """Get one unscaled (r**2 f, u) pair in the precision of the solver."""
 
         if self.source == "bump":
             nblobs = int(torch.randint(1, 9, ()).item())
@@ -129,4 +129,4 @@ class RadialPoissonDataset(torch.utils.data.Dataset):
                     s = self.scale(inp)
                     inp, tar = inp / s, tar / s
 
-        return inp.float(), tar.float()
+        return inp.clone(), tar.clone()
