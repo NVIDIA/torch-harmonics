@@ -36,7 +36,7 @@ import torch.nn as nn
 
 from torch_harmonics._field_contract import check_coeffs, check_field
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
@@ -48,6 +48,9 @@ class RealSHT(nn.Module):
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
     The SHT is applied to the last two dimensions of the input.
+
+    The input and output domains are available as ``grid_in`` and ``grid_out``;
+    ``grid`` remains the spatial descriptor.
 
     Given a real-valued signal :math:`f(\theta, \lambda)` sampled on the sphere,
     the forward scalar SHT computes the spherical harmonic coefficients via a
@@ -175,6 +178,16 @@ class RealSHT(nn.Module):
     @property
     def lmmax(self) -> Optional[int]:
         return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> RegularGridS2:
+        """Spatial domain of the input field."""
+        return self.grid
+
+    @property
+    def grid_out(self) -> SpectralGrid:
+        """Spectral coefficient support of the output."""
+        return self._trunc
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
@@ -351,6 +364,16 @@ class InverseRealSHT(nn.Module):
     def lmmax(self) -> Optional[int]:
         return self._trunc.lmmax
 
+    @property
+    def grid_in(self) -> SpectralGrid:
+        """Spectral coefficient support of the input field."""
+        return self._trunc
+
+    @property
+    def grid_out(self) -> RegularGridS2:
+        """Spatial domain of the output field."""
+        return self.grid
+
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
@@ -524,6 +547,16 @@ class RealVectorSHT(nn.Module):
     @property
     def lmmax(self) -> Optional[int]:
         return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> RegularGridS2:
+        """Spatial domain of the input field."""
+        return self.grid
+
+    @property
+    def grid_out(self) -> SpectralGrid:
+        """Spectral coefficient support of the output."""
+        return self._trunc
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
@@ -707,6 +740,16 @@ class InverseRealVectorSHT(nn.Module):
     @property
     def lmmax(self) -> Optional[int]:
         return self._trunc.lmmax
+
+    @property
+    def grid_in(self) -> SpectralGrid:
+        """Spectral coefficient support of the input field."""
+        return self._trunc
+
+    @property
+    def grid_out(self) -> RegularGridS2:
+        """Spatial domain of the output field."""
+        return self.grid
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"

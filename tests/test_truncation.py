@@ -45,12 +45,13 @@ is never a side effect.
 import unittest
 import warnings
 
+import numpy as np
 import torch
 from parameterized import parameterized
 from testutils import regular_grid_types
 
 import torch_harmonics as th
-from torch_harmonics.grid import _GRID_REGISTRY, EquiangularGrid, as_grid
+from torch_harmonics.grid import _GRID_REGISTRY, EquiangularGrid, SpectralGrid, as_grid
 from torch_harmonics.healpix import HealpixGrid
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes
 from torch_harmonics.truncation import truncate_sht, truncate_support
@@ -69,6 +70,94 @@ _WARNING_GRIDS = ["equiangular", "trapezoidal"]
 _QUIET_GRIDS = ["legendre-gauss", "lobatto"]
 
 _NLATS = [32, 33, 128, 129]
+
+
+class TestSpectralGrid(unittest.TestCase):
+    @parameterized.expand(
+        [
+            ("triangular", 128, 128, None),
+            ("trapezoidal", 50, 20, None),
+            ("pentagonal", 24, 9, 6),
+            ("r42", 85, 43, 43),
+            ("empty_orders", 5, 0, None),
+            ("lmmax_above_support", 2, 1, 9),
+        ]
+    )
+    def test_construction_and_dense_shape(self, case, lmax, mmax, lmmax):
+        spectral_grid = SpectralGrid(lmax, mmax, lmmax)
+        self.assertEqual(spectral_grid.shape, (lmax, mmax))
+        self.assertEqual(spectral_grid.lmmax, lmmax)
+
+    @parameterized.expand(
+        [
+            ("negative_lmax", -1, 0, None),
+            ("negative_mmax", 1, -1, None),
+            ("order_exceeds_degree", 5, 9, None),
+            ("zero_lmmax", 5, 3, 0),
+            ("negative_lmmax", 5, 3, -1),
+            ("missing_lmax", None, 0, None),
+            ("missing_mmax", 5, None, None),
+            ("float_lmax", 5.0, 3, None),
+            ("float_mmax", 5, 3.0, None),
+            ("float_lmmax", 5, 3, 1.0),
+            ("bool_lmax", True, 1, None),
+            ("bool_mmax", 5, False, None),
+            ("bool_lmmax", 5, 3, True),
+        ]
+    )
+    def test_invalid_bounds_raise(self, case, lmax, mmax, lmmax):
+        with self.assertRaises(ValueError):
+            SpectralGrid(lmax, mmax, lmmax)
+
+    def test_numpy_integer_bounds_are_normalized(self):
+        spectral_grid = SpectralGrid(np.int64(85), np.int32(43), np.int64(43))
+        self.assertEqual((spectral_grid.lmax, spectral_grid.mmax, spectral_grid.lmmax), (85, 43, 43))
+        self.assertTrue(all(type(value) is int for value in (spectral_grid.lmax, spectral_grid.mmax, spectral_grid.lmmax)))
+
+    def test_immutability_equality_and_hashing(self):
+        first = SpectralGrid(24, 9, 6)
+        equal = SpectralGrid(24, 9, 6)
+        different = SpectralGrid(24, 9, 7)
+        self.assertEqual(first, equal)
+        self.assertEqual(hash(first), hash(equal))
+        self.assertNotEqual(first, different)
+        self.assertEqual(len({first, equal, different}), 2)
+        with self.assertRaises(AttributeError):
+            first.lmax = 25
+
+    def test_public_export(self):
+        import torch_harmonics.grid as grid_module
+
+        self.assertIs(th.SpectralGrid, SpectralGrid)
+        self.assertIs(grid_module.SpectralGrid, SpectralGrid)
+        self.assertIn("SpectralGrid", grid_module.__all__)
+
+
+class TestSHTGridEndpoints(unittest.TestCase):
+    @parameterized.expand(
+        [
+            ("scalar_forward", th.RealSHT, th.InverseRealSHT, True),
+            ("scalar_inverse", th.InverseRealSHT, th.RealSHT, False),
+            ("vector_forward", th.RealVectorSHT, th.InverseRealVectorSHT, True),
+            ("vector_inverse", th.InverseRealVectorSHT, th.RealVectorSHT, False),
+        ]
+    )
+    def test_serial_endpoints(self, case, transform_cls, paired_cls, forward):
+        grid = as_grid("legendre-gauss", nlat=16, nlon=32)
+        spectral_grid = SpectralGrid(12, 7, 7)
+        transform = transform_cls(grid, lmax=12, mmax=7, lmmax=7)
+        paired = paired_cls(grid, lmax=12, mmax=7, lmmax=7)
+        sht, isht = (transform, paired) if forward else (paired, transform)
+
+        self.assertIs(transform.grid, grid)
+        self.assertIs(paired.grid, grid)
+        self.assertIs(sht.grid_in, grid)
+        self.assertEqual(sht.grid_out, spectral_grid)
+        self.assertEqual(isht.grid_in, sht.grid_out)
+        self.assertIs(isht.grid_out, grid)
+        if case == "scalar_forward":
+            with self.assertRaises(AttributeError):
+                sht.grid_out = spectral_grid
 
 
 class TestGridSpectralBounds(unittest.TestCase):
@@ -108,11 +197,11 @@ class TestTruncateSht(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # grid, (nlat, nlon), expected (lmax, mmax, lmmax)
-            ["legendre-gauss", (128, 256), (128, 128, None)],
-            ["lobatto", (128, 256), (127, 127, None)],
-            ["equiangular", (128, 256), (64, 64, None)],
-            ["trapezoidal", (128, 256), (64, 64, None)],
+            # grid, (nlat, nlon), expected spectral grid
+            ["legendre-gauss", (128, 256), SpectralGrid(128, 128)],
+            ["lobatto", (128, 256), SpectralGrid(127, 127)],
+            ["equiangular", (128, 256), SpectralGrid(64, 64)],
+            ["trapezoidal", (128, 256), SpectralGrid(64, 64)],
         ]
     )
     def test_documented_defaults(self, grid, shape, expected):
@@ -128,49 +217,35 @@ class TestTruncateSht(unittest.TestCase):
     def test_a_narrow_longitude_grid_limits_lmax(self):
         """mmax is the binding constraint when the longitude sampling is coarse."""
         trunc = truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=16))
-        self.assertEqual(trunc, (9, 9, None))  # nlon // 2 + 1 = 9, below max_exact_degree = 128
+        self.assertEqual(trunc, SpectralGrid(9, 9))  # nlon // 2 + 1 = 9, below max_exact_degree = 128
 
     @parameterized.expand([[grid] for grid in _EXACT_DEGREE])
     def test_user_truncation_overrides_the_grid_default(self, grid):
         """A user must be able to ask for a different truncation than the grid's."""
         g = as_grid(grid, nlat=128, nlon=256)
-        self.assertEqual(truncate_sht(g, lmax=20), (20, 20, None))
-        self.assertEqual(truncate_sht(g, mmax=20), (_EXACT_DEGREE[grid](128), 20, None))
-        self.assertEqual(truncate_sht(g, lmax=50, mmax=20), (50, 20, None))
+        self.assertEqual(truncate_sht(g, lmax=20), SpectralGrid(20, 20))
+        self.assertEqual(truncate_sht(g, mmax=20), SpectralGrid(_EXACT_DEGREE[grid](128), 20))
+        self.assertEqual(truncate_sht(g, lmax=50, mmax=20), SpectralGrid(50, 20))
 
     def test_rhomboidal_pentagonal_and_r42_bounds(self):
         g = as_grid("legendre-gauss", nlat=128, nlon=256)
-        self.assertEqual(truncate_sht(g, lmax=85, mmax=43, lmmax=43), (85, 43, 43))
-        self.assertEqual(truncate_sht(g, lmax=64, mmax=43, lmmax=43), (64, 43, 43))
-        self.assertEqual(truncate_sht(g, lmax=24, mmax=9, lmmax=6), (24, 9, 6))
-        self.assertEqual(truncate_sht(g, lmax=24, mmax=9), (24, 9, None))
+        self.assertEqual(truncate_sht(g, lmax=85, mmax=43, lmmax=43), SpectralGrid(85, 43, 43))
+        self.assertEqual(truncate_sht(g, lmax=64, mmax=43, lmmax=43), SpectralGrid(64, 43, 43))
+        self.assertEqual(truncate_sht(g, lmax=24, mmax=9, lmmax=6), SpectralGrid(24, 9, 6))
+        self.assertEqual(truncate_sht(g, lmax=24, mmax=9), SpectralGrid(24, 9))
         narrow = as_grid("legendre-gauss", nlat=128, nlon=16)
-        self.assertEqual(truncate_sht(narrow, lmmax=3), (128, 9, 3))
+        self.assertEqual(truncate_sht(narrow, lmmax=3), SpectralGrid(128, 9, 3))
 
     def test_zero_lmax_and_mmax_remain_explicit_requests(self):
         g = as_grid("legendre-gauss", nlat=32, nlon=64)
-        self.assertEqual(truncate_sht(g, lmax=0), (0, 0, None))
-        self.assertEqual(truncate_sht(g, mmax=0), (0, 0, None))
-        self.assertEqual(truncate_sht(g, lmax=5, mmax=0), (5, 0, None))
+        self.assertEqual(truncate_sht(g, lmax=0), SpectralGrid(0, 0))
+        self.assertEqual(truncate_sht(g, mmax=0), SpectralGrid(0, 0))
+        self.assertEqual(truncate_sht(g, lmax=5, mmax=0), SpectralGrid(5, 0))
 
-    def test_invalid_bounds_raise(self):
+    def test_invalid_bound_is_rejected_before_default_resolution(self):
         g = as_grid("legendre-gauss", nlat=32, nlon=64)
-        for bounds in (
-            {"lmmax": 0},
-            {"lmax": -1},
-            {"mmax": -1},
-            {"lmmax": -1},
-            {"lmax": 1.5},
-            {"mmax": 1.5},
-            {"lmmax": 1.5},
-            {"lmax": True},
-            {"mmax": True},
-            {"lmmax": True},
-            {"lmax": 5, "mmax": 9},
-            {"lmax": 5, "mmax": 9, "lmmax": 9},
-        ):
-            with self.subTest(bounds=bounds), self.assertRaises(ValueError):
-                truncate_sht(g, **bounds)
+        with self.assertRaises(ValueError):
+            truncate_sht(g, lmax="bad")
 
     @parameterized.expand([[grid] for grid in _WARNING_GRIDS])
     def test_changed_default_warns(self, grid):
@@ -210,7 +285,7 @@ class TestShtLayerTruncationAgrees(unittest.TestCase):
         for cls in [th.RealSHT, th.InverseRealSHT, th.RealVectorSHT, th.InverseRealVectorSHT]:
             with self.subTest(layer=cls.__name__):
                 layer = cls(as_grid(grid, nlat=nlat, nlon=nlon))
-                self.assertEqual((layer.lmax, layer.mmax, layer.lmmax), expected)
+                self.assertEqual((layer.lmax, layer.mmax, layer.lmmax), (expected.lmax, expected.mmax, expected.lmmax))
 
     @parameterized.expand([[grid] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
     def test_layers_honour_an_explicit_truncation(self, grid):

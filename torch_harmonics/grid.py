@@ -44,6 +44,7 @@ from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 
 __all__ = [
+    "SpectralGrid",
     "PointSetS2",
     "GridS2",
     "RegularGridS2",
@@ -92,6 +93,43 @@ def _as_int(owner: Any, name: str) -> None:
     if type(value) is not int:
         # frozen dataclass, so normalize through object.__setattr__
         object.__setattr__(owner, name, int(value))
+
+
+@dataclass(frozen=True)
+class SpectralGrid:
+    r"""Descriptor for the spherical harmonic modes retained by an SHT.
+
+    The retained modes satisfy ``0 <= m < mmax`` and ``m <= l < lmax``;
+    ``lmmax`` optionally adds the exclusive bound ``l - m < lmmax``. ``shape``
+    is the dense ``(lmax, mmax)`` coefficient-storage shape, independent of the
+    mask. Unlike :class:`RegularGridS2`, this descriptor has no sample points or
+    quadrature weights.
+    """
+
+    lmax: int
+    mmax: int
+    lmmax: Optional[int] = None
+
+    @staticmethod
+    def _normalize_bound(name: str, value: int, minimum: int, relation: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < minimum:
+            raise ValueError(f"{name} must be a {relation} integer, got {value!r}")
+        return int(value)
+
+    def __post_init__(self) -> None:
+        lmax = self._normalize_bound("lmax", self.lmax, 0, "non-negative")
+        mmax = self._normalize_bound("mmax", self.mmax, 0, "non-negative")
+        lmmax = None if self.lmmax is None else self._normalize_bound("lmmax", self.lmmax, 1, "positive")
+        if mmax > lmax:
+            raise ValueError(f"mmax={mmax} exceeds lmax={lmax}; orders m >= lmax cannot be represented")
+        object.__setattr__(self, "lmax", lmax)
+        object.__setattr__(self, "mmax", mmax)
+        object.__setattr__(self, "lmmax", lmmax)
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        """Dense coefficient-storage shape ``(lmax, mmax)``."""
+        return (self.lmax, self.mmax)
 
 
 # The per-point tensors are built once per descriptor and cached on it. Caching matters
