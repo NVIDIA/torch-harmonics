@@ -102,8 +102,9 @@ class SpectralGrid:
     The retained modes satisfy ``0 <= m < mmax`` and ``m <= l < lmax``;
     ``lmmax`` optionally adds the exclusive bound ``l - m < lmmax``. ``shape``
     is the dense ``(lmax, mmax)`` coefficient-storage shape, independent of the
-    mask. Unlike :class:`RegularGridS2`, this descriptor has no sample points or
-    quadrature weights.
+    mask. Bounds must satisfy ``0 <= mmax <= lmax``, and ``lmmax`` must be
+    positive if given. Unlike :class:`RegularGridS2`, this descriptor has no
+    sample points or quadrature weights.
     """
 
     lmax: int

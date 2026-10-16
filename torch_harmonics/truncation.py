@@ -67,9 +67,10 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
 
     Missing ``lmax`` and ``mmax`` bounds are inferred from the grid resolution;
     an inferred ``mmax`` is limited by ``lmax`` so it cannot request nonexistent
-    orders. The default truncation for each grid type is chosen so that the
-    associated Legendre polynomials up to the returned degree can be
-    square-integrated exactly by the corresponding quadrature rule:
+    orders. For Gauss--Legendre, Gauss--Lobatto, and Clenshaw--Curtis grids,
+    the default latitude bound follows the quadrature exactness needed for
+    harmonic analysis. The trapezoidal grid uses the equiangular default,
+    although its quadrature is not spectrally accurate at that bound:
 
     .. list-table:: Default latitudinal truncation :math:`l_{\max}` for :math:`N_\theta` latitude points
        :header-rows: 1
@@ -87,10 +88,17 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
          - Yes
          - :math:`2 N_\theta - 3`
          - :math:`N_\theta - 1`
-       * - ``"equiangular"`` / ``"trapezoidal"``
+       * - ``"equiangular"``
          - Yes
          - :math:`\approx N_\theta - 1`
          - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
+       * - ``"trapezoidal"``
+         - Yes
+         - :math:`1`
+         - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
+
+    On the trapezoidal grid, only the constant mode (``lmax=1``) is recovered
+    exactly. Its default bound does not guarantee accurate SHT round trips.
 
     The default longitudinal truncation is the Nyquist limit of the uniform
     longitude grid: :math:`m_{\max} = \lfloor N_\lambda / 2 \rfloor + 1`.
@@ -101,7 +109,9 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     :math:`m < m_{\max}`, :math:`m \le l < l_{\max}`, and, when ``lmmax`` is
     given, :math:`l - m < lm_{\max}`. ``lmmax=None`` leaves the upper
     :math:`l-m` bandwidth unrestricted. ``lmmax=mmax`` gives the classical
-    rhomboidal case when ``lmax`` does not clip it.
+    rhomboidal case when ``lmax`` does not clip it. Resolved bounds must
+    satisfy ``0 <= mmax <= lmax``; an explicit ``mmax`` exceeding the
+    resolved ``lmax`` raises ``ValueError`` instead of being clamped.
 
     The bounds are taken from
     :attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` and

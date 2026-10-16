@@ -104,7 +104,8 @@ of quadrature weights are available, and they are not interchangeable:
 A spatial grid describes physical sample locations and quadrature weights. A
 `SpectralGrid` describes the spherical harmonic modes an SHT retains. It is
 independent of the spatial grid hierarchy and stores only the exclusive bounds
-`lmax`, `mmax`, and optional `lmmax`.
+`lmax`, `mmax`, and optional `lmmax`. The bounds must satisfy
+`0 <= mmax <= lmax`; exceeding `lmax` raises `ValueError`.
 
 `SpectralGrid.shape` is the dense coefficient shape `(lmax, mmax)`. When
 `lmmax` is set, it masks modes inside that rectangle using the exclusive bound
