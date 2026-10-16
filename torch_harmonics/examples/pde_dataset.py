@@ -101,7 +101,9 @@ class ShallowWaterDataset(torch.utils.data.Dataset):
         lmax = ceil(self.nlat / 3)
         mmax = lmax
         dt_solver = dt / float(self.nsteps)
-        self.solver = ShallowWaterSolver(self.grid, dt_solver, lmax=lmax, mmax=mmax).to(self.device).float()
+        # the solver keeps its buffers in float64 and steps in the precision of the state;
+        # the samples are float32, so their initial conditions are generated in float32
+        self.solver = ShallowWaterSolver(self.grid, dt_solver, lmax=lmax, mmax=mmax).to(self.device)
         if compile:
             self.solver.compile()
 
@@ -124,9 +126,9 @@ class ShallowWaterDataset(torch.utils.data.Dataset):
 
     def _get_sample(self):
         if self.ictype == "random":
-            inp = self.solver.random_initial_condition(mach=0.2)
+            inp = self.solver.random_initial_condition(mach=0.2, dtype=torch.float32)
         elif self.ictype == "galewsky":
-            inp = self.solver.galewsky_initial_condition()
+            inp = self.solver.galewsky_initial_condition(dtype=torch.float32)
 
         # solve pde for n steps to return the target
         tar = self.solver.timestep(inp, self.nsteps)

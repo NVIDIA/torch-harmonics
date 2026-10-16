@@ -747,14 +747,10 @@ class RealVectorSHT(nn.Module):
             weights = _precompute_folded_projection(self.grid, self._trunc, self.norm, self.csphase, vector=True)
         else:
             dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
-            # Fejer-1's native exact band is often used to validate nearly
-            # orthogonal high-degree vector modes. Keep its reciprocal degree
-            # factors in the same float64 precision as the projection table.
-            # Retain the original CC arithmetic and bitwise behavior.
-            if isinstance(self.grid, Fejer1Grid):
-                l = torch.arange(0, self.lmax, dtype=torch.float64)
-            else:
-                l = torch.arange(0, self.lmax)
+            # combine integration weights, normalization factor in to one. The degrees are
+            # float64: an integer arange divided by a float gives the default dtype, float32,
+            # and that rounding of 1/(l(l+1)) would survive a later .double()
+            l = torch.arange(0, self.lmax, dtype=torch.float64)
             norm_factor = 1.0 / l / (l + 1)
             if self.lmax:
                 norm_factor[0] = 1.0
