@@ -39,11 +39,11 @@ from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
-from torch_harmonics.truncation import _SHTTruncationMixin, _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
 
-class RealSHT(_SHTTruncationMixin, nn.Module):
+class RealSHT(nn.Module):
     r"""
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -165,6 +165,18 @@ class RealSHT(_SHTTruncationMixin, nn.Module):
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
@@ -211,7 +223,7 @@ class RealSHT(_SHTTruncationMixin, nn.Module):
         return torch.complex(out_re.contiguous(), out_im.contiguous())
 
 
-class InverseRealSHT(_SHTTruncationMixin, nn.Module):
+class InverseRealSHT(nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -329,6 +341,18 @@ class InverseRealSHT(_SHTTruncationMixin, nn.Module):
         # register buffer
         self.register_buffer("pct", pct, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
@@ -375,7 +399,7 @@ class InverseRealSHT(_SHTTruncationMixin, nn.Module):
         return x
 
 
-class RealVectorSHT(_SHTTruncationMixin, nn.Module):
+class RealVectorSHT(nn.Module):
     r"""
     Defines a module for computing the forward (real) vector SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -492,6 +516,18 @@ class RealVectorSHT(_SHTTruncationMixin, nn.Module):
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
@@ -555,7 +591,7 @@ class RealVectorSHT(_SHTTruncationMixin, nn.Module):
         return torch.complex(out_re, out_im)
 
 
-class InverseRealVectorSHT(_SHTTruncationMixin, nn.Module):
+class InverseRealVectorSHT(nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -663,6 +699,18 @@ class InverseRealVectorSHT(_SHTTruncationMixin, nn.Module):
 
         # register weights
         self.register_buffer("dpct", dpct, persistent=False)
+
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"

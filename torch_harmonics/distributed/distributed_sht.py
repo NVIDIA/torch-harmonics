@@ -39,7 +39,7 @@ from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
-from torch_harmonics.truncation import _SHTTruncationMixin, _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
 from .primitives import (
@@ -52,7 +52,7 @@ from .primitives import (
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
-class DistributedRealSHT(_SHTTruncationMixin, nn.Module):
+class DistributedRealSHT(nn.Module):
     """
     Distributed version of the forward (real-valued) SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -208,6 +208,18 @@ class DistributedRealSHT(_SHTTruncationMixin, nn.Module):
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
@@ -277,7 +289,7 @@ class DistributedRealSHT(_SHTTruncationMixin, nn.Module):
         return x
 
 
-class DistributedInverseRealSHT(_SHTTruncationMixin, nn.Module):
+class DistributedInverseRealSHT(nn.Module):
     """
     Distributed version of the inverse (real-valued) SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -414,6 +426,18 @@ class DistributedInverseRealSHT(_SHTTruncationMixin, nn.Module):
         # register
         self.register_buffer("pct", pct, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
@@ -481,7 +505,7 @@ class DistributedInverseRealSHT(_SHTTruncationMixin, nn.Module):
         return x
 
 
-class DistributedRealVectorSHT(_SHTTruncationMixin, nn.Module):
+class DistributedRealVectorSHT(nn.Module):
     """
     Distributed version of the forward (real) vector SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -615,6 +639,18 @@ class DistributedRealVectorSHT(_SHTTruncationMixin, nn.Module):
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
 
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
+
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
@@ -699,7 +735,7 @@ class DistributedRealVectorSHT(_SHTTruncationMixin, nn.Module):
         return x
 
 
-class DistributedInverseRealVectorSHT(_SHTTruncationMixin, nn.Module):
+class DistributedInverseRealVectorSHT(nn.Module):
     """
     Distributed version of the inverse (real-valued) vector SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -811,6 +847,18 @@ class DistributedInverseRealVectorSHT(_SHTTruncationMixin, nn.Module):
 
         # register buffer
         self.register_buffer("dpct", dpct, persistent=False)
+
+    @property
+    def lmax(self) -> int:
+        return self._trunc.lmax
+
+    @property
+    def mmax(self) -> int:
+        return self._trunc.mmax
+
+    @property
+    def lmmax(self) -> Optional[int]:
+        return self._trunc.lmmax
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"

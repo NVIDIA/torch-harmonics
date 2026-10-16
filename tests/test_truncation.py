@@ -147,9 +147,28 @@ class TestTruncateSht(unittest.TestCase):
         narrow = as_grid("legendre-gauss", nlat=128, nlon=16)
         self.assertEqual(truncate_sht(narrow, lmmax=3), (128, 9, 3))
 
+    def test_zero_lmax_and_mmax_remain_explicit_requests(self):
+        g = as_grid("legendre-gauss", nlat=32, nlon=64)
+        self.assertEqual(truncate_sht(g, lmax=0), (0, 0, None))
+        self.assertEqual(truncate_sht(g, mmax=0), (0, 0, None))
+        self.assertEqual(truncate_sht(g, lmax=5, mmax=0), (5, 0, None))
+
     def test_invalid_bounds_raise(self):
         g = as_grid("legendre-gauss", nlat=32, nlon=64)
-        for bounds in ({"lmax": 0}, {"mmax": 0}, {"lmmax": 0}, {"lmax": -1}, {"mmax": -1}, {"lmmax": -1}, {"lmax": 5, "mmax": 9}, {"lmax": 5, "mmax": 9, "lmmax": 9}):
+        for bounds in (
+            {"lmmax": 0},
+            {"lmax": -1},
+            {"mmax": -1},
+            {"lmmax": -1},
+            {"lmax": 1.5},
+            {"mmax": 1.5},
+            {"lmmax": 1.5},
+            {"lmax": True},
+            {"mmax": True},
+            {"lmmax": True},
+            {"lmax": 5, "mmax": 9},
+            {"lmax": 5, "mmax": 9, "lmmax": 9},
+        ):
             with self.subTest(bounds=bounds), self.assertRaises(ValueError):
                 truncate_sht(g, **bounds)
 

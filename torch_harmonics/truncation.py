@@ -62,29 +62,13 @@ def _warn_if_not_spectrally_accurate(grid: RegularGridS2) -> None:
     )
 
 
-class _SHTTruncation(NamedTuple):
+class _SpectralTruncation(NamedTuple):
     lmax: int
     mmax: int
     lmmax: Optional[int]
 
 
-class _SHTTruncationMixin:
-    """Expose a transform's single resolved truncation through its usual attributes."""
-
-    @property
-    def lmax(self) -> int:
-        return self._trunc.lmax
-
-    @property
-    def mmax(self) -> int:
-        return self._trunc.mmax
-
-    @property
-    def lmmax(self) -> Optional[int]:
-        return self._trunc.lmmax
-
-
-def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, lmmax: Optional[int] = None) -> _SHTTruncation:
+def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, lmmax: Optional[int] = None) -> _SpectralTruncation:
     r"""
     Resolve the three non-inclusive spectral bounds of a regular-grid SHT.
 
@@ -148,42 +132,45 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
 
     Returns
     -------
-    _SHTTruncation
+    _SpectralTruncation
         Resolved ``(lmax, mmax, lmmax)`` bounds.
 
     Examples
     --------
     >>> from torch_harmonics import as_grid, truncate_sht
     >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256))
-    _SHTTruncation(lmax=128, mmax=128, lmmax=None)
+    _SpectralTruncation(lmax=128, mmax=128, lmmax=None)
     >>> truncate_sht(as_grid("lobatto", nlat=128, nlon=256))
-    _SHTTruncation(lmax=127, mmax=127, lmmax=None)
+    _SpectralTruncation(lmax=127, mmax=127, lmmax=None)
     >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), lmax=32)
-    _SHTTruncation(lmax=32, mmax=32, lmmax=None)
+    _SpectralTruncation(lmax=32, mmax=32, lmmax=None)
     >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), lmax=85, mmax=43, lmmax=43)
-    _SHTTruncation(lmax=85, mmax=43, lmmax=43)
+    _SpectralTruncation(lmax=85, mmax=43, lmmax=43)
     """
 
     # a shard has no spectral bounds of its own; say so with the migration message
     # rather than letting an AttributeError surface from deeper in
     grid = require_regular_grid(grid)
 
-    for name, value in (("lmax", lmax), ("mmax", mmax), ("lmmax", lmmax)):
-        if value is not None and (not isinstance(value, Integral) or isinstance(value, bool) or value <= 0):
-            raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    for name, value in (("lmax", lmax), ("mmax", mmax)):
+        if value is not None and (not isinstance(value, Integral) or isinstance(value, bool) or value < 0):
+            raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+    if lmmax is not None and (not isinstance(lmmax, Integral) or isinstance(lmmax, bool) or lmmax <= 0):
+        raise ValueError(f"lmmax must be a positive integer, got {lmmax!r}")
 
     # Resolve grid defaults without clamping any explicit spectral bound.
     default_lmax = grid.max_exact_degree
     default_mmax = grid.max_azimuthal_order
     no_bounds = lmax is None and mmax is None and lmmax is None
     if lmax is None:
-        lmax = default_lmax
         if grid.grid_type in ("equiangular", "trapezoidal"):
             warnings.warn(
                 "Default SHT truncation changed in v0.9.0: equiangular/trapezoidal grids now truncate to (nlat+1)//2. " "Specify lmax explicitly to override.",
                 UserWarning,
                 stacklevel=2,
             )
+        # Preserve the historical empty result for an explicit mmax=0 request.
+        lmax = 0 if mmax == 0 else default_lmax
     if mmax is None:
         mmax = min(default_mmax, lmax)
 
@@ -194,7 +181,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     if mmax > lmax:
         raise ValueError(f"mmax={mmax} exceeds lmax={lmax}; orders m >= lmax cannot be represented")
 
-    return _SHTTruncation(lmax, mmax, lmmax)
+    return _SpectralTruncation(lmax, mmax, lmmax)
 
 
 def _warn_if_default_moved(grid: PointSetS2) -> None:
