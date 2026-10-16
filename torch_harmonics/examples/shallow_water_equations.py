@@ -79,6 +79,13 @@ class ShallowWaterSolver(nn.Module):
     the precision of the state it is given, and the initial conditions are generated in the
     dtype they are asked for. Moved to a device without float64, such as MPS, the buffers
     are downcast to float32.
+
+    Casting the solver itself, e.g. with ``.float()``, still works and saves the casts at
+    use: with the buffers and the state in the same precision they are no-ops, and a time
+    step gives the same result. The initial conditions are then generated in the solver's
+    precision, though, so a float32 initial condition is no longer the float64 draw
+    rounded, and a float64 one asked of a float32 solver is only float32-accurate. Keep an
+    uncast solver for a float64 reference.
     """
 
     @_rejects_legacy_signature(
