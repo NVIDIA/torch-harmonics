@@ -108,7 +108,7 @@ def autoregressive_inference(
     ref_mean_coeffs = []
 
     for iic in range(nics):
-        ic = dataset.solver.random_initial_condition(mach=0.2)
+        ic = dataset.solver.random_initial_condition(mach=0.2, dtype=torch.float32)
         inp_mean = dataset.inp_mean
         inp_var = dataset.inp_var
 
