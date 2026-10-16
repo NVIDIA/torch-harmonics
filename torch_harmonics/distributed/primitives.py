@@ -1042,6 +1042,14 @@ def _halo_gather(x, r_lat, lat_dim=-2):
     the inner-product identity asserted in the distributed primitives tests.
     """
 
+    # Nothing to borrow, so post nothing: every op below is a P2P the neighbour has to match.
+    # Up to v0.9.3 the bottom slice was x[..., -r_lat:, :], which at r_lat == 0 is the whole
+    # tensor; sent against the neighbour's 0-row receive, its surplus could be delivered to the
+    # next halo receive on the polar communicator and corrupt a later layer. narrow() below no
+    # longer degenerates that way, but an empty exchange is still pointless, so skip it.
+    if r_lat == 0:
+        return x
+
     group_size = polar_group_size()
     group_rank = polar_group_rank()
     prev_rank, next_rank = get_group_neighbors(polar_group())
@@ -1088,6 +1096,10 @@ def _halo_reduce(y, r_lat, H, lat_dim=-2):
     At the polar boundary the outward slice has no owner and is dropped, which is exactly the
     adjoint of :func:`_halo_gather` zero-padding that side.
     """
+
+    # no halo rows to send home; skip the P2P exchange entirely, as _halo_gather does
+    if r_lat == 0:
+        return y
 
     group_size = polar_group_size()
     group_rank = polar_group_rank()

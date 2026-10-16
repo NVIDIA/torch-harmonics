@@ -5,6 +5,7 @@
 ### v1.0.0rc1 (unreleased)
 
 * `polar_halo_exchange` and `polar_halo_reduce` take a `lat_dim` argument, so channels-last tensors can be exchanged directly.
+* `polar_halo_exchange` and `polar_halo_reduce` are the identity for a halo radius of 0 and post no point-to-point messages, and `DistributedDiscreteContinuousConvS2` skips the exchange then, as `DistributedNeighborhoodAttentionS2` already did. Up to v0.9.3 a zero-width exchange sent the whole band against a zero-row receive (fixed in v0.9.4).
 * **Breaking**: layers take a grid descriptor instead of a resolution and a grid name, e.g. `RealSHT(as_grid("legendre-gauss", nlat=n, nlon=2*n))`, and `grid_in`/`grid_out` when mapping between grids; the old arguments raise a `TypeError`.
 * **Breaking**: renamed or moved since v0.9.3: `lats_in`/`lats_out` are now `colats_in`/`colats_out` (`ResampleS2`, `DistributedResampleS2`, `latitude_support_band`, `compute_polar_halo_radius`); `QuadratureS2` moved from `torch_harmonics.quadrature` to `torch_harmonics.integration`; `NeighborhoodAttentionS2.quad_weights` became the backend buffer `ring_weights`; `AttentionS2.log_quad_weights` is now `log_point_weights`; the shallow-water example's `quad_weights` buffer is per-point and no longer checkpointed.
 * **Breaking**: removed `torch_harmonics.legendre.clm`, which nothing in the library used. Its factorial ratio underflows to zero from degree ~120 on; `legpoly` builds the normalization into its recursion instead.
