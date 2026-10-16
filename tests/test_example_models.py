@@ -40,6 +40,7 @@ accuracy tests; the grids are as small as the layers allow.
 """
 
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized
@@ -113,6 +114,19 @@ class TestExampleSolvers(unittest.TestCase):
         inp, tar = dataset[0]
         self.assertEqual(tuple(inp.shape[-2:]), grid.shape)
         self.assertEqual(tuple(tar.shape[-2:]), grid.shape)
+
+    def test_pde_dataset_casts_its_solver_before_moving_it(self):
+        """The solver holds no float64 state when it is moved, so the dataset can be built on a device without float64 such as MPS."""
+        moved_with = []
+        original = ShallowWaterSolver.to
+
+        def to(solver, *args, **kwargs):
+            moved_with.append([name for name, b in solver.named_buffers() if b.dtype in (torch.float64, torch.complex128)])
+            return original(solver, *args, **kwargs)
+
+        with mock.patch.object(ShallowWaterSolver, "to", to):
+            ShallowWaterDataset(dt=60.0, nsteps=1, grid=as_grid("equiangular", nlat=16, nlon=32), num_examples=1, normalize=False)
+        self.assertEqual(moved_with, [[]])
 
 
 if __name__ == "__main__":

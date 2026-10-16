@@ -101,7 +101,8 @@ class ShallowWaterDataset(torch.utils.data.Dataset):
         lmax = ceil(self.nlat / 3)
         mmax = lmax
         dt_solver = dt / float(self.nsteps)
-        self.solver = ShallowWaterSolver(self.grid, dt_solver, lmax=lmax, mmax=mmax).to(self.device).float()
+        # cast before moving: the solver is built in float64, which a device such as MPS cannot hold
+        self.solver = ShallowWaterSolver(self.grid, dt_solver, lmax=lmax, mmax=mmax).float().to(self.device)
         if compile:
             self.solver.compile()
 
