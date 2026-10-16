@@ -448,8 +448,10 @@ class RealVectorSHT(nn.Module):
         # quadrature weights (see RealSHT.__init__)
         weights = 2.0 * torch.pi * weights
 
-        # combine integration weights, normalization factor in to one:
-        l = torch.arange(0, self.lmax)
+        # combine integration weights, normalization factor in to one. The degrees are
+        # float64: an integer arange divided by a float gives the default dtype, float32,
+        # and that rounding of 1/(l(l+1)) would survive a later .double()
+        l = torch.arange(0, self.lmax, dtype=torch.float64)
         norm_factor = 1.0 / l / (l + 1)
         norm_factor[0] = 1.0
         weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor).contiguous()
