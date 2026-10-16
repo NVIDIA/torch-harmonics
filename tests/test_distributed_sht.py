@@ -214,10 +214,12 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [96, 192, 85, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
             [96, 192, 64, 1, 2, "legendre-gauss", False, 1e-5, 1e-6, 43, 43],
             [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
+            [96, 192, 85, 1, 2, "legendre-gauss", False, 1e-10, 1e-10, 43, 43, torch.float64],
+            [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-10, 1e-10, 43, 43, torch.float64],
         ],
         skip_on_empty=True,
     )
-    def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, verbose=True):
+    def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
 
         set_seed(333)
         mmax = lmax if mmax is None else mmax
@@ -226,17 +228,17 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # set up handles
         if vector:
-            forward_transform_local = th.RealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
-            forward_transform_dist = thd.DistributedRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
+            forward_transform_local = th.RealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            forward_transform_dist = thd.DistributedRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
         else:
-            forward_transform_local = th.RealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
-            forward_transform_dist = thd.DistributedRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
+            forward_transform_local = th.RealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            forward_transform_dist = thd.DistributedRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
 
         # create tensors
         if vector:
-            inp_full = torch.randn((B, C, 2, H, W), dtype=torch.float32, device=self.device)
+            inp_full = torch.randn((B, C, 2, H, W), dtype=dtype, device=self.device)
         else:
-            inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
+            inp_full = torch.randn((B, C, H, W), dtype=dtype, device=self.device)
 
         # local transform
         # FWD pass
@@ -360,10 +362,12 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [96, 192, 85, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
             [96, 192, 64, 1, 2, "legendre-gauss", False, 1e-5, 1e-6, 43, 43],
             [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
+            [96, 192, 85, 1, 2, "legendre-gauss", False, 1e-10, 1e-10, 43, 43, torch.float64],
+            [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-10, 1e-10, 43, 43, torch.float64],
         ],
         skip_on_empty=True,
     )
-    def test_distributed_isht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, verbose=True):
+    def test_distributed_isht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
 
         set_seed(333)
         mmax = lmax if mmax is None else mmax
@@ -371,19 +375,19 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
         if vector:
-            forward_transform_local = th.RealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
-            backward_transform_local = th.InverseRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
-            backward_transform_dist = thd.DistributedInverseRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
+            forward_transform_local = th.RealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_local = th.InverseRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_dist = thd.DistributedInverseRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
         else:
-            forward_transform_local = th.RealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
-            backward_transform_local = th.InverseRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
-            backward_transform_dist = thd.DistributedInverseRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
+            forward_transform_local = th.RealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_local = th.InverseRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_dist = thd.DistributedInverseRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
 
         # create tensors
         if vector:
-            dummy_full = torch.randn((B, C, 2, H, W), dtype=torch.float32, device=self.device)
+            dummy_full = torch.randn((B, C, 2, H, W), dtype=dtype, device=self.device)
         else:
-            dummy_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
+            dummy_full = torch.randn((B, C, H, W), dtype=dtype, device=self.device)
         inp_full = forward_transform_local(dummy_full)
 
         #############################################################
