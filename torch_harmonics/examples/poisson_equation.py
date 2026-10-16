@@ -139,6 +139,13 @@ class RadialPoissonSolver(nn.Module):
     in r, and casts them at use: ``solve`` runs in the precision of its input, and the
     sources are generated in the dtype they are asked for. Moved to a device without
     float64, such as MPS, the buffers are downcast to float32.
+
+    Casting the solver itself, e.g. with ``.float()``, still works and saves the casts at
+    use: with the buffers and the source in the same precision they are no-ops, and the
+    solve gives the same result. The sources are then generated in the solver's precision,
+    though, so a float32 source is no longer the float64 draw rounded, and a float64 source
+    asked of a float32 solver is only float32-accurate. Keep an uncast solver for a float64
+    reference.
     """
 
     # new in v1.0.0rc1, so there is no signature before the grid descriptors to reject
