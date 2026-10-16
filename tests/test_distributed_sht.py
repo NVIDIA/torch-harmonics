@@ -206,7 +206,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
             [33, 64, 65, 1, 10, "equiangular", True, 1e-5, 1e-6],
             [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
-            # Independent order bounds; mmax=9 splits unevenly over two azimuth ranks.
+            # Asymmetric truncation, including uneven order partitions.
             [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, None],
             [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, 6],
             [32, 64, 24, 1, 10, "legendre-gauss", True, 1e-5, 1e-6, 9, 6],

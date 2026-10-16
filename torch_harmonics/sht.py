@@ -128,7 +128,6 @@ class RealSHT(nn.Module):
         mmax: Optional[int] = None,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        *,
         lmmax: Optional[int] = None,
     ):
 
@@ -316,7 +315,6 @@ class InverseRealSHT(nn.Module):
         mmax: Optional[int] = None,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        *,
         lmmax: Optional[int] = None,
     ):
 
@@ -478,7 +476,6 @@ class RealVectorSHT(nn.Module):
         mmax: Optional[int] = None,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        *,
         lmmax: Optional[int] = None,
     ):
 
@@ -675,7 +672,6 @@ class InverseRealVectorSHT(nn.Module):
         mmax: Optional[int] = None,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        *,
         lmmax: Optional[int] = None,
     ):
 

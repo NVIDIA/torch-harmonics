@@ -119,7 +119,7 @@ class TestTruncateSht(unittest.TestCase):
         self.assertEqual(truncate_sht(as_grid(grid, nlat=shape[0], nlon=shape[1])), expected)
 
     @parameterized.expand([[nlat, grid] for nlat in _NLATS for grid in _EXACT_DEGREE])
-    def test_triangular_truncation_is_enforced(self, nlat, grid):
+    def test_default_truncation_is_triangular(self, nlat, grid):
         """The no-argument transform retains its old triangular shape."""
         trunc = truncate_sht(as_grid(grid, nlat=nlat, nlon=2 * nlat))
         self.assertEqual(trunc.lmax, trunc.mmax)
