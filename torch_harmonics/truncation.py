@@ -67,7 +67,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
 
     Missing ``lmax`` and ``mmax`` bounds are inferred from the grid resolution;
     an inferred ``mmax`` is limited by ``lmax`` so it cannot request nonexistent
-    orders. For Gauss--Legendre, Gauss--Lobatto, and Clenshaw--Curtis grids,
+    orders. For Gauss--Legendre, Gauss--Lobatto, Clenshaw--Curtis, and Fejér-1 grids,
     the default latitude bound follows the quadrature exactness needed for
     harmonic analysis. The trapezoidal grid uses the equiangular default,
     although its quadrature is not spectrally accurate at that bound:
@@ -96,6 +96,10 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
          - Yes
          - :math:`1`
          - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
+       * - ``"fejer1"``
+         - No
+         - :math:`N_\theta` for odd and :math:`N_\theta - 1` for even
+         - :math:`\lceil N_\theta / 2 \rceil`
 
     On the trapezoidal grid, only the constant mode (``lmax=1``) is recovered
     exactly. Its default bound does not guarantee accurate SHT round trips.
@@ -199,11 +203,13 @@ def _warn_if_default_moved(grid: PointSetS2) -> None:
     silent, and only the routine that *chose* to default announces it. That split is
     pinned by ``test_the_descriptor_does_not_warn``.
 
-    Only the latitude/longitude grids can have moved, since they are the only ones
-    that existed before the change; a ragged grid has no ``pi / (nlat - 1)`` past to
-    differ from and is passed over rather than warned about spuriously.
+    Only an existing latitude/longitude grid can have moved. The newly introduced
+    Fejer-1 grid has no prior default to preserve; a ragged grid likewise has no
+    ``pi / (nlat - 1)`` past to differ from.
     """
     if not isinstance(grid, RegularGridS2):
+        return
+    if grid.grid_type == "fejer1":
         return
 
     spacing = grid.max_node_spacing
@@ -217,7 +223,10 @@ def _warn_if_default_moved(grid: PointSetS2) -> None:
     # two independent reasons the default can have moved, and a grid can hit both
     reasons = []
     if abs(grid.max_latitude_spacing - legacy) > 1e-9 * legacy:
-        reasons.append(f"its nodes are not uniform in theta, so the latitudinal spacing is {grid.max_latitude_spacing:.6f} rather than pi/(nlat-1)")
+        if grid.is_uniform_in_theta:
+            reasons.append(f"its uniform latitudinal spacing is {grid.max_latitude_spacing:.6f} rather than pi/(nlat-1)")
+        else:
+            reasons.append(f"its nodes are not uniform in theta, so the latitudinal spacing is {grid.max_latitude_spacing:.6f} rather than pi/(nlat-1)")
     if grid.max_longitude_spacing > grid.max_latitude_spacing:
         reasons.append(
             f"its in-ring spacing ({grid.max_longitude_spacing:.6f}) exceeds its latitudinal spacing ({grid.max_latitude_spacing:.6f}), and the support has to reach the coarser neighbour"

@@ -264,6 +264,7 @@ coordinates:
 </div>
 
 - **Equiangular**: rings equally spaced in latitude, including both poles, with Clenshaw-Curtis quadrature. This is the familiar latitude-longitude grid used for most reanalysis and climate data.
+- **Fejér-1**: pole-excluding rings with Fejér quadrature. Its direct-analysis default is `(nlat + 1) // 2`; folded analysis supports higher bandlimits within its recovery bounds.
 - **Legendre-Gauss**: rings at the roots of the Legendre polynomial in $\cos\theta$, excluding the poles. Gaussian quadrature is exact up to the highest polynomial degree for a given number of rings, so this grid supports the highest SHT bandlimit per ring.
 - **Lobatto**: Gauss-Lobatto nodes, i.e. Legendre-Gauss-like rings that include both poles.
 - **Trapezoidal**: rings equally spaced in $\cos\theta$ with the trapezoidal rule, which places them densely near the equator and sparsely near the poles. Its quadrature converges only algebraically, so it is suited for quadrature and localized operators but not for an SHT at a high bandlimit.
@@ -272,6 +273,7 @@ coordinates:
 | grid type          | class                                      | field shape    | accepted by                                              |
 | ------------------ | ------------------------------------------ | -------------- | -------------------------------------------------------- |
 | `"equiangular"`    | `th.EquiangularGrid(nlat=..., nlon=...)`   | `(nlat, nlon)` | every layer                                              |
+| `"fejer1"`         | `th.Fejer1Grid(nlat=..., nlon=...)`        | `(nlat, nlon)` | every layer                                              |
 | `"legendre-gauss"` | `th.LegendreGaussGrid(nlat=..., nlon=...)` | `(nlat, nlon)` | every layer                                              |
 | `"lobatto"`        | `th.LobattoGrid(nlat=..., nlon=...)`       | `(nlat, nlon)` | every layer                                              |
 | `"trapezoidal"`    | `th.TrapezoidalGrid(nlat=..., nlon=...)`   | `(nlat, nlon)` | every layer                                              |

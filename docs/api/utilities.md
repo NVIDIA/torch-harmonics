@@ -44,6 +44,7 @@ coefficient support of an SHT.
    GridShardS2
    RegularGridShardS2
    EquiangularGrid
+   Fejer1Grid
    LegendreGaussGrid
    LobattoGrid
    TrapezoidalGrid
@@ -94,6 +95,7 @@ takes to build the descriptor the layers are given:
 | Grid string        | Quadrature rule | Nodes                                            | Key properties                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ------------------ | --------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `"equiangular"`    | Clenshaw–Curtis | Equally spaced in $\theta$ (including poles)     | Default grid. Exact for polynomials up to degree $N-1$. Simple, FFT-friendly.                                                                                                                                                                                                                                                                                                                                                                              |
+| `"fejer1"`         | Fejér first     | Equally spaced in $\theta$ (poles excluded)      | Exact through polynomial degree $N-1$ for even $N$ and $N$ for odd $N$; native SHT default `lmax = (N+1)//2`. Folded analysis can extend through degree $N-1$ when longitude Nyquist is excluded.                                                                                                                                                                                                                                                          |
 | `"legendre-gauss"` | Gauss–Legendre  | Roots of $P_N(\cos\theta)$                       | Exact for polynomials up to degree $2N-1$. Optimal accuracy per node, but nodes are non-uniform.                                                                                                                                                                                                                                                                                                                                                           |
 | `"lobatto"`        | Gauss–Lobatto   | Roots of $P'_{N-1}(\cos\theta)$, plus endpoints  | Exact for polynomials up to degree $2N-3$. Includes both poles, useful when pole values are needed.                                                                                                                                                                                                                                                                                                                                                        |
 | `"trapezoidal"`    | Trapezoidal     | Equally spaced in $\cos\theta$ (including poles) | Supports periodic grids. Lower-order accuracy but simplest structure. The nodes are equispaced in $\cos\theta$, *not* in $\theta$, so the spacing in $\theta$ is strongly non-uniform: the polar spacing is a factor $\sqrt{N_\theta - 1}$ coarser than the equatorial one, a disparity that grows with resolution rather than staying fixed. Formerly named `"equiangular-trapezoidal"`, after nodes it does not have; that string is no longer accepted. |
@@ -130,6 +132,7 @@ applies the widening that the sparsity patterns are actually built with.
    legendre_gauss_weights
    lobatto_weights
    clenshaw_curtiss_weights
+   fejer1_weights
    trapezoidal_weights
 ```
 

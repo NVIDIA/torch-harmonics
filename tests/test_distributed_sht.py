@@ -72,7 +72,7 @@ def _report_margin(name, ref, got, atol, rtol):
     diff = (got - ref).abs().max().item()
     scale = ref.abs().max().item()
     eps = torch.finfo(ref.real.dtype if ref.is_complex() else ref.dtype).eps
-    print(f"{name}: max|diff| = {diff:.3e}, max|ref| = {scale:.3e}, " f"= {diff / max(eps * scale, 1e-30):.1f} eps*max|ref| (atol {atol:.0e}, rtol {rtol:.0e})")
+    print(f"{name}: max|diff| = {diff:.3e}, max|ref| = {scale:.3e}, {diff / max(eps * scale, 1e-30):.1f} eps*max|ref| (atol {atol:.0e}, rtol {rtol:.0e})")
 
 
 def _range_atol(ref, atol, ulps=8):
@@ -136,16 +136,20 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            (vector, dtype, lmax, mmax, lmmax)
+            (geometry, vector, dtype, lmax, mmax, lmmax)
+            for geometry, cases in [
+                ("equiangular", [(16, 16, None), (15, 7, None), (15, 9, None), (15, 7, 8), (15, 15, 5), (16, 1, None), (16, 0, None)]),
+                ("fejer1", [(17, 17, None), (17, 17, 5), (16, 9, None)]),
+            ]
             for vector in (False, True)
             for dtype in (torch.float32, torch.float64)
-            for lmax, mmax, lmmax in [(16, 16, None), (15, 7, None), (15, 9, None), (15, 7, 8), (15, 15, 5), (16, 1, None), (16, 0, None)]
+            for lmax, mmax, lmmax in cases
         ],
         skip_on_empty=True,
     )
-    def test_extended_cc(self, vector, dtype, lmax, mmax, lmmax):
+    def test_extended_folded(self, geometry, vector, dtype, lmax, mmax, lmmax):
         """Uneven shards, padded channels and masked high-bandlimit analysis."""
-        grid = th.EquiangularGrid(nlat=17, nlon=33)
+        grid = th.as_grid(geometry, nlat=17, nlon=33)
         serial = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device, dtype)
         if mmax < self.grid_size_w:
             # Existing distributed partitions require a nonempty order shard.
@@ -153,7 +157,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
                 (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax)
             return
         distributed = (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device, dtype)
-        self.assertTrue(distributed._extended_cc)
+        self.assertTrue(distributed._extended_folded)
         block = serial.weights[
             ..., distributed.mmax_offset : distributed.mmax_offset + distributed.mmax_local, :, distributed.lat_offset : distributed.lat_offset + distributed.nlat_local
         ]
@@ -164,7 +168,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             lmax,
             1,
             1,
-            "equiangular",
+            geometry,
             vector,
             1e-12 if dtype == torch.float64 else 1e-5,
             1e-12 if dtype == torch.float64 else 1e-6,
@@ -173,7 +177,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             dtype=dtype,
             verbose=False,
         )
-        # Independent analytic degree-15 zonal scalar harmonic and its vector derivative.
+        # Independent analytic top-degree zonal scalar harmonic and its vector derivative.
         # SciPy's recurrence supplies the spatial field; no shared synthesis is used.
         import numpy as np
         from scipy.special import eval_legendre, lpmv
@@ -222,9 +226,14 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             p = normalization * lpmv(m, l, np.cos(theta))
             harmonic = p * np.exp(1j * m * phi)
             derivative = np.zeros_like(harmonic)
-            derivative[1:-1] = ((l * np.cos(theta[1:-1]) * p[1:-1] - (l + m) * normalization * lpmv(m, l - 1, np.cos(theta[1:-1]))) / np.sin(theta[1:-1])) * np.exp(1j * m * phi)
+            ring_slice = slice(None) if geometry == "fejer1" else slice(1, -1)
+            derivative[ring_slice] = (
+                (l * np.cos(theta[ring_slice]) * p[ring_slice] - (l + m) * normalization * lpmv(m, l - 1, np.cos(theta[ring_slice])))
+                / np.sin(theta[ring_slice])
+                * np.exp(1j * m * phi)
+            )
             longitude = np.zeros_like(harmonic)
-            longitude[1:-1] = 1j * m * harmonic[1:-1] / np.sin(theta[1:-1])
+            longitude[ring_slice] = 1j * m * harmonic[ring_slice] / np.sin(theta[ring_slice])
             coefficient = 0.7 + 0.3j
             for component in range(2) if vector else range(1):
                 basis = np.stack((derivative, longitude) if component == 0 else (longitude, -derivative)) if vector else harmonic
@@ -373,7 +382,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         out_local = forward_transform_dist(inp_local)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
-        if getattr(forward_transform_dist, "_extended_cc", False):
+        if getattr(forward_transform_dist, "_extended_folded", False):
             inp_local.grad = None
             repeated = forward_transform_dist(inp_local)
             repeated.backward(ograd_local, retain_graph=True)

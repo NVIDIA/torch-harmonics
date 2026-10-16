@@ -39,7 +39,7 @@ from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
-from torch_harmonics.sht import _extended_cc_analysis, _precompute_cc_projection
+from torch_harmonics.sht import _extended_folded_analysis, _precompute_folded_projection
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
@@ -62,10 +62,11 @@ class DistributedRealSHT(nn.Module):
     The endpoints ``grid_in`` and ``grid_out`` describe global domains; ``grid``
     remains the global spatial descriptor.
 
-    Extended equiangular CC analysis uses the same precomputed real effective
-    projection as :class:`~torch_harmonics.RealSHT`. Each rank builds only its
-    global order range on the full meridian and retains its latitude shard.
-    Forward and backward use the existing collectives without latitude gathers.
+    Folded equiangular CC and Fejér-1 analysis use the same precomputed real
+    effective projection as :class:`~torch_harmonics.RealSHT`. Each rank builds
+    only its global order range on the full meridian and retains its latitude
+    shard. Forward and backward use the existing collectives without latitude
+    gathers.
 
     **Distribution scheme.**
     The input tensor has shape ``(B, C, nlat_local, nlon_local)`` where latitudes
@@ -187,9 +188,9 @@ class DistributedRealSHT(nn.Module):
         self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
-        self._extended_cc = _extended_cc_analysis(self.grid, self._trunc)
-        if self._extended_cc:
-            weights = _precompute_cc_projection(
+        self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
+        if self._extended_folded:
+            weights = _precompute_folded_projection(
                 self.grid,
                 self._trunc,
                 self.norm,
@@ -562,9 +563,9 @@ class DistributedRealVectorSHT(nn.Module):
             Serial counterpart with full mathematical description and parameter
             documentation.
 
-    Extended equiangular CC analysis uses the same precomputed real effective
-    projection as :class:`~torch_harmonics.RealVectorSHT`, with global-order
-    tangential parity. It adds no forward or backward collectives.
+    Folded equiangular CC and Fejér-1 analysis use the same precomputed real
+    effective projection as :class:`~torch_harmonics.RealVectorSHT`, with
+    global-order tangential parity. It adds no forward or backward collectives.
 
     Parameters
     ----------
@@ -651,9 +652,9 @@ class DistributedRealVectorSHT(nn.Module):
         self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
-        self._extended_cc = _extended_cc_analysis(self.grid, self._trunc)
-        if self._extended_cc:
-            weights = _precompute_cc_projection(
+        self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
+        if self._extended_folded:
+            weights = _precompute_folded_projection(
                 self.grid,
                 self._trunc,
                 self.norm,

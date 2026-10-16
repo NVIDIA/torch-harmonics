@@ -54,6 +54,8 @@ class TestQuadrature(unittest.TestCase):
         [
             [64, 128, 2, 3, "equiangular", False, 1e-6, 1e-6],
             [64, 128, 2, 3, "equiangular", True, 1e-6, 1e-6],
+            [64, 128, 2, 3, "fejer1", False, 1e-6, 1e-6],
+            [65, 128, 2, 3, "fejer1", True, 1e-6, 1e-6],
             [65, 128, 1, 1, "legendre-gauss", False, 1e-6, 1e-6],
             [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
@@ -80,6 +82,7 @@ class TestQuadrature(unittest.TestCase):
         [
             # nlat, nlon, grid
             [64, 128, "equiangular"],
+            [64, 128, "fejer1"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
             [64, 128, "trapezoidal"],
@@ -111,6 +114,7 @@ class TestQuadrature(unittest.TestCase):
         [
             # nlat, nlon, grid, atol, rtol
             [64, 128, "equiangular", 1e-5, 1e-5],
+            [64, 128, "fejer1", 1e-5, 1e-5],
             [65, 128, "legendre-gauss", 1e-5, 1e-5],
             [65, 128, "lobatto", 1e-5, 1e-5],
             [64, 128, "trapezoidal", 1e-2, 1e-2],
@@ -148,6 +152,7 @@ class TestQuadrature(unittest.TestCase):
         [
             # nlat, nlon, grid
             [64, 128, "equiangular"],
+            [64, 128, "fejer1"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
             [64, 128, "trapezoidal"],
@@ -177,6 +182,7 @@ class TestQuadrature(unittest.TestCase):
         [
             # nlat, nlon, batch, channels, grid
             [64, 128, 2, 3, "equiangular"],
+            [64, 128, 2, 3, "fejer1"],
             [65, 128, 1, 1, "legendre-gauss"],
         ]
     )
@@ -259,6 +265,7 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
     @parameterized.expand(
         [
             ["equiangular", False],
+            ["fejer1", True],
             ["legendre-gauss", True],
             ["healpix", False],
             ["healpix", True],
@@ -383,6 +390,7 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
     @parameterized.expand(
         [
             ["equiangular"],
+            ["fejer1"],
             ["legendre-gauss"],
             ["lobatto"],
             ["trapezoidal"],
@@ -395,6 +403,24 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
 
         self.assertEqual(lats.dtype, torch.float64)
         self.assertEqual(weights.dtype, torch.float64)
+
+
+class TestFejer1Quadrature(unittest.TestCase):
+    @parameterized.expand([[nlat] for nlat in (2, 3, 8, 9, 64, 65)])
+    def test_nodes_weights_and_polynomial_exactness(self, nlat, verbose=False):
+        colats, weights = precompute_latitudes(nlat, grid="fejer1")
+        expected = torch.pi * (torch.arange(nlat, dtype=torch.float64) + 0.5) / nlat
+        self.assertTrue(compare_tensors("Fejer-1 nodes", colats, expected, atol=1e-14, rtol=1e-14, verbose=verbose))
+        self.assertGreater(weights.min().item(), 0.0)
+        self.assertTrue(compare_tensors("Fejer-1 weight symmetry", weights, weights.flip(0), atol=1e-14, rtol=1e-14, verbose=verbose))
+        self.assertAlmostEqual(weights.sum().item(), 2.0, places=14)
+
+        exact_degree = nlat if nlat % 2 else nlat - 1
+        cosine = colats.cos()
+        for degree in range(exact_degree + 1):
+            actual = torch.sum(weights * cosine**degree).item()
+            expected_integral = 2.0 / (degree + 1) if degree % 2 == 0 else 0.0
+            self.assertAlmostEqual(actual, expected_integral, delta=2e-13, msg=f"nlat={nlat}, degree={degree}")
 
     @parameterized.expand(
         [

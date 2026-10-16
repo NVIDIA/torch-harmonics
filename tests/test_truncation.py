@@ -62,12 +62,13 @@ _EXACT_DEGREE = {
     "legendre-gauss": lambda nlat: nlat,
     "lobatto": lambda nlat: nlat - 1,
     "equiangular": lambda nlat: (nlat + 1) // 2,
+    "fejer1": lambda nlat: (nlat + 1) // 2,
     "trapezoidal": lambda nlat: (nlat + 1) // 2,
 }
 
 # grids whose default lmax changed in v0.9.0 and therefore still announce it
 _WARNING_GRIDS = ["equiangular", "trapezoidal"]
-_QUIET_GRIDS = ["legendre-gauss", "lobatto"]
+_QUIET_GRIDS = ["fejer1", "legendre-gauss", "lobatto"]
 
 _NLATS = [32, 33, 128, 129]
 
@@ -201,6 +202,7 @@ class TestTruncateSht(unittest.TestCase):
             ["legendre-gauss", (128, 256), SpectralGrid(128, 128)],
             ["lobatto", (128, 256), SpectralGrid(127, 127)],
             ["equiangular", (128, 256), SpectralGrid(64, 64)],
+            ["fejer1", (128, 256), SpectralGrid(64, 64)],
             ["trapezoidal", (128, 256), SpectralGrid(64, 64)],
         ]
     )
@@ -389,11 +391,12 @@ class TestTruncateSupport(unittest.TestCase):
         with self.assertWarns(UserWarning):
             truncate_support(as_grid(grid, nlat=32, nlon=64))
 
-    def test_the_default_is_silent_on_equiangular(self):
-        """Equiangular spacing is pi/(nlat-1), so nothing changed there."""
+    @parameterized.expand([[grid] for grid in ("equiangular", "fejer1")])
+    def test_the_default_is_silent_on_unchanged_or_new_grids(self, grid):
+        """Equiangular is unchanged and Fejer-1 has no previous cutoff to announce."""
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            truncate_support(as_grid("equiangular", nlat=32, nlon=64))
+            truncate_support(as_grid(grid, nlat=32, nlon=64))
 
     def test_a_grid_that_overrides_the_cutoff_is_obeyed(self):
         """

@@ -37,18 +37,24 @@ import torch.nn as nn
 from torch_harmonics._field_contract import check_coeffs, check_field
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.grid import EquiangularGrid, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import EquiangularGrid, Fejer1Grid, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _mask_spectral_block, _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
 from torch_harmonics.radial import split_radial
 from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
 
-def _extended_cc_analysis(grid: RegularGridS2, spectral_grid: SpectralGrid) -> bool:
+def _extended_folded_analysis(grid: RegularGridS2, spectral_grid: SpectralGrid) -> bool:
     """Select extended analysis after the usual spectral support resolution."""
     # Oversized dimensions retain legacy direct quadrature for spectral upsampling.
     # Accurate folded recovery requires both latitude and longitude bandwidth limits.
-    return isinstance(grid, EquiangularGrid) and grid.max_exact_degree < spectral_grid.lmax <= grid.nlat - 1 and spectral_grid.mmax <= (grid.nlon + 1) // 2
+    if isinstance(grid, EquiangularGrid):
+        latitude_limit = grid.nlat - 1
+    elif isinstance(grid, Fejer1Grid):
+        latitude_limit = grid.nlat
+    else:
+        return False
+    return grid.max_exact_degree < spectral_grid.lmax <= latitude_limit and spectral_grid.mmax <= (grid.nlon + 1) // 2
 
 
 def _precompute_cc_resampling(nlat: int, mmax: int, vector: bool = False) -> dict[str, torch.Tensor]:
@@ -75,21 +81,50 @@ def _precompute_cc_resampling(nlat: int, mmax: int, vector: bool = False) -> dic
     }
 
 
-def _periodic_latitude_extension(x: torch.Tensor, signs: torch.Tensor) -> torch.Tensor:
-    r"""Extend ``(..., m, nlat)`` modes, reversing only interior rings.
+def _precompute_f1_resampling(nlat: int, mmax: int, vector: bool = False) -> dict[str, torch.Tensor]:
+    """Real construction buffers for Fejér-1-to-complementary-CC folding."""
+    dense_weights = 2.0 * torch.pi * EquiangularGrid(nlat=2 * nlat + 1, nlon=1).colat_weights
+    complementary_weights = torch.zeros(2 * nlat, dtype=torch.float64)
+    complementary_weights[: nlat + 1] = dense_weights[::2]
+    frequencies = torch.fft.fftfreq(2 * nlat, dtype=torch.float64)
+    angle = -torch.pi * frequencies
+    phase = torch.stack((angle.cos(), angle.sin()), dim=0)
+    # The unpaired meridional Nyquist cosine vanishes at the half-step targets.
+    # Supported harmonics do not contain this frequency; suppressing it retains
+    # conjugate symmetry for arbitrary complex longitude modes.
+    phase[:, nlat] = 0.0
+    signs = torch.ones(mmax, 1, dtype=torch.int8)
+    signs[1::2] = -1
+    if vector:
+        signs = -signs
+    return {
+        "_f1_native_weights": dense_weights[1::2].contiguous(),
+        "_f1_complementary_weights": complementary_weights,
+        "_f1_phase": phase,
+        "_f1_parity": signs,
+    }
+
+
+def _periodic_latitude_extension(x: torch.Tensor, signs: torch.Tensor, include_poles: bool = True) -> torch.Tensor:
+    r"""Extend ``(..., m, nlat)`` modes to a periodic meridian.
 
     ``signs`` has shape ``(m, 1)``: scalar parity is :math:`(-1)^m`,
-    tangential vector parity is :math:`(-1)^{m+1}`. Each pole occurs once.
-    The caller supplies signs for the actual spectral orders being processed.
+    tangential vector parity is :math:`(-1)^{m+1}`. A pole-inclusive grid
+    reflects only interior rings so each pole occurs once; a pole-excluding grid
+    reflects every sampled ring. The caller supplies signs for the actual orders.
     """
-    return torch.cat((x, signs * x[..., 1:-1].flip(-1)), dim=-1)
+    mirrored = x[..., 1:-1] if include_poles else x
+    return torch.cat((x, signs * mirrored.flip(-1)), dim=-1)
 
 
-def _periodic_latitude_extension_adjoint(x: torch.Tensor, signs: torch.Tensor) -> torch.Tensor:
-    """Fold a periodic meridian, adding mirrored interiors without doubling poles."""
-    nlat = x.shape[-1] // 2 + 1
-    interior = x[..., 1 : nlat - 1] + signs * x[..., nlat:].flip(-1)
-    return torch.cat((x[..., :1], interior, x[..., nlat - 1 : nlat]), dim=-1)
+def _periodic_latitude_extension_adjoint(x: torch.Tensor, signs: torch.Tensor, include_poles: bool = True) -> torch.Tensor:
+    """Adjoint of the periodic meridian extension for both endpoint conventions."""
+    if include_poles:
+        nlat = x.shape[-1] // 2 + 1
+        interior = x[..., 1 : nlat - 1] + signs * x[..., nlat:].flip(-1)
+        return torch.cat((x[..., :1], interior, x[..., nlat - 1 : nlat]), dim=-1)
+    nlat = x.shape[-1] // 2
+    return x[..., :nlat] + signs * x[..., nlat:].flip(-1)
 
 
 def _fourier_shift_latitude(x: torch.Tensor, phase: torch.Tensor) -> torch.Tensor:
@@ -100,29 +135,31 @@ def _fourier_shift_latitude(x: torch.Tensor, phase: torch.Tensor) -> torch.Tenso
 def _fold_resampled_latitude(
     x: torch.Tensor,
     signs: torch.Tensor,
-    quadrature_weights: torch.Tensor,
-    midpoint_weights: torch.Tensor,
+    native_weights: torch.Tensor,
+    complementary_weights: torch.Tensor,
     phase: torch.Tensor,
+    include_poles: bool = True,
 ) -> torch.Tensor:
-    r"""Apply :math:`U = Q_e + A^* Q_o A` to complex longitude modes.
+    r"""Fold native and complementary quadrature onto the sampled meridian.
 
-    ``A`` periodically extends the meridian, shifts it by half a latitude step,
-    and selects the first ``nlat - 1`` midpoint rings. Zero-padded midpoint
-    weights implement this selection and its adjoint. Both quadratures come
-    from the doubled CC grid; neither is the native CC quadrature.
+    ``A`` periodically extends the meridian, shifts it by half a sample spacing,
+    and selects the complementary rings on the northern-to-southern half. The
+    zero-padded complementary weights encode both that selection and its
+    adjoint. For CC the original nodes are the even fine-grid rings; for F1 they
+    are the odd ones.
     """
-    # FFT backends reject empty batches; an empty order axis has no midpoint contribution.
+    # FFT backends reject empty batches; an empty order axis has no complement term.
     if x.shape[-2] == 0:
-        return quadrature_weights * x
-    shifted = _fourier_shift_latitude(_periodic_latitude_extension(x, signs), phase)
-    folded = _fourier_shift_latitude(shifted * midpoint_weights, phase.conj())
-    return quadrature_weights * x + _periodic_latitude_extension_adjoint(folded, signs)
+        return native_weights * x
+    shifted = _fourier_shift_latitude(_periodic_latitude_extension(x, signs, include_poles), phase)
+    folded = _fourier_shift_latitude(shifted * complementary_weights, phase.conj())
+    return native_weights * x + _periodic_latitude_extension_adjoint(folded, signs, include_poles)
 
 
 @lru_cache(maxsize=2, typed=True, copy=True)
 @torch.no_grad()
-def _precompute_cc_projection(
-    grid: EquiangularGrid,
+def _precompute_folded_projection(
+    grid: RegularGridS2,
     truncation: SpectralGrid,
     norm: str,
     csphase: bool,
@@ -133,13 +170,14 @@ def _precompute_cc_projection(
     kmin: int = 0,
     kmax: Optional[int] = None,
 ) -> torch.Tensor:
-    r"""Fold doubled-grid quadrature onto real projection rows in bounded blocks.
+    r"""Fold a fine Clenshaw--Curtis rule onto real projection rows in bounded blocks.
 
-    Half-grid interpolation with the unpaired Nyquist bin suppressed is real.
-    Thus ``U = Q_e + A* Q_o A`` is both real and symmetric, and the bilinear
-    coefficient contraction ``P.T @ U @ x`` uses ``W = U.T @ P = U @ P``.
-    This also applies to complex longitude modes: no conjugation of ``x`` is
-    involved. Both vector derivative rows have parity ``(-1)**(m+1)``.
+    CC and F1 interleave their native rings with complementary rings on fine
+    Clenshaw--Curtis nodes. The half-grid shift suppresses the unpaired Nyquist
+    bin, making ``U = Q_native + A* Q_complement A`` real and symmetric. The
+    bilinear coefficient contraction ``P.T @ U @ x`` therefore uses
+    ``W = U.T @ P = U @ P`` without conjugating complex longitude modes.
+    Both vector derivative rows have parity ``(-1)**(m+1)``.
 
     Only local orders are generated, on the full meridian; only the requested
     latitude shard is retained. Recurrence and FFT temporaries are bounded by
@@ -154,8 +192,22 @@ def _precompute_cc_projection(
     if mmax == mmin or truncation.lmax == 0 or kmax == kmin:
         return weights
 
-    buffers = _precompute_cc_resampling(grid.nlat, mmax, vector)
-    phase = torch.complex(*buffers["_cc_phase"])
+    if isinstance(grid, EquiangularGrid):
+        buffers = _precompute_cc_resampling(grid.nlat, mmax, vector)
+        native_weights = buffers["_cc_weights"]
+        complementary_weights = buffers["_cc_midpoint_weights"]
+        phase = torch.complex(*buffers["_cc_phase"])
+        parity = buffers["_cc_parity"]
+        include_poles = True
+    elif isinstance(grid, Fejer1Grid):
+        buffers = _precompute_f1_resampling(grid.nlat, mmax, vector)
+        native_weights = buffers["_f1_native_weights"]
+        complementary_weights = buffers["_f1_complementary_weights"]
+        phase = torch.complex(*buffers["_f1_phase"])
+        parity = buffers["_f1_parity"]
+        include_poles = False
+    else:
+        raise ValueError(f"folded projection is not implemented for {type(grid).__name__}")
     # At most ~8 MiB of real basis data per block (FFT workspaces are larger).
     order_chunk = min(16, mmax - mmin)
     degree_limit = max(1, 2**20 // (grid.nlat * order_chunk * (2 if vector else 1)))
@@ -184,10 +236,11 @@ def _precompute_cc_projection(
             # The fold expects (..., m, latitude); degree is a batch dimension.
             folded = _fold_resampled_latitude(
                 basis.transpose(-3, -2),
-                buffers["_cc_parity"][ms:me],
-                buffers["_cc_weights"],
-                buffers["_cc_midpoint_weights"],
+                parity[ms:me],
+                native_weights,
+                complementary_weights,
                 phase,
+                include_poles,
             )
             weights[..., ms - mmin : me - mmin, ls:le, :] = folded.real.transpose(-3, -2)[..., kmin:kmax]
     return weights
@@ -214,14 +267,17 @@ class RealSHT(nn.Module):
     where :math:`\tilde{f}_m` are the Fourier modes and :math:`q_k` are the
     quadrature weights.
 
-    On equiangular grids, explicit ``lmax > grid.max_exact_degree`` selects
-    precomputed folded Clenshaw--Curtis analysis following :cite:`Reinecke2023`,
-    Appendix A, when the resolved exclusive bounds satisfy
-    ``lmax <= nlat - 1`` and ``mmax <= (nlon + 1) // 2``. These are the
-    accurate band-limited recovery limits. Oversized dimensions retain legacy
-    direct quadrature without implying accurate recovery. The default
+    On equiangular and Fejér-1 grids, explicit ``lmax > grid.max_exact_degree``
+    selects precomputed folded Clenshaw--Curtis analysis following
+    :cite:`Reinecke2023`, Appendix A, when the resolved bounds fit the
+    geometry-specific latitude limits (``lmax <= nlat - 1`` for equiangular,
+    ``lmax <= nlat`` for Fejér-1) and ``mmax <= (nlon + 1) // 2``. These are
+    the accurate band-limited recovery limits; the latter excludes the complex
+    longitude Nyquist order when ``nlon`` is even. Oversized dimensions retain
+    legacy direct quadrature without implying accurate recovery. The default
     truncation is unchanged. Extended analysis is intended for float32 and
-    float64; its precomputation latitude FFT has length ``2 * (nlat - 1)``.
+    float64; its latitude FFT has length ``2 * (nlat - 1)`` for equiangular
+    and ``2 * nlat`` for Fejér-1 grids.
 
     .. seealso::
         :doc:`/guide/spherical_harmonic_transforms`
@@ -313,9 +369,9 @@ class RealSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
-        self._extended_cc = _extended_cc_analysis(self.grid, self._trunc)
-        if self._extended_cc:
-            weights = _precompute_cc_projection(self.grid, self._trunc, self.norm, self.csphase)
+        self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
+        if self._extended_folded:
+            weights = _precompute_folded_projection(self.grid, self._trunc, self.norm, self.csphase)
         else:
             # Include the longitude scale of the forward-normalized FFT.
             pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
@@ -589,14 +645,17 @@ class RealVectorSHT(nn.Module):
     :math:`\hat{s}_l^m` and :math:`\hat{t}_l^m` using the derivatives of the
     associated Legendre polynomials.
 
-    On equiangular grids, explicit ``lmax > grid.max_exact_degree`` selects
-    precomputed folded Clenshaw--Curtis analysis following :cite:`Reinecke2023`,
-    Appendix A, when the resolved exclusive bounds satisfy
-    ``lmax <= nlat - 1`` and ``mmax <= (nlon + 1) // 2``. These are the
-    accurate band-limited recovery limits. Oversized dimensions retain legacy
-    direct quadrature without implying accurate recovery. The default
+    On equiangular and Fejér-1 grids, explicit ``lmax > grid.max_exact_degree``
+    selects precomputed folded Clenshaw--Curtis analysis following
+    :cite:`Reinecke2023`, Appendix A, when the resolved bounds fit the
+    geometry-specific latitude limits (``lmax <= nlat - 1`` for equiangular,
+    ``lmax <= nlat`` for Fejér-1) and ``mmax <= (nlon + 1) // 2``. These are
+    the accurate band-limited recovery limits; the latter excludes the complex
+    longitude Nyquist order when ``nlon`` is even. Oversized dimensions retain
+    legacy direct quadrature without implying accurate recovery. The default
     truncation is unchanged. Extended analysis is intended for float32 and
-    float64; its precomputation latitude FFT has length ``2 * (nlat - 1)``.
+    float64; its latitude FFT has length ``2 * (nlat - 1)`` for equiangular
+    and ``2 * nlat`` for Fejér-1 grids.
 
     .. seealso::
         :doc:`/guide/spherical_harmonic_transforms`
@@ -683,12 +742,19 @@ class RealVectorSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
-        self._extended_cc = _extended_cc_analysis(self.grid, self._trunc)
-        if self._extended_cc:
-            weights = _precompute_cc_projection(self.grid, self._trunc, self.norm, self.csphase, vector=True)
+        self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
+        if self._extended_folded:
+            weights = _precompute_folded_projection(self.grid, self._trunc, self.norm, self.csphase, vector=True)
         else:
             dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
-            l = torch.arange(0, self.lmax)
+            # Fejer-1's native exact band is often used to validate nearly
+            # orthogonal high-degree vector modes. Keep its reciprocal degree
+            # factors in the same float64 precision as the projection table.
+            # Retain the original CC arithmetic and bitwise behavior.
+            if isinstance(self.grid, Fejer1Grid):
+                l = torch.arange(0, self.lmax, dtype=torch.float64)
+            else:
+                l = torch.arange(0, self.lmax)
             norm_factor = 1.0 / l / (l + 1)
             if self.lmax:
                 norm_factor[0] = 1.0

@@ -51,6 +51,7 @@ __all__ = [
     "GridShardS2",
     "RegularGridShardS2",
     "EquiangularGrid",
+    "Fejer1Grid",
     "LegendreGaussGrid",
     "LobattoGrid",
     "TrapezoidalGrid",
@@ -404,7 +405,7 @@ class PointSetS2:
 
         An accurate SHT needs the associated Legendre polynomials to be discretely
         orthogonal under the rule, which interpolatory rules (Gauss--Legendre,
-        Gauss--Lobatto, Clenshaw--Curtis) provide. ``False`` unless a grid family
+        Gauss--Lobatto, Clenshaw--Curtis, Fejer-1) provide. ``False`` unless a grid family
         declares otherwise.
         """
         return False
@@ -719,7 +720,7 @@ class RegularGridS2(GridS2):
 
     Abstract: the latitudinal rule is chosen by the concrete subclasses
     (:class:`EquiangularGrid`, :class:`LegendreGaussGrid`, :class:`LobattoGrid`,
-    :class:`TrapezoidalGrid`).
+    :class:`TrapezoidalGrid`, :class:`Fejer1Grid`).
 
     Parameters
     ----------
@@ -1061,6 +1062,29 @@ class EquiangularGrid(RegularGridS2):
     @property
     def max_exact_degree(self) -> int:
         r"""Clenshaw--Curtis is exact to roughly degree :math:`N_\theta - 1`, giving :math:`\lfloor (N_\theta + 1) / 2 \rfloor`."""
+        return (self.nlat + 1) // 2
+
+
+@dataclass(frozen=True, eq=False)
+class Fejer1Grid(RegularGridS2):
+    r"""Fejér's first grid with midpoint-spaced rings and no poles.
+
+    Colatitudes are :math:`\theta_j=\pi(j+\tfrac12)/N_\theta`, north to
+    south, with uniform spacing :math:`\pi/N_\theta`. The latitudinal weights
+    use Fejér's first quadrature rule. Its ordinary direct-transform bound is
+    :math:`(N_\theta+1)//2`; extended folded analysis can recover a larger
+    band when the longitude sampling also supports it.
+    """
+
+    grid_type: ClassVar[str] = "fejer1"
+
+    @property
+    def is_uniform_in_theta(self) -> bool:
+        return True
+
+    @property
+    def max_exact_degree(self) -> int:
+        r"""Exclusive direct-quadrature bandwidth :math:`(N_\theta+1)//2`."""
         return (self.nlat + 1) // 2
 
 
