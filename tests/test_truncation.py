@@ -214,6 +214,12 @@ class TestTruncateSht(unittest.TestCase):
         self.assertEqual(trunc.lmax, trunc.mmax)
         self.assertIsNone(trunc.lmmax)
 
+    def test_lmmax_only_keeps_the_triangular_default(self):
+        grid = as_grid("legendre-gauss", nlat=64, nlon=64)
+        self.assertEqual(truncate_sht(grid), SpectralGrid(33, 33))
+        self.assertEqual(truncate_sht(grid, lmmax=64), SpectralGrid(33, 33, 64))
+        self.assertEqual(truncate_sht(grid, lmmax=10), SpectralGrid(33, 33, 10))
+
     def test_a_narrow_longitude_grid_limits_lmax(self):
         """mmax is the binding constraint when the longitude sampling is coarse."""
         trunc = truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=16))
@@ -226,6 +232,8 @@ class TestTruncateSht(unittest.TestCase):
         self.assertEqual(truncate_sht(g, lmax=20), SpectralGrid(20, 20))
         self.assertEqual(truncate_sht(g, mmax=20), SpectralGrid(_EXACT_DEGREE[grid](128), 20))
         self.assertEqual(truncate_sht(g, lmax=50, mmax=20), SpectralGrid(50, 20))
+        with self.assertRaisesRegex(ValueError, "mmax=21 exceeds lmax=20"):
+            truncate_sht(g, lmax=20, mmax=21)
 
     def test_rhomboidal_pentagonal_and_r42_bounds(self):
         g = as_grid("legendre-gauss", nlat=128, nlon=256)
@@ -234,7 +242,7 @@ class TestTruncateSht(unittest.TestCase):
         self.assertEqual(truncate_sht(g, lmax=24, mmax=9, lmmax=6), SpectralGrid(24, 9, 6))
         self.assertEqual(truncate_sht(g, lmax=24, mmax=9), SpectralGrid(24, 9))
         narrow = as_grid("legendre-gauss", nlat=128, nlon=16)
-        self.assertEqual(truncate_sht(narrow, lmmax=3), SpectralGrid(128, 9, 3))
+        self.assertEqual(truncate_sht(narrow, lmmax=3), SpectralGrid(9, 9, 3))
 
     def test_zero_lmax_and_mmax_remain_explicit_requests(self):
         g = as_grid("legendre-gauss", nlat=32, nlon=64)

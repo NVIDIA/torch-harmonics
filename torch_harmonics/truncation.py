@@ -103,7 +103,8 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     The default longitudinal truncation is the Nyquist limit of the uniform
     longitude grid: :math:`m_{\max} = \lfloor N_\lambda / 2 \rfloor + 1`.
 
-    With no explicit bounds, the default remains triangular:
+    When neither ``lmax`` nor ``mmax`` is explicit, the default remains triangular,
+    even if ``lmmax`` is supplied:
     :math:`l_{\max} = m_{\max} = \min(l_{\max},\, m_{\max})`.
     Otherwise degree and order limits are independent. A mode is retained when
     :math:`m < m_{\max}`, :math:`m \le l < l_{\max}`, and, when ``lmmax`` is
@@ -169,7 +170,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     # Resolve grid defaults without clamping any explicit spectral bound.
     default_lmax = grid.max_exact_degree
     default_mmax = grid.max_azimuthal_order
-    no_bounds = lmax is None and mmax is None and lmmax is None
+    default_triangle = lmax is None and mmax is None
     if lmax is None:
         if grid.grid_type in ("equiangular", "trapezoidal"):
             warnings.warn(
@@ -182,7 +183,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     if mmax is None:
         mmax = min(default_mmax, lmax)
 
-    if no_bounds:
+    if default_triangle:
         lmax = min(lmax, mmax)
         mmax = lmax
 

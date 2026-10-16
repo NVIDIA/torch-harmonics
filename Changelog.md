@@ -4,9 +4,7 @@
 
 ### v1.0.0rc1 (unreleased)
 
-* SHT transforms support independent non-inclusive `lmax`, `mmax`, and optional `lmmax` bounds for trapezoidal, rhomboidal, and pentagonal spectral truncation. The no-argument default remains triangular; `SpectralConvS2` and `DistributedSpectralConvS2` retain their square spectral dimensions and weight layouts.
-* New public, immutable `SpectralGrid` describes SHT coefficient support; forward and inverse transforms expose their input and output domains through `grid_in` and `grid_out`.
-* **Breaking**: Explicit SHT bounds now retain independent degree/order limits (including `mmax`-only calls), and `truncate_sht()` returns `SpectralGrid` instead of a tuple.
+* **Breaking**: Explicit SHT `lmax` and `mmax` bounds are preserved independently instead of silently clamped to triangular truncation. Inconsistent bounds (`mmax > lmax`) raise `ValueError`, and `truncate_sht()` returns `SpectralGrid` instead of a tuple.
 * `polar_halo_exchange` and `polar_halo_reduce` take a `lat_dim` argument, so channels-last tensors can be exchanged directly.
 * `polar_halo_exchange` and `polar_halo_reduce` are the identity for a halo radius of 0 and post no point-to-point messages, and `DistributedDiscreteContinuousConvS2` skips the exchange then, as `DistributedNeighborhoodAttentionS2` already did. Up to v0.9.3 a zero-width exchange sent the whole band against a zero-row receive (fixed in v0.9.4).
 * **Breaking**: layers take a grid descriptor instead of a resolution and a grid name, e.g. `RealSHT(as_grid("legendre-gauss", nlat=n, nlon=2*n))`, and `grid_in`/`grid_out` when mapping between grids; the old arguments raise a `TypeError`.

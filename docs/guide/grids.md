@@ -118,6 +118,10 @@ to the spatial grid. The `.grid` attribute is the spatial descriptor in both
 directions; `grid_in` and `grid_out` identify the
 actual input and output domains:
 
+For a `SphericalProductGrid`, these descriptors describe the angular domains.
+The radial shells remain a separate axis in the field and are available on the
+layer through `.radial`.
+
 ```python
 grid = th.as_grid("legendre-gauss", nlat=128, nlon=256)
 sht = th.RealSHT(grid, lmax=85, mmax=43, lmmax=43)
