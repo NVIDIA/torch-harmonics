@@ -1134,6 +1134,25 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
                     base = ivsht(vsht(base))
                 self.assertTrue(compare_tensors(f"vector round-trip iter {iter}", base, v, atol=atol, rtol=rtol, verbose=verbose))
 
+    @parameterized.expand([[32, 64, 16, grid] for grid in ["legendre-gauss", "equiangular", "lobatto"]], skip_on_empty=True)
+    def test_vector_analysis_float64(self, nlat, nlon, lmax, grid, verbose=False):
+        """A float64 vector analysis recovers band-limited coefficients to float64 precision.
+
+        The analysis weights carry a 1/(l(l+1)) degree factor. It was once computed in
+        float32, which capped this recovery at ~1e-7 however the module was cast.
+        """
+
+        set_seed(333)
+
+        vsht = th.RealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device).double()
+        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device).double()
+
+        c_s = random_sht_coeffs(2, lmax, lmax, self.device, zero_l0=True)
+        c_t = random_sht_coeffs(2, lmax, lmax, self.device, zero_l0=True)
+        coeffs = torch.stack([c_s, c_t], dim=-3)
+
+        self.assertTrue(compare_tensors("float64 vector coefficients", vsht(ivsht(coeffs)), coeffs, atol=1e-12, rtol=1e-12, verbose=verbose))
+
     @parameterized.expand(
         [
             [32, 64, 16, "ortho", "legendre-gauss", 1e-9, 1e-9],

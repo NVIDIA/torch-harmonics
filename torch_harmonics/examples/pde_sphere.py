@@ -78,7 +78,7 @@ class SphereSolver(nn.Module):
         self.grid = require_regular_grid(grid)
         self.nlat, self.nlon = self.grid.shape
 
-        # physical sonstants
+        # physical constants
         self.register_buffer("radius", torch.as_tensor(radius, dtype=torch.float64))
         self.register_buffer("coeff", torch.as_tensor(coeff, dtype=torch.float64))
 
