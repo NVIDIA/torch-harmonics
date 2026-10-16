@@ -35,8 +35,8 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics._field_contract import check_coeffs, check_field
-from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.cache import lru_cache
+from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import EquiangularGrid, Fejer1Grid, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _mask_spectral_block, _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
 from torch_harmonics.radial import split_radial

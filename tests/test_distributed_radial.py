@@ -163,6 +163,31 @@ class TestDistributedLayersOnProductGrids(unittest.TestCase):
             self.assertTrue(_close(f"{name} output on shell {k}", out.detach().select(rdim_out, k), expected.detach()))
             self.assertTrue(_close(f"{name} input gradient on shell {k}", x.grad.select(rdim_in, k), xk.grad))
 
+    def test_folded_fejer_analysis_acts_on_each_shell(self):
+        angular = as_grid("fejer1", nlat=10, nlon=20)
+        product = SphericalProductGrid(angular, _RADIAL)
+        cases = [
+            ("scalar", thd.DistributedRealSHT, 1),
+            ("vector", thd.DistributedRealVectorSHT, 2),
+        ]
+
+        for name, transform, radial_dim in cases:
+            with self.subTest(transform=name):
+                layer = transform(product, lmax=10, mmax=10).to(self.device)
+                reference = transform(angular, lmax=10, mmax=10).to(self.device)
+                self.assertTrue(layer._extended_folded)
+                shape = (_C, _RADIAL.nr, *layer.shard.shape) if radial_dim == 1 else (_C, 2, _RADIAL.nr, *layer.shard.shape)
+                x = torch.randn(shape, device=self.device, dtype=torch.float32, requires_grad=True)
+
+                out = layer(x)
+                _loss(out).backward()
+                for k in range(_RADIAL.nr):
+                    xk = x.detach().select(radial_dim, k).clone().requires_grad_(True)
+                    expected = reference(xk)
+                    _loss(expected).backward()
+                    self.assertTrue(_close(f"{name} output on shell {k}", out.detach().select(radial_dim, k), expected.detach()))
+                    self.assertTrue(_close(f"{name} gradient on shell {k}", x.grad.select(radial_dim, k), xk.grad))
+
     def test_volume_quadrature_sums_the_shells(self):
         grid = SphericalProductGrid(_GRID, _RADIAL)
         quad = thd.DistributedQuadratureVolume(grid).to(self.device)
