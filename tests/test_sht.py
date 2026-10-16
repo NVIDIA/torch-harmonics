@@ -33,14 +33,17 @@ import math
 import unittest
 import warnings
 
+import numpy as np
 import torch
 from parameterized import parameterized, parameterized_class
+from scipy.special import gammaln, lpmv
 from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.quadrature import precompute_latitudes
+from torch_harmonics.sht import _fold_resampled_latitude, _precompute_cc_resampling, _precompute_f1_resampling, _precompute_folded_projection
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -189,288 +192,6 @@ def _check_gram(test, nlat, grid, norm, vector, verbose=False):
     expected = torch.diag(torch.tensor(diagonal, dtype=torch.float64, device=test.device))
     atol = 1e-12 * max(diagonal)
     test.assertTrue(compare_tensors("Gram matrix", gram, expected, atol=atol, rtol=0.0, verbose=verbose))
-
-
-@parameterized_class(("device"), _devices)
-class TestLegendrePolynomials(unittest.TestCase):
-    """Test the associated Legendre polynomials (CPU/CUDA if available)."""
-
-    def setUp(self):
-        disable_tf32()
-        self.cml = lambda m, l: math.sqrt((2 * l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l - m) / math.factorial(l + m))
-        self.pml = dict()
-
-        # preparing associated Legendre Polynomials (These include the Condon-Shortley phase)
-        # for reference see e.g. https://en.wikipedia.org/wiki/Associated_Legendre_polynomials
-        self.pml[(0, 0)] = lambda x: torch.ones_like(x)
-        self.pml[(0, 1)] = lambda x: x
-        self.pml[(1, 1)] = lambda x: -torch.sqrt(1.0 - x**2)
-        self.pml[(0, 2)] = lambda x: 0.5 * (3 * x**2 - 1)
-        self.pml[(1, 2)] = lambda x: -3 * x * torch.sqrt(1.0 - x**2)
-        self.pml[(2, 2)] = lambda x: 3 * (1 - x**2)
-        self.pml[(0, 3)] = lambda x: 0.5 * (5 * x**3 - 3 * x)
-        self.pml[(1, 3)] = lambda x: 1.5 * (1 - 5 * x**2) * torch.sqrt(1.0 - x**2)
-        self.pml[(2, 3)] = lambda x: 15 * x * (1 - x**2)
-        self.pml[(3, 3)] = lambda x: -15 * torch.sqrt(1.0 - x**2) ** 3
-
-        self.lmax = self.mmax = 4
-
-        self.tol = 1e-9
-
-    def test_legendre(self, verbose=False):
-        t = torch.linspace(0, 1, 100, dtype=torch.float64, device=self.device)
-        vdm = th.legendre.legpoly(self.mmax, self.lmax, t)
-
-        for l in range(self.lmax):
-            for m in range(l + 1):
-                diff = vdm[m, l] / self.cml(m, l) - self.pml[(m, l)](t)
-                self.assertTrue(diff.abs().max() <= self.tol, f"P_{l}^{m}: max |diff| = {float(diff.abs().max())}")
-
-    @parameterized.expand(
-        [
-            # lmax, norm, csphase
-            [16, "ortho", True],
-            [16, "ortho", False],
-            [16, "four-pi", True],
-            [16, "schmidt", True],
-            [48, "ortho", True],
-            [48, "schmidt", False],
-        ],
-        skip_on_empty=True,
-    )
-    def test_addition_theorem(self, lmax, norm, csphase, verbose=False):
-        r"""The degree-l harmonics sum to a constant at every latitude.
-
-        :math:`\sum_{m=-l}^{l} |Y_l^m|^2 = (2l+1)/4\pi` holds pointwise in :math:`\theta`,
-        so this needs no quadrature, no transform and no reference table -- and at each
-        degree it constrains every order at once. That makes it the one cheap check that
-        reaches arbitrary ``lmax``, where the closed forms in ``test_legendre`` stop at
-        degree 3. A drifted recurrence, a mis-seeded diagonal or a lost normalization all
-        break it.
-
-        The Condon-Shortley phase is squared away, so the identity is insensitive to it.
-        """
-
-        t, _ = precompute_latitudes(2 * lmax, grid="legendre-gauss")
-        t = t.to(self.device)
-        # the tensor-based core, so the nodes can stay on the test device; the cached
-        # grid-keyed wrapper is exercised by test_range_restriction
-        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), norm=norm, csphase=csphase)
-
-        # the normalization scales every entry, so it scales the sum by a known constant
-        for l in range(lmax):
-            if norm == "ortho":
-                expected = (2 * l + 1) / (4 * math.pi)
-            elif norm == "four-pi":
-                expected = 2.0 * l + 1.0
-            else:  # schmidt carries an extra 1/sqrt(2l+1) on top of the four-pi factor
-                expected = 1.0
-
-            # m and -m contribute equally, so orders above zero are counted twice
-            total = pct[0, l] ** 2 + 2.0 * (pct[1 : l + 1, l] ** 2).sum(dim=0)
-            ok = compare_tensors(f"addition theorem at l={l}", total, torch.full_like(total, expected), atol=1e-12, rtol=1e-12, verbose=verbose)
-            self.assertTrue(ok, msg=f"addition theorem violated at l={l}")
-
-    @parameterized.expand(
-        [
-            # nlat, lmax, grid
-            [48, 24, "equiangular"],
-            [48, 24, "legendre-gauss"],
-            [48, 24, "lobatto"],
-            [96, 48, "legendre-gauss"],
-            [48, 24, "fejer1"],
-        ],
-        skip_on_empty=True,
-    )
-    def test_discrete_orthogonality(self, nlat, lmax, grid, verbose=False):
-        r"""The polynomials are discretely orthonormal under the grid's own quadrature.
-
-        :math:`2\pi \sum_k w_k P_l^m P_{l'}^m = \delta_{l l'}` for each fixed order. This
-        is the property the transform actually relies on for round-tripping, checked here
-        as a full Gram matrix per order rather than a handful of entries, and without
-        going through the SHT -- so a failure points at the polynomials, not the transform.
-        """
-
-        t, w = precompute_latitudes(nlat, grid=grid)
-        t, w = t.to(self.device), w.to(self.device)
-        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), norm="ortho", csphase=False)
-
-        for m in [0, 1, lmax // 2, lmax - 1]:
-            # only degrees l >= m are supported; the rest are identically zero
-            block = pct[m, m:lmax]
-            gram = 2.0 * math.pi * torch.einsum("lk,jk,k->lj", block, block, w)
-            eye = torch.eye(gram.shape[0], dtype=gram.dtype, device=gram.device)
-            ok = compare_tensors(f"gram matrix at m={m}", gram, eye, atol=1e-11, rtol=1e-11, verbose=verbose)
-            self.assertTrue(ok, msg=f"orthogonality violated at m={m}")
-
-    @parameterized.expand(
-        [
-            # lmax, norm, inverse, csphase
-            [20, "ortho", False, True],
-            [20, "ortho", True, False],
-            [20, "four-pi", False, True],
-            [20, "schmidt", False, True],
-            [20, "schmidt", True, True],
-        ],
-        skip_on_empty=True,
-    )
-    def test_dlegpoly_consistency(self, lmax, norm, inverse, csphase, verbose=False):
-        r"""The derivative table agrees with the base table it is supposed to differentiate.
-
-        Two independent checks on ``_precompute_dlegpoly``, which is computed from its own
-        recurrences rather than by differentiating anything:
-
-        * ``dpct[1]`` must equal :math:`m P_l^m / \sin\theta` exactly (to roundoff). It is
-          built from a different three-term relation, so agreement is real corroboration
-          rather than a restatement of the same arithmetic.
-        * ``dpct[0]`` must equal :math:`d P_l^m / d\theta`, checked against a central
-          difference of the base table. Truncation dominates here, hence the looser
-          tolerance -- it is still orders of magnitude tighter than any sign or index error.
-        """
-
-        t, _ = precompute_latitudes(2 * lmax, grid="legendre-gauss")
-        t = t.to(self.device)
-
-        kwargs = dict(norm=norm, inverse=inverse, csphase=csphase)
-        pct = th.legendre.legpoly(lmax, lmax, torch.cos(t), **kwargs)
-        dpct = th.legendre.dlegpoly(lmax, lmax, t, **kwargs)
-
-        # entries outside the triangular support are zero by construction and carry no information
-        m_g = torch.arange(lmax, device=self.device).view(lmax, 1, 1)
-        l_g = torch.arange(lmax, device=self.device).view(1, lmax, 1)
-        support = (m_g <= l_g).expand_as(pct)
-
-        m_f = torch.arange(lmax, dtype=torch.float64, device=self.device).view(lmax, 1, 1)
-        expected = m_f * pct / torch.sin(t).view(1, 1, -1)
-        ok = compare_tensors("dpct[1] vs m P/sin(theta)", dpct[1][support], expected[support], atol=1e-10, rtol=1e-10, verbose=verbose)
-        self.assertTrue(ok, msg="dpct[1] does not match m P/sin(theta)")
-
-        # central difference; truncation dominates the comparison, hence the looser tolerance
-        h = 1e-5
-        fd = (th.legendre.legpoly(lmax, lmax, torch.cos(t + h), **kwargs) - th.legendre.legpoly(lmax, lmax, torch.cos(t - h), **kwargs)) / (2 * h)
-        ok = compare_tensors("dpct[0] vs central difference", dpct[0][support], fd[support], atol=1e-5, rtol=1e-6, verbose=verbose)
-        self.assertTrue(ok, msg="dpct[0] does not match d/dtheta P")
-
-    @parameterized.expand(
-        [
-            # mmax, lmax
-            [12, 12],
-            [16, 10],
-            [10, 16],
-            [1, 1],
-        ],
-        skip_on_empty=True,
-    )
-    def test_range_restriction(self, mmax, lmax, verbose=False):
-        """Restricting the stored range returns exactly the corresponding slice.
-
-        ``mmin``/``lmin`` control which orders and degrees are *stored*, not which are
-        *computed*: both recurrences still have to be walked from the start, since
-        ``P^m_m`` is reached from ``P^{m-1}_{m-1}`` and ``P^m_l`` from ``P^m_{l-1}``. The
-        distributed transforms rely on this to build only the block they keep, so the
-        restricted result has to be indistinguishable from slicing the full one.
-
-        Agreement is exact, not approximate -- the same elementwise operations are applied
-        to the same values either way -- so this asserts bitwise equality. Note this also
-        pins the ``mmin=lmin=0`` default as the serial path: every other test in this file
-        goes through the same code.
-        """
-
-        nlat = 2 * max(mmax, lmax)
-        t, _ = precompute_latitudes(nlat, grid="legendre-gauss")
-        t = t.to(self.device)
-
-        # legpoly evaluates at cos(theta), dlegpoly at theta itself
-        nodes = lambda fn: torch.cos(t) if fn is th.legendre.legpoly else t
-
-        for fn in (th.legendre.legpoly, th.legendre.dlegpoly):
-            for norm in ["ortho", "four-pi", "schmidt"]:
-                for inverse in [False, True]:
-                    for csphase in [False, True]:
-                        kwargs = dict(norm=norm, inverse=inverse, csphase=csphase)
-                        full = fn(mmax, lmax, nodes(fn), **kwargs)
-
-                        for mmin in sorted({0, 1, mmax // 2, mmax - 1} & set(range(mmax))):
-                            for lmin in sorted({0, 1, lmax // 2, lmax - 1} & set(range(lmax))):
-                                block = fn(mmax, lmax, nodes(fn), mmin=mmin, lmin=lmin, **kwargs)
-                                ref = full[..., mmin:, lmin:, :]
-                                case = f"{fn.__name__} mmax={mmax} lmax={lmax} mmin={mmin} lmin={lmin} {norm} inverse={inverse} csphase={csphase}"
-                                self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
-                                # atol=rtol=0: bitwise, see the docstring
-                                ok = compare_tensors(case, block, ref.contiguous(), atol=0.0, rtol=0.0, verbose=verbose)
-                                self.assertTrue(ok, msg=f"values differ from the full-table slice: {case}")
-
-        # the latitude range is only reachable through the cached, grid-keyed wrappers, since
-        # the tensor-based core restricts latitudes by simply being handed fewer nodes
-        for fn in (th.legendre._precompute_legpoly, th.legendre._precompute_dlegpoly):
-            full = fn(mmax, lmax, th.as_grid("legendre-gauss", nlat=nlat, nlon=2 * nlat))
-            for kmin, kmax in [(0, None), (1, None), (0, nlat - 1), (2, nlat - 2), (nlat // 2, nlat)]:
-                block = fn(mmax, lmax, th.as_grid("legendre-gauss", nlat=nlat, nlon=2 * nlat), kmin=kmin, kmax=kmax)
-                ref = full[..., kmin : (nlat if kmax is None else kmax)]
-                case = f"{fn.__name__} mmax={mmax} lmax={lmax} kmin={kmin} kmax={kmax}"
-                self.assertEqual(tuple(block.shape), tuple(ref.shape), msg=f"shape mismatch: {case}")
-                ok = compare_tensors(case, block, ref.contiguous(), atol=0.0, rtol=0.0, verbose=verbose)
-                self.assertTrue(ok, msg=f"values differ from the full-table slice: {case}")
-
-
-@parameterized_class(("device"), _devices)
-class TestSpectralLegendreMask(unittest.TestCase):
-    @parameterized.expand(
-        [
-            ("scalar_forward_zero_offsets", _precompute_legpoly, False, 0, 0),
-            ("scalar_forward_order_offset", _precompute_legpoly, False, 3, 0),
-            ("scalar_forward_order_degree_offsets", _precompute_legpoly, False, 3, 5),
-            ("scalar_inverse_zero_offsets", _precompute_legpoly, True, 0, 0),
-            ("scalar_inverse_order_offset", _precompute_legpoly, True, 3, 0),
-            ("scalar_inverse_order_degree_offsets", _precompute_legpoly, True, 3, 5),
-            ("derivative_forward_zero_offsets", _precompute_dlegpoly, False, 0, 0),
-            ("derivative_forward_order_offset", _precompute_dlegpoly, False, 3, 0),
-            ("derivative_forward_order_degree_offsets", _precompute_dlegpoly, False, 3, 5),
-            ("derivative_inverse_zero_offsets", _precompute_dlegpoly, True, 0, 0),
-            ("derivative_inverse_order_offset", _precompute_dlegpoly, True, 3, 0),
-            ("derivative_inverse_order_degree_offsets", _precompute_dlegpoly, True, 3, 5),
-        ]
-    )
-    def test_global_offset_blocks(self, case, builder, inverse, mmin, lmin):
-        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
-        trunc = th.truncate_sht(grid, lmax=20, mmax=9, lmmax=6)
-        args = (9, 16, grid)
-        kwargs = dict(mmin=mmin, lmin=lmin, inverse=inverse)
-        original = builder(*args, **kwargs).to(self.device)
-        masked = builder(*args, truncation=trunc, **kwargs).to(self.device)
-        m = torch.arange(mmin, 9, device=self.device)[:, None]
-        l = torch.arange(lmin, 16, device=self.device)[None, :]
-        keep = (m <= l) & (l - m < 6)
-        if builder is _precompute_legpoly:
-            self.assertTrue(torch.equal(masked[keep], original[keep]))
-            self.assertTrue(torch.equal(masked[~keep], torch.zeros_like(masked[~keep])))
-        else:
-            self.assertTrue(torch.equal(masked[:, keep], original[:, keep]))
-            self.assertTrue(torch.equal(masked[:, ~keep], torch.zeros_like(masked[:, ~keep])))
-        self.assertTrue((original[..., (l - m == 6), :].abs() > 0).any())
-
-    @parameterized.expand([("scalar", _precompute_legpoly), ("derivative", _precompute_dlegpoly)])
-    def test_cached_tables_distinguish_lmmax(self, case, builder):
-        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
-        args = (9, 16, grid)
-        narrow = builder(*args, truncation=th.SpectralGrid(16, 9, 6)).to(self.device)
-        wide = builder(*args, truncation=th.SpectralGrid(16, 9, 7)).to(self.device)
-
-        narrow_edge = narrow[..., 0, 6, :]
-        wide_edge = wide[..., 0, 6, :]
-        self.assertTrue(torch.equal(narrow_edge, torch.zeros_like(narrow_edge)))
-        self.assertTrue((wide_edge.abs() > 0).any())
-        self.assertTrue(torch.equal(narrow[..., 0, 5, :], wide[..., 0, 5, :]))
-
-    def test_r42_noninclusive_edge(self):
-        grid = th.as_grid("legendre-gauss", nlat=96, nlon=192)
-        trunc = th.truncate_sht(grid, lmax=85, mmax=43, lmmax=43)
-        unmasked = _precompute_legpoly(43, 85, grid, mmin=41, lmin=82)
-        masked = _precompute_legpoly(43, 85, grid, mmin=41, lmin=82, truncation=trunc)
-        self.assertTrue(torch.equal(masked[0, 1], unmasked[0, 1]))  # (m, l) = (41, 83)
-        self.assertTrue(torch.equal(masked[0, 2], torch.zeros_like(masked[0, 2])))  # (41, 84): l-m=43
-        self.assertTrue(torch.equal(masked[1, 2], unmasked[1, 2]))  # (42, 84): l-m=42
-        self.assertTrue((unmasked[0, 2].abs() > 0).any())
 
 
 @parameterized_class(("device"), _devices)
@@ -1117,6 +838,370 @@ class TestUnsuitableGridWarning(unittest.TestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             getattr(th, cls_name)(th.as_grid(grid, nlat=32, nlon=64), lmax=8)
+
+
+def _transforms(grid, lmax, mmax, vector, **kwargs):
+    analysis = th.RealVectorSHT if vector else th.RealSHT
+    synthesis = th.InverseRealVectorSHT if vector else th.InverseRealSHT
+    return analysis(grid, lmax=lmax, mmax=mmax, **kwargs), synthesis(grid, lmax=lmax, mmax=mmax, **kwargs)
+
+
+def _scipy_mode_field(grid, l, m, coefficient, vector=False, component=0):
+    """Evaluate one normalized positive-m harmonic (or vector derivative) with SciPy."""
+    theta = grid.colats.numpy()[:, None]
+    phi = grid.lons().numpy()[None, :]
+    normalization = np.sqrt((2 * l + 1) / (4 * np.pi)) * np.exp(0.5 * (gammaln(l - m + 1) - gammaln(l + m + 1)))
+    p = normalization * lpmv(m, l, np.cos(theta))
+    harmonic = p * np.exp(1j * m * phi)
+    if not vector:
+        basis = harmonic
+    else:
+        derivative = ((l * np.cos(theta) * p - (l + m) * normalization * lpmv(m, l - 1, np.cos(theta))) / np.sin(theta)) * np.exp(1j * m * phi)
+        longitude = 1j * m * harmonic / np.sin(theta)
+        basis = np.stack((derivative, longitude) if component == 0 else (longitude, -derivative))
+    return (1 if m == 0 else 2) * (coefficient * basis).real
+
+
+@parameterized_class(("device",), _devices)
+class TestSharedFoldedSHTAnalysis(unittest.TestCase):
+    """Shared extended-analysis coverage for Clenshaw-Curtis and Fejer-1 grids."""
+
+    @classmethod
+    def setUpClass(cls):
+        disable_tf32()
+
+    @parameterized.expand(
+        [(vector, "equiangular", nlat, 2 * nlat - 1, nlat - 1, nlat - 1, lmmax) for vector in (False, True) for nlat in (8, 9, 34) for lmmax in (None, 3)]
+        + [(vector, "fejer1", nlat, 2 * nlat - 1, nlat, nlat, lmmax) for vector in (False, True) for nlat in (8, 9) for lmmax in (None, 3)]
+        + [(vector, "equiangular", 257, 33, 256, 16, None) for vector in (False, True)],
+        skip_on_empty=True,
+    )
+    def test_effective_projection(self, vector, grid_type, nlat, nlon, lmax, mmax, lmmax):
+        """Compare every row, complex contractions and gradients with runtime folding."""
+        set_seed(417)
+        grid = th.as_grid(grid_type, nlat=nlat, nlon=nlon)
+        analysis, _ = _transforms(grid, lmax, mmax, vector, lmmax=lmmax)
+        if grid_type == "fejer1":
+            b = {name: value.to(self.device) for name, value in _precompute_f1_resampling(nlat, analysis.mmax, vector).items()}
+            native_weights = b["_f1_native_weights"]
+            complementary_weights = b["_f1_complementary_weights"]
+            phase = torch.complex(*b["_f1_phase"])
+            parity = b["_f1_parity"]
+            include_poles = False
+        else:
+            b = {name: value.to(self.device) for name, value in _precompute_cc_resampling(nlat, analysis.mmax, vector).items()}
+            native_weights = b["_cc_weights"]
+            complementary_weights = b["_cc_midpoint_weights"]
+            phase = torch.complex(*b["_cc_phase"])
+            parity = b["_cc_parity"]
+            include_poles = True
+        if vector:
+            basis = _precompute_dlegpoly(analysis.mmax, analysis.lmax, grid, truncation=analysis.grid_out)
+            degrees = torch.arange(analysis.lmax, dtype=torch.float64)
+            basis *= (1 / (degrees * (degrees + 1)).clamp(min=1))[None, None, :, None]
+            basis[1].neg_()
+        else:
+            basis = _precompute_legpoly(analysis.mmax, analysis.lmax, grid, truncation=analysis.grid_out)
+        basis = basis.to(self.device)
+        folded = _fold_resampled_latitude(basis.transpose(-3, -2), parity, native_weights, complementary_weights, phase, include_poles)
+        self.assertLess(folded.imag.abs().max().item(), 1e-13)
+        effective = analysis.weights.to(self.device)
+        torch.testing.assert_close(effective, folded.real.transpose(-3, -2), atol=1e-13, rtol=1e-13)
+        # Local order offsets must use global parity, including odd starting orders.
+        for mmin in (1, 2, analysis.mmax):
+            local = _precompute_folded_projection(grid, analysis.grid_out, "ortho", True, vector, mmin=mmin, kmin=2, kmax=nlat - 1)
+            torch.testing.assert_close(local.to(self.device), effective[..., mmin:, :, 2:-1], atol=1e-13, rtol=1e-13)
+        x = torch.randn(2, analysis.mmax, nlat, device=self.device, dtype=torch.complex128, requires_grad=True)
+        folded_x = _fold_resampled_latitude(x, parity, native_weights, complementary_weights, phase, include_poles)
+        equation = "...mk,dmlk->...dlm" if vector else "...mk,mlk->...lm"
+        expected = torch.einsum(equation, folded_x, basis.to(x.dtype))
+        actual = torch.einsum(equation, x, effective.to(x.dtype))
+        torch.testing.assert_close(actual, expected, atol=1e-12, rtol=1e-12)
+        gradient = torch.randn_like(actual)
+        expected_grad = torch.autograd.grad(expected, x, gradient, retain_graph=True)[0]
+        for _ in range(2):
+            actual_grad = torch.autograd.grad(actual, x, gradient, retain_graph=True)[0]
+            torch.testing.assert_close(actual_grad, expected_grad, atol=1e-12, rtol=1e-12)
+        self.assertEqual(list(dict(analysis.named_buffers())), ["weights"])
+        # A warm constructor must reuse numerical work without sharing mutable buffers.
+        another, _ = _transforms(grid, analysis.lmax, analysis.mmax, vector, lmmax=lmmax)
+        torch.testing.assert_close(analysis.weights, another.weights, atol=0, rtol=0)
+        self.assertNotEqual(analysis.weights.data_ptr(), another.weights.data_ptr())
+        another.weights.zero_()
+        self.assertGreater(analysis.weights.abs().max().item(), 0)
+        self.assertEqual(_precompute_folded_projection.cache_parameters()["maxsize"], 2)
+
+    @parameterized.expand(
+        [
+            (vector, l, m, component, norm, csphase)
+            for vector in (False, True)
+            for l, m in [(1, 0), (35, 0), (35, 7), (70, 69), (71, 1), (71, 35), (71, 71)]
+            for component in (range(2) if vector else range(1))
+            for norm, csphase in ([("ortho", True)] if (l, m) != (71, 35) else [(norm, csphase) for norm in ("ortho", "four-pi", "schmidt", "unnorm") for csphase in (True, False)])
+        ],
+        skip_on_empty=True,
+    )
+    def test_f1_scipy_harmonics_through_maximum_degree(self, vector, l, m, component, norm, csphase, verbose=False):
+        """Analyze independent SciPy harmonics, including F1 sectoral T71 modes."""
+        grid = th.as_grid("fejer1", nlat=72, nlon=144)
+        coefficient = 0.7 + (0.3j if m else 0j)
+        spatial = torch.tensor(_scipy_mode_field(grid, l, m, coefficient, vector, component), dtype=torch.float64, device=self.device)
+        analysis = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=72, mmax=72, norm=norm, csphase=csphase).to(self.device, torch.float64)
+        actual = analysis(spatial)
+        expected = torch.zeros_like(actual)
+        factor = 1.0 if norm == "ortho" else np.sqrt(4 * np.pi)
+        if norm == "schmidt":
+            factor /= np.sqrt(2 * l + 1)
+        if not csphase:
+            factor *= (-1) ** m
+        if vector:
+            expected[component, l, m] = factor * coefficient
+        else:
+            expected[l, m] = factor * coefficient
+        self.assertTrue(compare_tensors("SciPy F1 harmonic", expected, actual, atol=3e-11, rtol=3e-11, verbose=verbose))
+        self.assertLess((actual - expected).abs().max().item(), 3e-11)
+        synthesis = (th.InverseRealVectorSHT if vector else th.InverseRealSHT)(grid, lmax=72, mmax=72, norm=norm, csphase=csphase).to(self.device, torch.float64)
+        synthesized = synthesis(expected)
+        self.assertTrue(compare_tensors("SciPy F1 synthesis", spatial, synthesized, atol=3e-11, rtol=3e-11, verbose=verbose))
+        self.assertLess((synthesized - spatial).abs().max().item(), 3e-11)
+
+    @parameterized.expand(
+        [
+            (vector, l, m, component, norm, csphase)
+            for vector in (False, True)
+            for l, m in [(70, 0), (70, 69), (71, 0), (71, 1), (71, 35), (71, 70), (71, 71)]
+            for component in (range(2) if vector else range(1))
+            for norm, csphase in [("ortho", True), ("four-pi", False), ("schmidt", False), ("unnorm", True)]
+        ],
+        skip_on_empty=True,
+    )
+    def test_independent_harmonics(self, vector, l, m, component, norm, csphase, verbose=False):
+        """Analyze SciPy harmonics and derivatives without using our inverse transform."""
+        grid = th.as_grid("equiangular", nlat=73, nlon=144)
+        theta = grid.colats.numpy()[:, None]
+        phi = grid.lons().numpy()[None, :]
+        # SciPy's associated Legendre function uses its own implementation.
+        normalization = np.sqrt((2 * l + 1) / (4 * np.pi)) * np.exp(0.5 * (gammaln(l - m + 1) - gammaln(l + m + 1)))
+        p = normalization * lpmv(m, l, np.cos(theta))
+        y = p * np.exp(1j * m * phi)
+        derivative = np.zeros_like(y)
+        derivative[1:-1] = ((l * np.cos(theta[1:-1]) * p[1:-1] - (l + m) * normalization * lpmv(m, l - 1, np.cos(theta[1:-1]))) / np.sin(theta[1:-1])) * np.exp(1j * m * phi)
+        if m == 1:
+            derivative[0] = -0.5 * l * (l + 1) * normalization * np.exp(1j * phi)
+            derivative[-1] = (-1) ** (l + 1) * 0.5 * l * (l + 1) * normalization * np.exp(1j * phi)
+        c = 0.7 + (0.3j if m else 0j)
+        if vector:
+            longitude = np.zeros_like(y)
+            longitude[1:-1] = 1j * m * y[1:-1] / np.sin(theta[1:-1])
+            if m == 1:
+                longitude[[0, -1]] = 1j * derivative[[0, -1]] / np.cos(theta[[0, -1]])
+            basis = np.stack((derivative, longitude) if component == 0 else (longitude, -derivative))
+        else:
+            basis = y
+        field = torch.tensor((1 if m == 0 else 2) * (c * basis).real, device=self.device)
+        analysis = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=72, mmax=72, norm=norm, csphase=csphase).to(self.device)
+        actual = analysis(field)
+        expected = torch.zeros_like(actual)
+        factor = 1.0 if norm == "ortho" else np.sqrt(4 * np.pi)
+        if norm == "schmidt":
+            factor /= np.sqrt(2 * l + 1)
+        if not csphase:
+            factor *= (-1) ** m
+        if vector:
+            expected[component, l, m] = factor * c
+        else:
+            expected[l, m] = factor * c
+        self.assertTrue(compare_tensors("SciPy harmonic analysis", expected, actual, atol=3e-12, rtol=3e-12, verbose=verbose))
+        self.assertLess((actual - expected).abs().max().item(), 3e-12)
+
+    def test_f1_extended_selection_and_oversized_bounds(self):
+        for nlat, nlon in [(8, 16), (9, 19)]:
+            grid = th.as_grid("fejer1", nlat=nlat, nlon=nlon)
+            supported = th.RealSHT(grid, lmax=nlat, mmax=nlat)
+            self.assertTrue(supported._extended_folded)
+            self.assertEqual(supported.grid_out, th.SpectralGrid(nlat, nlat))
+            oversized = th.RealSHT(grid, lmax=nlat + 1, mmax=nlat + 1)
+            self.assertFalse(oversized._extended_folded)
+            self.assertEqual(oversized.grid_out, th.SpectralGrid(nlat + 1, nlat + 1))
+        # With even nlon=2*nlat-2, lmax=nlat is latitude-supported but mmax
+        # would include the unrecoverable complex longitude Nyquist order.
+        nyquist_limited = th.RealSHT(th.as_grid("fejer1", nlat=8, nlon=14), lmax=8, mmax=8)
+        self.assertFalse(nyquist_limited._extended_folded)
+
+    @parameterized.expand(
+        [
+            (vector, dtype, *case)
+            for vector in (False, True)
+            for dtype in (torch.float32, torch.float64)
+            for case in [
+                (32, 64, 64, 64, None),
+                (33, 64, 65, 65, None),
+                (32, 64, 64, None, 11),
+                (33, 64, 65, 65, 20),
+                (73, 144, 73, 72, 18),
+                (25, 32, 24, None, None),
+                (25, 32, 24, 17, 6),
+                (25, 32, 24, 18, None),
+                (73, 144, 74, None, None),
+            ]
+        ],
+        skip_on_empty=True,
+    )
+    def test_oversized_dimensions(self, vector, dtype, nlat, nlon, lmax, mmax, lmmax, verbose=False):
+        set_seed(333)
+        grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
+        analysis = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax)
+        self.assertFalse(analysis._extended_folded)
+        self.assertEqual(analysis.grid_out, th.SpectralGrid(lmax, min(lmax, nlon // 2 + 1) if mmax is None else mmax, lmmax))
+        # Native projection formula, with the degree factor in float64 like the transform.
+        q = 2 * torch.pi * grid.colat_weights
+        if vector:
+            p = _precompute_dlegpoly(analysis.mmax, analysis.lmax, grid, truncation=analysis.grid_out)
+            l = torch.arange(analysis.lmax, dtype=torch.float64)
+            factor = 1.0 / l / (l + 1)
+            factor[0] = 1
+            weights = torch.einsum("dmlk,k,l->dmlk", p, q, factor).contiguous()
+            weights[1] *= -1
+        else:
+            p = _precompute_legpoly(analysis.mmax, analysis.lmax, grid, truncation=analysis.grid_out)
+            weights = torch.einsum("mlk,k->mlk", p, q).contiguous()
+        analysis = analysis.to(device=self.device, dtype=dtype)
+        self.assertTrue(compare_tensors("oversized native weights", weights.to(device=self.device, dtype=dtype), analysis.weights, atol=0, rtol=0, verbose=verbose))
+        x = torch.randn((2,) + grid.shape if vector else grid.shape, device=self.device, dtype=dtype, requires_grad=True)
+        modes = torch.fft.rfft(x, dim=-1, norm="forward")
+        if analysis.mmax > modes.shape[-1]:
+            modes = torch.nn.functional.pad(modes, (0, analysis.mmax - modes.shape[-1]))
+        modes = modes[..., : analysis.mmax].transpose(-1, -2)
+        # Evaluate the discrete quadrature in complex arithmetic independently of
+        # the implementation's separate real/imaginary contractions.
+        w = weights.to(device=self.device, dtype=modes.dtype)
+        if vector:
+            s0 = torch.einsum("mk,mlk->lm", modes[0], w[0]) + 1j * torch.einsum("mk,mlk->lm", modes[1], w[1])
+            t0 = 1j * torch.einsum("mk,mlk->lm", modes[0], w[1]) - torch.einsum("mk,mlk->lm", modes[1], w[0])
+            expected = torch.stack((s0, t0))
+        else:
+            expected = torch.einsum("mk,mlk->lm", modes, w)
+        actual = analysis(x)
+        if mmax is None:
+            explicit = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=analysis.mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            self.assertFalse(explicit._extended_folded)
+            self.assertTrue(compare_tensors("inferred and explicit orders", actual, explicit(x), atol=0, rtol=0, verbose=verbose))
+        self.assertEqual(actual.shape, ((2,) if vector else ()) + analysis.grid_out.shape)
+        tol = 1e-5 if dtype == torch.float32 else 1e-12
+        self.assertTrue(compare_tensors("oversized direct quadrature", expected, actual, atol=tol, rtol=tol, verbose=verbose))
+        gradient = torch.randn_like(actual)
+        actual_grad = torch.autograd.grad(actual, x, gradient)[0]
+        expected_grad = torch.autograd.grad(expected, x, gradient)[0]
+        self.assertTrue(compare_tensors("oversized input gradient", expected_grad, actual_grad, atol=tol, rtol=tol, verbose=verbose))
+        l = torch.arange(analysis.lmax, device=self.device)[:, None]
+        m = torch.arange(analysis.mmax, device=self.device)[None, :]
+        mask = m <= l
+        if lmmax is not None:
+            mask &= l - m < lmmax
+        self.assertTrue(compare_tensors("oversized mask", actual[..., ~mask], torch.zeros_like(actual[..., ~mask]), atol=0, rtol=0, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            ("equiangular", vector, dtype, nlat, profile)
+            for vector in (False, True)
+            for dtype in (torch.float32, torch.float64)
+            for nlat in (8, 9, 73, 74)
+            for profile in ("spatial", "latitude", "localized", "alternating")
+        ]
+        + [
+            ("fejer1", vector, dtype, nlat, profile)
+            for vector in (False, True)
+            for dtype in (torch.float32, torch.float64)
+            for nlat in (8, 9)
+            for profile in ("spatial", "latitude", "localized", "alternating")
+        ],
+        skip_on_empty=True,
+    )
+    def test_arbitrary_input_zero_order_reality(self, geometry, vector, dtype, nlat, profile, verbose=False):
+        set_seed(333)
+        nlon = 2 * (nlat - 1) if geometry == "equiangular" else 2 * nlat
+        grid = th.as_grid(geometry, nlat=nlat, nlon=nlon)
+        lmax = nlat - 1 if geometry == "equiangular" else nlat
+        analysis = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=lmax).to(device=self.device, dtype=dtype)
+        self.assertTrue(analysis._extended_folded)
+        leading = (2,) if vector else ()
+        if profile == "spatial":
+            x = torch.randn(leading + grid.shape, device=self.device, dtype=dtype)
+        else:
+            if profile == "latitude":
+                latitude = torch.randn(leading + (nlat,), device=self.device, dtype=dtype)
+            elif profile == "localized":
+                theta = grid.colats.to(device=self.device, dtype=dtype)
+                latitude = torch.exp(-(((theta - 0.27 * torch.pi) / 0.2) ** 2))
+            else:
+                latitude = (1 - 2 * torch.arange(nlat, device=self.device).remainder(2)).to(dtype)
+            x = latitude[..., None].expand(leading + grid.shape).contiguous()
+        actual = analysis(x)
+        tol = 64 * torch.finfo(dtype).eps * max(1.0, actual.abs().max().item())
+        self.assertTrue(compare_tensors("arbitrary-input zero-order reality", actual[..., 0].imag, torch.zeros_like(actual[..., 0].imag), atol=tol, rtol=0, verbose=verbose))
+
+    @parameterized.expand(
+        [(geometry, vector, lmax) for geometry in ("equiangular", "fejer1") for vector in (False, True) for lmax in (0, 8)],
+        skip_on_empty=True,
+    )
+    def test_empty_analysis_synthesis(self, geometry, vector, lmax):
+        grid = th.as_grid(geometry, nlat=9, nlon=16)
+        analysis, synthesis = _transforms(grid, lmax, 0, vector)
+        analysis, synthesis = analysis.to(self.device), synthesis.to(self.device)
+        x = torch.randn(((2,) if vector else ()) + grid.shape, device=self.device, dtype=torch.float64, requires_grad=True)
+        coefficients = analysis(x)
+        actual = synthesis(coefficients)
+        torch.testing.assert_close(actual, torch.zeros_like(x), atol=0, rtol=0)
+        actual.sum().backward()
+        torch.testing.assert_close(x.grad, torch.zeros_like(x), atol=0, rtol=0)
+
+    @parameterized.expand([(geometry, vector) for geometry in ("equiangular", "fejer1") for vector in (False, True)], skip_on_empty=True)
+    def test_empty_orders(self, geometry, vector, verbose=False):
+        set_seed(333)
+        grid = th.as_grid(geometry, nlat=9, nlon=16)
+        analysis, _ = _transforms(grid, 8, 0, vector)
+        analysis = analysis.to(self.device)
+        x = torch.randn((2,) + grid.shape if vector else grid.shape, device=self.device, requires_grad=True)
+        result = analysis(x)
+        expected = torch.zeros((2, 8, 0) if vector else (8, 0), device=self.device, dtype=torch.complex64)
+        self.assertTrue(compare_tensors("empty spectrum", expected, result, atol=0, rtol=0, verbose=verbose))
+        result.real.sum().backward()
+        self.assertTrue(compare_tensors("empty gradient", torch.zeros_like(x), x.grad, atol=0, rtol=0, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            (vector, dtype, grid_type, nlat, nlon, lmax)
+            for vector in (False, True)
+            for dtype in (torch.float32, torch.float64)
+            for grid_type, nlat, nlon, lmax in [
+                ("equiangular", 9, 16, 8),
+                ("equiangular", 73, 144, 72),
+                ("fejer1", 9, 18, 9),
+                ("fejer1", 72, 144, 72),
+            ]
+        ],
+        skip_on_empty=True,
+    )
+    @requires_torch_compile
+    def test_compile(self, vector, dtype, grid_type, nlat, nlon, lmax, verbose=False):
+        set_seed(333)
+        grid = th.as_grid(grid_type, nlat=nlat, nlon=nlon)
+        analysis, synthesis = _transforms(grid, lmax, lmax, vector)
+        analysis = analysis.to(device=self.device, dtype=dtype)
+        synthesis = synthesis.to(device=self.device, dtype=dtype)
+
+        def fn(t):
+            return synthesis(analysis(t))
+
+        x = torch.randn((2, 2) + grid.shape if vector else (2,) + grid.shape, device=self.device, dtype=dtype, requires_grad=True)
+        gradient = torch.randn_like(x)
+        expected = fn(x)
+        expected_grad = torch.autograd.grad(expected, x, gradient)[0]
+        actual = torch.compile(fn, fullgraph=True, dynamic=False)(x)
+        actual_grad = torch.autograd.grad(actual, x, gradient)[0]
+        tolerance = 1e-5 if dtype == torch.float32 else 1e-12
+        self.assertTrue(compare_tensors("compiled forward", expected, actual, atol=tolerance, rtol=tolerance, verbose=verbose))
+        self.assertTrue(compare_tensors("compiled backward", expected_grad, actual_grad, atol=tolerance, rtol=tolerance, verbose=verbose))
 
 
 if __name__ == "__main__":
