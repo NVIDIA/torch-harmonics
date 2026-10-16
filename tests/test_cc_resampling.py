@@ -208,7 +208,7 @@ class TestExtendedCCAnalysis(unittest.TestCase):
             torch.testing.assert_close(actual_grad, expected_grad, atol=1e-12, rtol=1e-12)
         self.assertEqual(list(dict(analysis.named_buffers())), ["weights"])
         # A warm constructor must reuse numerical work without sharing mutable buffers.
-        another, _ = _transforms(grid, nlat - 1, nlat - 1, vector, lmmax=lmmax)
+        another, _ = _transforms(grid, nlat - 1, mmax, vector, lmmax=lmmax)
         torch.testing.assert_close(analysis.weights, another.weights, atol=0, rtol=0)
         self.assertNotEqual(analysis.weights.data_ptr(), another.weights.data_ptr())
         another.weights.zero_()
