@@ -507,11 +507,11 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         analysis = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax)
         self.assertFalse(analysis._extended_folded)
         self.assertEqual(analysis.grid_out, th.SpectralGrid(lmax, min(lmax, nlon // 2 + 1) if mmax is None else mmax, lmmax))
-        # Native projection formula, retaining the original degree-factor precision.
+        # Native projection formula, with the degree factor in float64 like the transform.
         q = 2 * torch.pi * grid.colat_weights
         if vector:
             p = _precompute_dlegpoly(analysis.mmax, analysis.lmax, grid, truncation=analysis.grid_out)
-            l = torch.arange(analysis.lmax)
+            l = torch.arange(analysis.lmax, dtype=torch.float64)
             factor = 1.0 / l / (l + 1)
             factor[0] = 1
             weights = torch.einsum("dmlk,k,l->dmlk", p, q, factor).contiguous()
