@@ -39,11 +39,11 @@ from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
-from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.truncation import _SHTTruncationMixin, _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
 
-class RealSHT(nn.Module):
+class RealSHT(_SHTTruncationMixin, nn.Module):
     r"""
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -74,10 +74,13 @@ class RealSHT(nn.Module):
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
         :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
         alike, with the radial axis in front of the spatial (or spectral) ones.
-    lmax : int
-        Maximum spherical harmonic degree
-    mmax : int
-        Maximum spherical harmonic order
+    lmax : int, optional
+        Non-inclusive maximum spherical harmonic degree.
+    mmax : int, optional
+        Non-inclusive maximum spherical harmonic order.
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
@@ -118,7 +121,16 @@ class RealSHT(nn.Module):
         'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
         grid=("nlat", "nlon"),
     )
-    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(
+        self,
+        grid: RegularGridS2,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        norm: Optional[str] = "ortho",
+        csphase: Optional[bool] = True,
+        *,
+        lmmax: Optional[int] = None,
+    ):
 
         super().__init__()
 
@@ -139,8 +151,7 @@ class RealSHT(nn.Module):
         # descriptor and reads them itself, which is also what keys its cache.
         weights = self.grid.colat_weights
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
+        self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights. It is a constant prefactor of a linear transform, so folding it
@@ -148,7 +159,7 @@ class RealSHT(nn.Module):
         weights = 2.0 * torch.pi * weights
 
         # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
         weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
 
         # remember quadrature weights
@@ -156,7 +167,7 @@ class RealSHT(nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
     def _apply(self, fn, recurse=True):
         # float64 buffers cannot move to MPS; see recast_buffers_for
@@ -200,7 +211,7 @@ class RealSHT(nn.Module):
         return torch.complex(out_re.contiguous(), out_im.contiguous())
 
 
-class InverseRealSHT(nn.Module):
+class InverseRealSHT(_SHTTruncationMixin, nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -227,10 +238,13 @@ class InverseRealSHT(nn.Module):
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
         :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
         alike, with the radial axis in front of the spatial (or spectral) ones.
-    lmax : int
-        Maximum spherical harmonic degree
-    mmax : int
-        Maximum spherical harmonic order
+    lmax : int, optional
+        Non-inclusive maximum spherical harmonic degree.
+    mmax : int, optional
+        Non-inclusive maximum spherical harmonic order.
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
@@ -283,7 +297,16 @@ class InverseRealSHT(nn.Module):
         'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
         grid=("nlat", "nlon"),
     )
-    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(
+        self,
+        grid: RegularGridS2,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        norm: Optional[str] = "ortho",
+        csphase: Optional[bool] = True,
+        *,
+        lmmax: Optional[int] = None,
+    ):
 
         super().__init__()
 
@@ -296,12 +319,11 @@ class InverseRealSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
+        self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
-        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
+        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase, truncation=self._trunc)
         pct = pct.permute(0, 2, 1).contiguous()
 
         # register buffer
@@ -309,7 +331,7 @@ class InverseRealSHT(nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
     def _apply(self, fn, recurse=True):
         # float64 buffers cannot move to MPS; see recast_buffers_for
@@ -353,7 +375,7 @@ class InverseRealSHT(nn.Module):
         return x
 
 
-class RealVectorSHT(nn.Module):
+class RealVectorSHT(_SHTTruncationMixin, nn.Module):
     r"""
     Defines a module for computing the forward (real) vector SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -378,10 +400,13 @@ class RealVectorSHT(nn.Module):
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
         :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
         alike, with the radial axis in front of the spatial (or spectral) ones.
-    lmax : int
-        Maximum spherical harmonic degree
-    mmax : int
-        Maximum spherical harmonic order
+    lmax : int, optional
+        Non-inclusive maximum spherical harmonic degree.
+    mmax : int, optional
+        Non-inclusive maximum spherical harmonic order.
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
@@ -422,7 +447,16 @@ class RealVectorSHT(nn.Module):
         'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
         grid=("nlat", "nlon"),
     )
-    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(
+        self,
+        grid: RegularGridS2,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        norm: Optional[str] = "ortho",
+        csphase: Optional[bool] = True,
+        *,
+        lmmax: Optional[int] = None,
+    ):
 
         super().__init__()
 
@@ -438,11 +472,10 @@ class RealVectorSHT(nn.Module):
         # quadrature weights come from the grid descriptor; see the note in RealSHT
         weights = self.grid.colat_weights
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
+        self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
         # precompute associated Legendre polynomials
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights (see RealSHT.__init__)
@@ -461,7 +494,7 @@ class RealVectorSHT(nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
     def _apply(self, fn, recurse=True):
         # float64 buffers cannot move to MPS; see recast_buffers_for
@@ -522,7 +555,7 @@ class RealVectorSHT(nn.Module):
         return torch.complex(out_re, out_im)
 
 
-class InverseRealVectorSHT(nn.Module):
+class InverseRealVectorSHT(_SHTTruncationMixin, nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -545,10 +578,13 @@ class InverseRealVectorSHT(nn.Module):
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
         :class:`~torch_harmonics.radial.SphericalProductGrid` over one transforms every shell
         alike, with the radial axis in front of the spatial (or spectral) ones.
-    lmax : int
-        Maximum spherical harmonic degree
-    mmax : int
-        Maximum spherical harmonic order
+    lmax : int, optional
+        Non-inclusive maximum spherical harmonic degree.
+    mmax : int, optional
+        Non-inclusive maximum spherical harmonic order.
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
@@ -596,7 +632,16 @@ class InverseRealVectorSHT(nn.Module):
         'nlat, nlon, lmax=None, mmax=None, grid="equiangular", norm="ortho", csphase=True',
         grid=("nlat", "nlon"),
     )
-    def __init__(self, grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, norm: Optional[str] = "ortho", csphase: Optional[bool] = True):
+    def __init__(
+        self,
+        grid: RegularGridS2,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        norm: Optional[str] = "ortho",
+        csphase: Optional[bool] = True,
+        *,
+        lmmax: Optional[int] = None,
+    ):
 
         super().__init__()
 
@@ -609,12 +654,11 @@ class InverseRealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # determine maximum degrees based on triangular truncation
-        self.lmax, self.mmax = truncate_sht(self.grid, lmax, mmax)
+        self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
         # precompute associated Legendre polynomials
         # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase)
+        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase, truncation=self._trunc)
         dpct = dpct.permute(0, 1, 3, 2).contiguous()
 
         # register weights
@@ -622,7 +666,7 @@ class InverseRealVectorSHT(nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
 
     def _apply(self, fn, recurse=True):
         # float64 buffers cannot move to MPS; see recast_buffers_for

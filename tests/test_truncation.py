@@ -37,7 +37,7 @@ The split of responsibility being pinned here is that a
 ``max_exact_degree`` from the exactness of its quadrature rule, and
 ``max_azimuthal_order`` from the Nyquist limit of its longitude sampling -- while
 :func:`~torch_harmonics.truncation.truncate_sht` decides what an SHT actually
-*keeps*: it applies user overrides, enforces the triangular truncation, and warns
+*keeps*: it applies user overrides, resolves spectral bounds, and warns
 where the default changed. The grid properties stay silent so that reading them
 is never a side effect.
 """
@@ -108,11 +108,11 @@ class TestTruncateSht(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # grid, (nlat, nlon), expected (lmax, mmax)
-            ["legendre-gauss", (128, 256), (128, 128)],
-            ["lobatto", (128, 256), (127, 127)],
-            ["equiangular", (128, 256), (64, 64)],
-            ["trapezoidal", (128, 256), (64, 64)],
+            # grid, (nlat, nlon), expected (lmax, mmax, lmmax)
+            ["legendre-gauss", (128, 256), (128, 128, None)],
+            ["lobatto", (128, 256), (127, 127, None)],
+            ["equiangular", (128, 256), (64, 64, None)],
+            ["trapezoidal", (128, 256), (64, 64, None)],
         ]
     )
     def test_documented_defaults(self, grid, shape, expected):
@@ -120,31 +120,38 @@ class TestTruncateSht(unittest.TestCase):
 
     @parameterized.expand([[nlat, grid] for nlat in _NLATS for grid in _EXACT_DEGREE])
     def test_triangular_truncation_is_enforced(self, nlat, grid):
-        """``lmax == mmax`` always, so every retained degree has a full set of orders."""
-        lmax, mmax = truncate_sht(as_grid(grid, nlat=nlat, nlon=2 * nlat))
-        self.assertEqual(lmax, mmax)
+        """The no-argument transform retains its old triangular shape."""
+        trunc = truncate_sht(as_grid(grid, nlat=nlat, nlon=2 * nlat))
+        self.assertEqual(trunc.lmax, trunc.mmax)
+        self.assertIsNone(trunc.lmmax)
 
     def test_a_narrow_longitude_grid_limits_lmax(self):
         """mmax is the binding constraint when the longitude sampling is coarse."""
-        lmax, mmax = truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=16))
-        self.assertEqual((lmax, mmax), (9, 9))  # nlon // 2 + 1 = 9, below max_exact_degree = 128
+        trunc = truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=16))
+        self.assertEqual(trunc, (9, 9, None))  # nlon // 2 + 1 = 9, below max_exact_degree = 128
 
     @parameterized.expand([[grid] for grid in _EXACT_DEGREE])
     def test_user_truncation_overrides_the_grid_default(self, grid):
         """A user must be able to ask for a different truncation than the grid's."""
         g = as_grid(grid, nlat=128, nlon=256)
-        self.assertEqual(truncate_sht(g, lmax=20), (20, 20))
-        self.assertEqual(truncate_sht(g, mmax=20), (20, 20))
-        self.assertEqual(truncate_sht(g, lmax=20, mmax=50), (20, 20))
-        self.assertEqual(truncate_sht(g, lmax=50, mmax=20), (20, 20))
+        self.assertEqual(truncate_sht(g, lmax=20), (20, 20, None))
+        self.assertEqual(truncate_sht(g, mmax=20), (_EXACT_DEGREE[grid](128), 20, None))
+        self.assertEqual(truncate_sht(g, lmax=50, mmax=20), (50, 20, None))
 
-    def test_zero_is_treated_as_a_request_not_as_unset(self):
-        """
-        Regression: the previous implementation used ``lmax or default``, so an
-        explicit lmax=0 fell through to the grid default instead of being honoured.
-        """
-        self.assertEqual(truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), lmax=0), (0, 0))
-        self.assertEqual(truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), mmax=0), (0, 0))
+    def test_rhomboidal_pentagonal_and_r42_bounds(self):
+        g = as_grid("legendre-gauss", nlat=128, nlon=256)
+        self.assertEqual(truncate_sht(g, lmax=85, mmax=43, lmmax=43), (85, 43, 43))
+        self.assertEqual(truncate_sht(g, lmax=64, mmax=43, lmmax=43), (64, 43, 43))
+        self.assertEqual(truncate_sht(g, lmax=24, mmax=9, lmmax=6), (24, 9, 6))
+        self.assertEqual(truncate_sht(g, lmax=24, mmax=9), (24, 9, None))
+        narrow = as_grid("legendre-gauss", nlat=128, nlon=16)
+        self.assertEqual(truncate_sht(narrow, lmmax=3), (128, 9, 3))
+
+    def test_invalid_bounds_raise(self):
+        g = as_grid("legendre-gauss", nlat=32, nlon=64)
+        for bounds in ({"lmax": 0}, {"mmax": 0}, {"lmmax": 0}, {"lmax": -1}, {"mmax": -1}, {"lmmax": -1}, {"lmax": 5, "mmax": 9}, {"lmax": 5, "mmax": 9, "lmmax": 9}):
+            with self.subTest(bounds=bounds), self.assertRaises(ValueError):
+                truncate_sht(g, **bounds)
 
     @parameterized.expand([[grid] for grid in _WARNING_GRIDS])
     def test_changed_default_warns(self, grid):
@@ -184,7 +191,7 @@ class TestShtLayerTruncationAgrees(unittest.TestCase):
         for cls in [th.RealSHT, th.InverseRealSHT, th.RealVectorSHT, th.InverseRealVectorSHT]:
             with self.subTest(layer=cls.__name__):
                 layer = cls(as_grid(grid, nlat=nlat, nlon=nlon))
-                self.assertEqual((layer.lmax, layer.mmax), expected)
+                self.assertEqual((layer.lmax, layer.mmax, layer.lmmax), expected)
 
     @parameterized.expand([[grid] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
     def test_layers_honour_an_explicit_truncation(self, grid):
