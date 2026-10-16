@@ -47,7 +47,7 @@ if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
 
 
-def random_sht_coeffs(batch_size, lmax, mmax, device, zero_l0=False):
+def random_sht_coeffs(batch_size, lmax, mmax, device, zero_l0=False, lmmax=None):
     """Random scalar SHT coefficients with proper structure:
     m=0 column real (real-valued field), triangular support (m <= l),
     and optionally l=0 row zeroed (needed when testing gradient/curl)."""
@@ -58,7 +58,137 @@ def random_sht_coeffs(batch_size, lmax, mmax, device, zero_l0=False):
             c[:, l, l + 1 :] = 0.0
     if zero_l0:
         c[:, 0, :] = 0.0
+    if lmmax is not None:
+        l = torch.arange(lmax, device=device)[:, None]
+        m = torch.arange(mmax, device=device)[None, :]
+        c = c * (l - m < lmmax)
     return c
+
+
+# The largest band each grid recovers: its native band, max_exact_degree, and on equiangular
+# and Fejer-1 also the extended band of the folded analysis.
+_EXTENDED_DEGREE = {"equiangular": lambda nlat: nlat - 1, "fejer1": lambda nlat: nlat}
+_RECOVERY_BANDS = [("legendre-gauss", False), ("lobatto", False), ("equiangular", False), ("fejer1", False), ("equiangular", True), ("fejer1", True)]
+
+# nlat, grid, extended, mmax (None: lmax), lmmax, norm, dtype
+_RECOVERY_CASES = (
+    [[nlat, grid, extended, None, None, norm, torch.float64] for nlat in (32, 33) for grid, extended in _RECOVERY_BANDS for norm in ("ortho", "four-pi", "schmidt")]
+    + [[nlat, grid, extended, None, None, "ortho", torch.float32] for nlat in (32, 33) for grid, extended in _RECOVERY_BANDS]
+    # fewer orders and an l - m bound on top of the extended band
+    + [[33, "equiangular", True, None, 8, "four-pi", torch.float64], [32, "fejer1", True, 12, 6, "schmidt", torch.float64]]
+)
+
+
+def _band(grid, nlat, extended):
+    """The descriptor of an nlat x 2 nlat grid and the degree bound of its native or extended band."""
+    descriptor = th.as_grid(grid, nlat=nlat, nlon=2 * nlat)
+    return descriptor, _EXTENDED_DEGREE[grid](nlat) if extended else descriptor.max_exact_degree
+
+
+def _check_coefficient_recovery(test, nlat, grid, extended, mmax, lmmax, norm, dtype, vector, verbose=False):
+    """Assert sht(isht(c)) == c for band-limited c, relative to the largest coefficient."""
+    set_seed(333)
+    descriptor, lmax = _band(grid, nlat, extended)
+    mmax = lmax if mmax is None else mmax
+
+    forward_cls, inverse_cls = (th.RealVectorSHT, th.InverseRealVectorSHT) if vector else (th.RealSHT, th.InverseRealSHT)
+    forward = forward_cls(descriptor, lmax=lmax, mmax=mmax, lmmax=lmmax, norm=norm).to(device=test.device, dtype=dtype)
+    inverse = inverse_cls(descriptor, lmax=lmax, mmax=mmax, lmmax=lmmax, norm=norm).to(device=test.device, dtype=dtype)
+
+    # there is no vector harmonic of degree 0
+    coeffs = random_sht_coeffs(2, lmax, mmax, test.device, zero_l0=vector, lmmax=lmmax)
+    if vector:
+        coeffs = torch.stack([coeffs, random_sht_coeffs(2, lmax, mmax, test.device, zero_l0=True, lmmax=lmmax)], dim=-3)
+    coeffs = coeffs.to(torch.complex128 if dtype == torch.float64 else torch.complex64)
+
+    recovered = forward(inverse(coeffs))
+
+    if dtype == torch.float64:
+        tol = 1e-11 if vector else 1e-12
+    else:
+        tol = 1e-4 if vector else 1e-5
+    atol = tol * coeffs.abs().max().item()
+    test.assertTrue(compare_tensors("recovered coefficients", recovered, coeffs, atol=atol, rtol=0.0, verbose=verbose))
+
+
+# nlat, grid, extended
+_GRADIENT_CASES = [[nlat, grid, extended] for nlat in (12, 15) for grid, extended in _RECOVERY_BANDS]
+
+
+def _check_gradients(test, nlat, grid, extended, vector):
+    """gradcheck the forward and the inverse transform themselves, in float64.
+
+    Both are linear, so central differences are exact up to roundoff and the comparison can
+    be tight. Fast mode compares v^T J u for random u and v instead of every Jacobian entry:
+    for a linear map, a wrong entry changes that product with probability one, at the cost
+    of a few transforms rather than one per input and output element. The product is about
+    5e-5 at these sizes, so atol stays well below it; at 1e-8 a backward scaled by 1 + 1e-4
+    still passed. Complex coefficients are checked as real and imaginary parts.
+    """
+    set_seed(333)
+    descriptor, lmax = _band(grid, nlat, extended)
+    forward_cls, inverse_cls = (th.RealVectorSHT, th.InverseRealVectorSHT) if vector else (th.RealSHT, th.InverseRealSHT)
+    forward = forward_cls(descriptor, lmax=lmax, mmax=lmax).to(test.device)
+    inverse = inverse_cls(descriptor, lmax=lmax, mmax=lmax).to(test.device)
+
+    leading = (2, 2) if vector else (2,)
+    x = torch.randn(*leading, *descriptor.shape, dtype=torch.float64, device=test.device, requires_grad=True)
+    test.assertTrue(gradcheck(forward, (x,), eps=1e-6, atol=1e-10, rtol=1e-6, fast_mode=True))
+    c = torch.randn(*leading, lmax, lmax, dtype=torch.complex128, device=test.device, requires_grad=True)
+    test.assertTrue(gradcheck(inverse, (c,), eps=1e-6, atol=1e-10, rtol=1e-6, fast_mode=True))
+
+
+# nlat, grid, norm
+_GRAM_CASES = [[nlat, grid, norm] for nlat in (12, 15) for grid in ("legendre-gauss", "lobatto", "equiangular", "fejer1") for norm in ("ortho", "four-pi", "schmidt")]
+
+
+def _check_gram(test, nlat, grid, norm, vector, verbose=False):
+    """Assert that synthesis maps the coefficient basis to fields with a diagonal Gram matrix.
+
+    One field is synthesized per real basis function: c[l, m] = 1 and, for m > 0, also
+    c[l, m] = 1j, on the spheroidal and the toroidal channel for vector fields. Their inner
+    products under the grid's quadrature form the Gram matrix. Its diagonal holds
+    w_m * W_l, with w_m = 1 for m = 0 and 2 for m > 0 from the real irfft folding +m and -m,
+    and
+
+      ortho:   W_l = 1
+      four-pi: W_l = 1 / (4 pi)
+      schmidt: W_l = (2l + 1) / (4 pi)
+
+    times l(l + 1) = ||grad Y_l^m||^2 for vector fields, which have no degree 0. The quadrature
+    integrates these products exactly up to max_exact_degree, so every off-diagonal entry,
+    including those between spheroidal and toroidal fields, vanishes to roundoff.
+    """
+    descriptor = th.as_grid(grid, nlat=nlat, nlon=2 * nlat)
+    lmax = mmax = descriptor.max_exact_degree
+    inverse_cls = th.InverseRealVectorSHT if vector else th.InverseRealSHT
+    inverse = inverse_cls(descriptor, lmax=lmax, mmax=mmax, norm=norm).to(test.device)
+
+    channels = (0, 1) if vector else (None,)
+    basis, diagonal = [], []
+    for channel in channels:
+        for l in range(1 if vector else 0, lmax):
+            weight = {"ortho": 1.0, "four-pi": 1.0 / (4.0 * math.pi), "schmidt": (2 * l + 1) / (4.0 * math.pi)}[norm]
+            if vector:
+                weight *= l * (l + 1)
+            for m in range(min(l + 1, mmax)):
+                for value in (1.0, 1.0j) if m > 0 else (1.0,):
+                    c = torch.zeros((2, lmax, mmax) if vector else (lmax, mmax), dtype=torch.complex128)
+                    c[(channel, l, m) if vector else (l, m)] = value
+                    basis.append(c)
+                    diagonal.append(weight * (2.0 if m > 0 else 1.0))
+
+    with torch.no_grad():
+        fields = inverse(torch.stack(basis).to(test.device))
+
+    _, w_lat = precompute_latitudes(nlat, grid=grid)
+    measure = (2.0 * math.pi / descriptor.nlon) * w_lat.to(device=test.device, dtype=torch.float64)
+    fields = fields.reshape(len(basis), -1, nlat, descriptor.nlon)
+    gram = torch.einsum("ivkn,k,jvkn->ij", fields, measure, fields)
+
+    expected = torch.diag(torch.tensor(diagonal, dtype=torch.float64, device=test.device))
+    atol = 1e-12 * max(diagonal)
+    test.assertTrue(compare_tensors("Gram matrix", gram, expected, atol=atol, rtol=0.0, verbose=verbose))
 
 
 @parameterized_class(("device"), _devices)
@@ -420,134 +550,25 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
     def setUp(self):
         disable_tf32()
 
-    @parameterized.expand(
-        [
-            # even-even
-            [32, 64, 32, "ortho", "equiangular", 1e-9, 1e-9],
-            [32, 64, 32, "ortho", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "ortho", "lobatto", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "equiangular", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "lobatto", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "equiangular", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "lobatto", 1e-9, 1e-9],
-            # odd-even
-            [33, 64, 32, "ortho", "equiangular", 1e-9, 1e-9],
-            [33, 64, 32, "ortho", "legendre-gauss", 1e-9, 1e-9],
-            [33, 64, 32, "ortho", "lobatto", 1e-9, 1e-9],
-            [33, 64, 32, "four-pi", "equiangular", 1e-9, 1e-9],
-            [33, 64, 32, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [33, 64, 32, "four-pi", "lobatto", 1e-9, 1e-9],
-            [33, 64, 32, "schmidt", "equiangular", 1e-9, 1e-9],
-            [33, 64, 32, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [33, 64, 32, "schmidt", "lobatto", 1e-9, 1e-9],
-            [32, 64, 32, "ortho", "fejer1", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "fejer1", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "fejer1", 1e-9, 1e-9],
-            [33, 64, 32, "ortho", "fejer1", 1e-9, 1e-9],
-            [33, 64, 32, "four-pi", "fejer1", 1e-9, 1e-9],
-            [33, 64, 32, "schmidt", "fejer1", 1e-9, 1e-9],
-        ],
-        skip_on_empty=True,
-    )
-    def test_forward_inverse(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
-        # set seed
-        set_seed(333)
+    @parameterized.expand(_RECOVERY_CASES, skip_on_empty=True)
+    def test_forward_inverse(self, nlat, grid, extended, mmax, lmmax, norm, dtype, verbose=False):
+        """sht(isht(c)) == c at the largest band each grid recovers.
 
-        testiters = [1, 2, 4, 8, 16]
-        if grid == "equiangular":
-            mmax = nlat // 2
-        elif grid == "lobatto":
-            mmax = nlat - 1
-        elif grid == "fejer1":
-            mmax = (nlat + 1) // 2
-        else:
-            mmax = nlat
-        lmax = mmax
+        This implies the spatial round trip isht(sht(f)) == f for every band-limited f, and
+        compares the coefficients themselves, so an error in a single mode cannot hide in
+        the synthesized field. The extended rows exercise the folded analysis of the
+        equiangular and Fejer-1 grids beyond their native band.
+        """
+        _check_coefficient_recovery(self, nlat, grid, extended, mmax, lmmax, norm, dtype, vector=False, verbose=verbose)
 
-        sht = th.RealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, norm=norm).to(self.device)
-        isht = th.InverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, norm=norm).to(self.device)
+    @parameterized.expand(_GRADIENT_CASES, skip_on_empty=True)
+    def test_grads(self, nlat, grid, extended, verbose=False):
+        """Autograd of sht and isht matches finite differences of the transforms themselves.
 
-        with torch.no_grad():
-            coeffs = torch.zeros(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
-            coeffs[:, :lmax, :mmax] = torch.randn(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
-            signal = isht(coeffs)
-
-        # testing error accumulation
-        for iter in testiters:
-            with self.subTest(i=iter):
-                base = signal
-
-                for _ in range(iter):
-                    base = isht(sht(base))
-
-                self.assertTrue(compare_tensors(f"output iteration {iter}", base, signal, atol=atol, rtol=rtol, verbose=verbose))
-
-    @parameterized.expand(
-        [
-            # even-even
-            [12, 24, 2, "ortho", "equiangular", 1e-5, 1e-5],
-            [12, 24, 2, "ortho", "legendre-gauss", 1e-5, 1e-5],
-            [12, 24, 2, "ortho", "lobatto", 1e-5, 1e-5],
-            [12, 24, 2, "four-pi", "equiangular", 1e-5, 1e-5],
-            [12, 24, 2, "four-pi", "legendre-gauss", 1e-5, 1e-5],
-            [12, 24, 2, "four-pi", "lobatto", 1e-5, 1e-5],
-            [12, 24, 2, "schmidt", "equiangular", 1e-5, 1e-5],
-            [12, 24, 2, "schmidt", "legendre-gauss", 1e-5, 1e-5],
-            [12, 24, 2, "schmidt", "lobatto", 1e-5, 1e-5],
-            # odd-even
-            [15, 30, 2, "ortho", "equiangular", 1e-5, 1e-5],
-            [15, 30, 2, "ortho", "legendre-gauss", 1e-5, 1e-5],
-            [15, 30, 2, "ortho", "lobatto", 1e-5, 1e-5],
-            [15, 30, 2, "four-pi", "equiangular", 1e-5, 1e-5],
-            [15, 30, 2, "four-pi", "legendre-gauss", 1e-5, 1e-5],
-            [15, 30, 2, "four-pi", "lobatto", 1e-5, 1e-5],
-            [15, 30, 2, "schmidt", "equiangular", 1e-5, 1e-5],
-            [15, 30, 2, "schmidt", "legendre-gauss", 1e-5, 1e-5],
-            [15, 30, 2, "schmidt", "lobatto", 1e-5, 1e-5],
-            [12, 24, 2, "ortho", "fejer1", 1e-5, 1e-5],
-            [12, 24, 2, "four-pi", "fejer1", 1e-5, 1e-5],
-            [12, 24, 2, "schmidt", "fejer1", 1e-5, 1e-5],
-            [15, 30, 2, "ortho", "fejer1", 1e-5, 1e-5],
-            [15, 30, 2, "four-pi", "fejer1", 1e-5, 1e-5],
-            [15, 30, 2, "schmidt", "fejer1", 1e-5, 1e-5],
-        ],
-        skip_on_empty=True,
-    )
-    def test_grads(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
-        # set seed
-        set_seed(333)
-
-        if grid == "equiangular":
-            mmax = nlat // 2
-        elif grid == "lobatto":
-            mmax = nlat - 1
-        elif grid == "fejer1":
-            mmax = (nlat + 1) // 2
-        else:
-            mmax = nlat
-        lmax = mmax
-
-        sht = th.RealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, norm=norm).to(self.device)
-        isht = th.InverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, norm=norm).to(self.device)
-
-        with torch.no_grad():
-            coeffs = torch.zeros(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
-            coeffs[:, :lmax, :mmax] = torch.randn(batch_size, lmax, mmax, device=self.device, dtype=torch.complex128)
-            signal = isht(coeffs)
-
-        # test the sht
-        grad_input = torch.randn_like(signal, requires_grad=True)
-        err_handle = lambda x: torch.mean(torch.norm(sht(x) - coeffs, p="fro", dim=(-1, -2)) / torch.norm(coeffs, p="fro", dim=(-1, -2)))
-        test_result = gradcheck(err_handle, grad_input, eps=1e-6, atol=atol, rtol=rtol)
-        self.assertTrue(test_result)
-
-        # test the isht
-        grad_input = torch.randn_like(coeffs, requires_grad=True)
-        err_handle = lambda x: torch.mean(torch.norm(isht(x) - signal, p="fro", dim=(-1, -2)) / torch.norm(signal, p="fro", dim=(-1, -2)))
-        test_result = gradcheck(err_handle, grad_input, eps=1e-6, atol=atol, rtol=rtol)
-        self.assertTrue(test_result)
+        The normalization only rescales the weight buffer, not the backward path, so it is
+        not varied here; test_forward_inverse covers every normalization.
+        """
+        _check_gradients(self, nlat, grid, extended, vector=False)
 
     @parameterized.expand(
         [
@@ -794,70 +815,6 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [32, 64, 32, "ortho", "equiangular", 1e-9, 1e-9],
-            [32, 64, 32, "ortho", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "ortho", "lobatto", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "equiangular", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "lobatto", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "equiangular", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "lobatto", 1e-9, 1e-9],
-            [32, 64, 32, "ortho", "fejer1", 1e-9, 1e-9],
-            [32, 64, 32, "four-pi", "fejer1", 1e-9, 1e-9],
-            [32, 64, 32, "schmidt", "fejer1", 1e-9, 1e-9],
-        ],
-        skip_on_empty=True,
-    )
-    def test_parseval(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
-        """Parseval's theorem: the spatial L2 norm of isht(c) equals a weighted spectral norm
-        of c.  The spectral weights W_{l,m} depend on the normalization convention:
-
-          ortho:   W_{l,m} = w_m                        (w_m = 1 for m=0, 2 for m>0)
-          four-pi: W_{l,m} = w_m / (4*pi)               (coefficients are sqrt(4*pi) larger)
-          schmidt: W_{l,m} = w_m * (2*l+1) / (4*pi)     (coefficients are sqrt(4*pi/(2*l+1)) larger)
-
-        In all cases: ||f||^2_{S^2} = sum_{l,m} W_{l,m} * |c_{l,m}|^2
-        """
-        # set seed
-        set_seed(333)
-
-        isht = th.InverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), norm=norm).to(self.device)
-        lmax = isht.lmax
-        mmax = isht.mmax
-
-        with torch.no_grad():
-            c = random_sht_coeffs(batch_size, lmax, mmax, self.device)
-            f = isht(c)  # (batch, nlat, nlon)
-
-        # Spatial L2 norm via spherical quadrature: integral of f^2 over S^2
-        _, w_lat = precompute_latitudes(nlat, grid=grid)
-        w_lat = w_lat.to(device=self.device, dtype=torch.float64)
-        dlon = 2.0 * math.pi / nlon
-        spatial_norm_sq = torch.einsum("bnl,n->b", f**2, w_lat) * dlon  # (batch,)
-
-        # Build the (lmax, mmax) spectral weight matrix W_{l,m}.
-        # w_m accounts for the ±m folding in the real irfft (m=0: weight 1, m>0: weight 2).
-        w_m = torch.ones(mmax, dtype=torch.float64, device=self.device)
-        w_m[1:] = 2.0
-
-        if norm == "ortho":
-            # c_lm^ortho are the orthonormal coefficients; W_{l,m} = w_m
-            W = w_m.unsqueeze(0).expand(lmax, mmax)
-        elif norm == "four-pi":
-            # c_lm^{four-pi} = sqrt(4*pi) * c_lm^ortho  =>  W_{l,m} = w_m / (4*pi)
-            W = w_m.unsqueeze(0).expand(lmax, mmax) / (4.0 * math.pi)
-        elif norm == "schmidt":
-            # c_lm^{schmidt} = sqrt(4*pi / (2*l+1)) * c_lm^ortho  =>  W_{l,m} = w_m * (2*l+1) / (4*pi)
-            l_vals = torch.arange(lmax, dtype=torch.float64, device=self.device)
-            W = torch.outer(2.0 * l_vals + 1.0, w_m) / (4.0 * math.pi)
-
-        spectral_norm_sq = torch.einsum("blm,lm->b", c.abs() ** 2, W)  # (batch,)
-
-        self.assertTrue(compare_tensors("Parseval's theorem", spatial_norm_sq, spectral_norm_sq, atol=atol, rtol=rtol, verbose=verbose))
-
-    @parameterized.expand(
-        [
             # even-even
             [12, 24, "ortho", "equiangular", 1e-5, 1e-5],
             [12, 24, "ortho", "legendre-gauss", 1e-5, 1e-5],
@@ -941,7 +898,8 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
       f_{l,m,cos}  ~ P_l^m(cos theta) * cos(m*phi)       for m > 0  (c_{l,m} = 1+0j)
       f_{l,m,sin}  ~ P_l^m(cos theta) * sin(m*phi)       for m > 0  (c_{l,m} = 0+1j)
 
-    With ortho normalization the sphere inner products satisfy:
+    With ortho normalization the sphere inner products satisfy, and the other
+    normalizations rescale them per degree (see _check_gram):
       <f_{l,0},     f_{l',0}    > = delta_{ll'}
       <f_{l,m,cos}, f_{l',m',*}> = 2 * delta_{ll'} * delta_{mm'}   for m, m' > 0
       <f_{l,m,sin}, f_{l',m',*}> = 2 * delta_{ll'} * delta_{mm'}   for m, m' > 0
@@ -953,66 +911,10 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
     def setUp(self):
         disable_tf32()
 
-    @parameterized.expand(
-        [
-            [12, 24, "legendre-gauss", 1e-9, 1e-9],
-            [12, 24, "equiangular", 1e-9, 1e-9],
-            [12, 24, "lobatto", 1e-9, 1e-9],
-            [12, 24, "fejer1", 1e-9, 1e-9],
-        ],
-        skip_on_empty=True,
-    )
-    def test_orthogonality(self, nlat, nlon, grid, atol, rtol, verbose=False):
-        """Verify that isht(norm="ortho") synthesizes mutually orthogonal basis
-        functions and that the self inner-products equal 1 (m=0) or 2 (m>0)."""
-        # set seed
-        set_seed(333)
-
-        if grid == "equiangular":
-            lmax = mmax = nlat // 2
-        elif grid == "lobatto":
-            lmax = mmax = nlat - 1
-        elif grid == "fejer1":
-            lmax = mmax = (nlat + 1) // 2
-        else:
-            lmax = mmax = nlat
-
-        isht = th.InverseRealSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=mmax, norm="ortho").to(self.device)
-
-        # Build one coefficient tensor per real basis function.
-        # For m = 0: one tensor with c[l, 0] = 1+0j (real mode only).
-        # For m > 0: two tensors — c[l, m] = 1+0j (cos) and c[l, m] = 0+1j (sin).
-        basis_list = []
-        expected_diag = []
-        for l in range(lmax):
-            for m in range(min(l + 1, mmax)):
-                c = torch.zeros(lmax, mmax, dtype=torch.complex128)
-                c[l, m] = 1.0 + 0.0j
-                basis_list.append(c)
-                expected_diag.append(1.0 if m == 0 else 2.0)
-                if m > 0:
-                    c = torch.zeros(lmax, mmax, dtype=torch.complex128)
-                    c[l, m] = 0.0 + 1.0j
-                    basis_list.append(c)
-                    expected_diag.append(2.0)
-
-        coeffs = torch.stack(basis_list).to(self.device)  # (N, lmax, mmax)
-
-        with torch.no_grad():
-            funcs = isht(coeffs)  # (N, nlat, nlon), real-valued
-
-        # Gram matrix via spherical quadrature: G[i,j] = integral of f_i * f_j over S^2
-        # Weights from precompute_latitudes are in the cos(theta) domain and integrate
-        # over [-1, 1], so the full measure is w_lat[k] * dlon.
-        _, w_lat = precompute_latitudes(nlat, grid=grid)
-        w_lat = w_lat.to(device=self.device, dtype=torch.float64)
-        dlon = 2.0 * math.pi / nlon
-
-        weighted = funcs * (dlon * w_lat).unsqueeze(-1)  # (N, nlat, nlon)
-        gram = torch.einsum("inl,jnl->ij", weighted, funcs)  # (N, N)
-
-        expected = torch.diag(torch.tensor(expected_diag, dtype=torch.float64, device=self.device))
-        self.assertTrue(compare_tensors("Gram matrix", gram, expected, atol=atol, rtol=rtol, verbose=verbose))
+    @parameterized.expand(_GRAM_CASES, skip_on_empty=True)
+    def test_orthogonality(self, nlat, grid, norm, verbose=False):
+        """isht synthesizes mutually orthogonal basis functions with the norms of each convention."""
+        _check_gram(self, nlat, grid, norm, vector=False, verbose=verbose)
 
 
 @parameterized_class(("device"), _devices)
@@ -1126,144 +1028,26 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         self.assertTrue(compare_tensors("spheroidal coefficients", s, zeros, atol=atol, rtol=rtol, verbose=verbose))
         self.assertTrue(compare_tensors("toroidal coefficients", t, c, atol=atol, rtol=rtol, verbose=verbose))
 
-    @parameterized.expand(
-        [
-            # The spatial round-trip ivsht(vsht(v)) ≈ v is limited to ~1e-5 accuracy
-            # because dP/dθ and P/sinθ are not polynomials in cos θ, so Gauss quadrature
-            # cannot integrate their products exactly (unlike the scalar SHT).
-            [32, 64, 16, "ortho", "legendre-gauss", 5e-4, 1e-4],
-            [32, 64, 16, "ortho", "equiangular", 5e-4, 1e-4],
-            [32, 64, 16, "ortho", "lobatto", 5e-4, 1e-4],
-            [32, 64, 16, "four-pi", "legendre-gauss", 5e-4, 1e-4],
-            [32, 64, 16, "four-pi", "equiangular", 5e-4, 1e-4],
-            [32, 64, 16, "four-pi", "lobatto", 5e-4, 1e-4],
-            [32, 64, 16, "schmidt", "legendre-gauss", 5e-4, 5e-4],
-            [32, 64, 16, "schmidt", "equiangular", 5e-4, 5e-4],
-            [32, 64, 16, "schmidt", "lobatto", 5e-4, 5e-4],
-            [32, 64, 16, "ortho", "fejer1", 5e-4, 1e-4],
-            [32, 64, 16, "four-pi", "fejer1", 5e-4, 1e-4],
-            [32, 64, 16, "schmidt", "fejer1", 5e-4, 5e-4],
-        ],
-        skip_on_empty=True,
-    )
-    def test_vector_forward_inverse(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
-        """ivsht(vsht(v)) ≈ v for a band-limited spatial vector field.
+    @parameterized.expand(_GRADIENT_CASES, skip_on_empty=True)
+    def test_vector_grads(self, nlat, grid, extended, verbose=False):
+        """Autograd of vsht and ivsht matches finite differences, as for the scalar transforms."""
+        _check_gradients(self, nlat, grid, extended, vector=True)
 
-        Unlike the gradient/curl consistency tests — which start in spectral space
-        with single-channel inputs — this test starts in spatial space with a general
-        two-channel vector field and verifies that vsht and ivsht are genuine left-
-        inverses of each other across multiple iterations.
+    @parameterized.expand(_RECOVERY_CASES, skip_on_empty=True)
+    def test_vector_forward_inverse(self, nlat, grid, extended, mmax, lmmax, norm, dtype, verbose=False):
+        """vsht(ivsht(c)) == c for spheroidal and toroidal coefficients, as for the scalar transform.
+
+        The vector analysis is exact to the same band as the scalar one: with the
+        (1 - x^2)^(m/2) factor of P_l^m, the products of dP/dtheta and m P/sin(theta) that it
+        integrates are polynomials in cos(theta) of degree l + l', like P_l^m P_l'^m.
         """
-        # set seed
-        set_seed(333)
+        _check_coefficient_recovery(self, nlat, grid, extended, mmax, lmmax, norm, dtype, vector=True, verbose=verbose)
 
-        vsht = th.RealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), norm=norm).to(self.device)
-        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), norm=norm).to(self.device)
-        lmax, mmax = vsht.lmax, vsht.mmax
-
-        testiters = [1, 2, 4, 8, 16]
-
-        with torch.no_grad():
-            c_s = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
-            c_t = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
-            v = ivsht(torch.stack([c_s, c_t], dim=-3))  # (batch, 2, nlat, nlon)
-
-        for iter in testiters:
-            with self.subTest(i=iter):
-                base = v
-                for _ in range(iter):
-                    base = ivsht(vsht(base))
-                self.assertTrue(compare_tensors(f"vector round-trip iter {iter}", base, v, atol=atol, rtol=rtol, verbose=verbose))
-
-    @parameterized.expand([[32, 64, 16, grid] for grid in ["legendre-gauss", "equiangular", "lobatto"]], skip_on_empty=True)
-    def test_vector_analysis_float64(self, nlat, nlon, lmax, grid, verbose=False):
-        """A float64 vector analysis recovers band-limited coefficients to float64 precision.
-
-        The analysis weights carry a 1/(l(l+1)) degree factor. It was once computed in
-        float32, which capped this recovery at ~1e-7 however the module was cast.
-        """
-
-        set_seed(333)
-
-        vsht = th.RealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device).double()
-        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax=lmax, mmax=lmax).to(self.device).double()
-
-        c_s = random_sht_coeffs(2, lmax, lmax, self.device, zero_l0=True)
-        c_t = random_sht_coeffs(2, lmax, lmax, self.device, zero_l0=True)
-        coeffs = torch.stack([c_s, c_t], dim=-3)
-
-        self.assertTrue(compare_tensors("float64 vector coefficients", vsht(ivsht(coeffs)), coeffs, atol=1e-12, rtol=1e-12, verbose=verbose))
-
-    @parameterized.expand(
-        [
-            [32, 64, 16, "ortho", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "ortho", "equiangular", 1e-9, 1e-9],
-            [32, 64, 16, "ortho", "lobatto", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "equiangular", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "lobatto", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "equiangular", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "lobatto", 1e-9, 1e-9],
-            [32, 64, 16, "ortho", "fejer1", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "fejer1", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "fejer1", 1e-9, 1e-9],
-        ],
-        skip_on_empty=True,
-    )
-    def test_vector_parseval(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
-        """The spatial L2 energy of a vector field equals a weighted spectral sum.
-
-        For a tangent vector field v = ivsht([c_s, c_t]), the energy identity is:
-
-          ∫_{S²} (v_θ² + v_φ²) dΩ  =  sum_{l,m} W[l,m] * (|c_s_{l,m}|² + |c_t_{l,m}|²)
-
-        The spectral weights W[l,m] (with w_m = 1 for m=0, 2 for m>0) are:
-
-          ortho:   W[l,m] = w_m * l*(l+1)
-          four-pi: W[l,m] = w_m * l*(l+1) / (4*pi)
-          schmidt: W[l,m] = w_m * l*(l+1) * (2*l+1) / (4*pi)
-
-        The extra l*(l+1) factor relative to scalar Parseval comes from
-        ||∇_S Y_l^m||² = l*(l+1).
-
-        The spectral energy is computed from the synthesis coefficients directly
-        (not via vsht) so the test is exact to quadrature precision, mirroring
-        the scalar Parseval test which uses c rather than sht(f).
-        """
-        # set seed
-        set_seed(333)
-
-        ivsht = th.InverseRealVectorSHT(th.as_grid(grid, nlat=nlat, nlon=nlon), norm=norm).to(self.device)
-        lmax, mmax = ivsht.lmax, ivsht.mmax
-
-        with torch.no_grad():
-            c_s = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
-            c_t = random_sht_coeffs(batch_size, lmax, mmax, self.device, zero_l0=True)
-            v = ivsht(torch.stack([c_s, c_t], dim=-3))  # (batch, 2, nlat, nlon)
-
-        # Spatial L2 energy via spherical quadrature over both vector components
-        _, w_lat = precompute_latitudes(nlat, grid=grid)
-        w_lat = w_lat.to(device=self.device, dtype=torch.float64)
-        dlon = 2.0 * math.pi / nlon
-        spatial_energy = torch.einsum("bvnl,n->b", v**2, w_lat) * dlon  # (batch,)
-
-        # Build spectral weight matrix W[l,m]
-        w_m = torch.ones(mmax, dtype=torch.float64, device=self.device)
-        w_m[1:] = 2.0
-        l_vals = torch.arange(lmax, dtype=torch.float64, device=self.device)
-        ll1 = l_vals * (l_vals + 1.0)  # l*(l+1); zero at l=0, matching zero vector energy there
-
-        if norm == "ortho":
-            W = torch.outer(ll1, w_m)
-        elif norm == "four-pi":
-            W = torch.outer(ll1, w_m) / (4.0 * math.pi)
-        elif norm == "schmidt":
-            W = torch.outer(ll1 * (2.0 * l_vals + 1.0), w_m) / (4.0 * math.pi)
-
-        spectral_energy = torch.einsum("blm,lm->b", c_s.abs() ** 2 + c_t.abs() ** 2, W)  # (batch,)
-
-        self.assertTrue(compare_tensors("vector Parseval's theorem", spatial_energy, spectral_energy, atol=atol, rtol=rtol, verbose=verbose))
+    @parameterized.expand(_GRAM_CASES, skip_on_empty=True)
+    def test_vector_orthogonality(self, nlat, grid, norm, verbose=False):
+        """ivsht synthesizes mutually orthogonal spheroidal and toroidal fields, with norm l(l+1)
+        times that of the scalar harmonic."""
+        _check_gram(self, nlat, grid, norm, vector=True, verbose=verbose)
 
     @parameterized.expand(
         [

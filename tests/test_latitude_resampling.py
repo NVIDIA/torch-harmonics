@@ -38,7 +38,6 @@ import torch
 from parameterized import parameterized, parameterized_class
 from scipy.special import gammaln, lpmv
 from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
-from torch.autograd import gradcheck
 
 import torch_harmonics as th
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
@@ -61,21 +60,6 @@ def _transforms(grid, lmax, mmax, vector, **kwargs):
     analysis = th.RealVectorSHT if vector else th.RealSHT
     synthesis = th.InverseRealVectorSHT if vector else th.InverseRealSHT
     return analysis(grid, lmax=lmax, mmax=mmax, **kwargs), synthesis(grid, lmax=lmax, mmax=mmax, **kwargs)
-
-
-def _coefficients(lmax, mmax, vector, lmmax, dtype, device):
-    shape = (2, 2, lmax, mmax) if vector else (2, lmax, mmax)
-    c = torch.randn(shape, dtype=torch.complex128 if dtype == torch.float64 else torch.complex64, device=device)
-    l = torch.arange(lmax, device=device)[:, None]
-    m = torch.arange(mmax, device=device)[None, :]
-    mask = l >= m
-    if lmmax is not None:
-        mask = mask & (l - m < lmmax)
-    c *= mask
-    c[..., 0] = c[..., 0].real
-    if vector:
-        c[..., 0, :] = 0
-    return c
 
 
 def _scipy_mode_field(grid, l, m, coefficient, vector=False, component=0):
@@ -335,58 +319,6 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
 
     @parameterized.expand(
         [
-            (vector, dtype, grid_type, *case)
-            for vector in (False, True)
-            for dtype in (torch.float32, torch.float64)
-            for grid_type, cases in [
-                (
-                    "equiangular",
-                    [
-                        (73, 144, 71, 71, None, "ortho", True),
-                        (73, 144, 72, 72, None, "ortho", True),
-                        (73, 144, 72, 19, None, "schmidt", False),
-                        (73, 145, 72, 72, 36, "four-pi", False),
-                        (74, 145, 73, 37, 37, "ortho", True),
-                        (16, 29, 15, 15, 5, "schmidt", True),
-                    ],
-                ),
-                (
-                    "fejer1",
-                    [
-                        (8, 15, 8, 8, None, "ortho", True),
-                        (9, 18, 9, 9, None, "ortho", True),
-                        (17, 35, 17, 6, 5, "schmidt", False),
-                        (72, 144, 72, 72, None, "ortho", True),
-                    ],
-                ),
-            ]
-            for case in cases
-        ],
-        skip_on_empty=True,
-    )
-    def test_bandlimited_spectra(self, vector, dtype, grid_type, nlat, nlon, lmax, mmax, lmmax, norm, csphase, verbose=False):
-        set_seed(333)
-        grid = th.as_grid(grid_type, nlat=nlat, nlon=nlon)
-        analysis, synthesis = _transforms(grid, lmax, mmax, vector, lmmax=lmmax, norm=norm, csphase=csphase)
-        self.assertTrue(analysis._extended_folded)
-        analysis = analysis.to(device=self.device, dtype=dtype)
-        synthesis = synthesis.to(device=self.device, dtype=dtype)
-        expected = _coefficients(lmax, mmax, vector, lmmax, dtype, self.device)
-        actual = analysis(synthesis(expected))
-        # Vector synthesis scales degree l by its derivative. In Schmidt normalization,
-        # rounding that field and analyzing low degrees amplifies cancellation noise.
-        atol = (5e-5 if vector and norm == "schmidt" else 2e-5) if dtype == torch.float32 else 2e-12
-        rtol = 2e-6 if dtype == torch.float32 else 2e-13
-        self.assertTrue(compare_tensors("bandlimited spectrum", expected, actual, atol=atol, rtol=rtol, verbose=verbose))
-        self.assertLess((actual - expected).abs().max().item(), atol)
-        self.assertLess((actual - expected).norm().item() / expected.norm().item(), rtol)
-        self.assertTrue(compare_tensors("highest degree", expected[..., -1, :], actual[..., -1, :], atol=atol, rtol=rtol, verbose=verbose))
-        self.assertEqual(analysis.grid_out, th.SpectralGrid(lmax, mmax, lmmax))
-        self.assertIs(analysis.grid_in, grid)
-        self.assertEqual(analysis.state_dict(), {})
-
-    @parameterized.expand(
-        [
             (vector, l, m, component, norm, csphase)
             for vector in (False, True)
             for l, m in [(1, 0), (35, 0), (35, 7), (70, 69), (71, 1), (71, 35), (71, 71)]
@@ -621,20 +553,6 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         self.assertTrue(compare_tensors("empty spectrum", expected, result, atol=0, rtol=0, verbose=verbose))
         result.real.sum().backward()
         self.assertTrue(compare_tensors("empty gradient", torch.zeros_like(x), x.grad, atol=0, rtol=0, verbose=verbose))
-
-    @parameterized.expand(
-        [(geometry, vector, nlat, nlon, lmax) for geometry, nlat, nlon, lmax in [("equiangular", 5, 7, 4), ("fejer1", 5, 9, 5)] for vector in (False, True)],
-        skip_on_empty=True,
-    )
-    def test_gradcheck(self, geometry, vector, nlat, nlon, lmax):
-        set_seed(333)
-        grid = th.as_grid(geometry, nlat=nlat, nlon=nlon)
-        analysis, _ = _transforms(grid, lmax, lmax, vector)
-        analysis = analysis.to(self.device)
-        x = torch.randn((2,) + grid.shape if vector else grid.shape, device=self.device, dtype=torch.float64, requires_grad=True)
-        self.assertTrue(gradcheck(analysis, (x,), eps=1e-6, atol=1e-7, rtol=1e-5))
-        with self.assertRaises(RuntimeError):
-            analysis(x[..., :-1])
 
     @parameterized.expand(
         [
