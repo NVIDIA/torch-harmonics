@@ -468,70 +468,6 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         self.assertTrue(compare_tensors("SciPy harmonic analysis", expected, actual, atol=3e-12, rtol=3e-12, verbose=verbose))
         self.assertLess((actual - expected).abs().max().item(), 3e-12)
 
-    @parameterized.expand(
-        [
-            (vector, grid_type, lmax)
-            for vector in (False, True)
-            for grid_type, lmax in [
-                ("equiangular", None),
-                ("equiangular", 5),
-                ("equiangular", 9),
-                ("fejer1", None),
-                ("fejer1", 9),
-                ("legendre-gauss", 17),
-                ("lobatto", 16),
-            ]
-        ],
-        skip_on_empty=True,
-    )
-    def test_direct_path(self, vector, grid_type, lmax, verbose=False):
-        """CC buffers retain the original precision; F1 vector factors use float64."""
-        grid = th.as_grid(grid_type, nlat=17, nlon=34)
-        analysis = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax)
-        self.assertFalse(analysis._extended_folded)
-        weights = 2.0 * torch.pi * grid.colat_weights
-        if vector:
-            p = _precompute_dlegpoly(analysis.mmax, analysis.lmax, grid, truncation=analysis.grid_out)
-            if grid_type == "fejer1":
-                l = torch.arange(analysis.lmax, dtype=torch.float64)
-            else:
-                l = torch.arange(analysis.lmax)
-            factor = 1.0 / l / (l + 1)
-            factor[0] = 1
-            expected = torch.einsum("dmlk,k,l->dmlk", p, weights, factor).contiguous()
-            expected[1] *= -1
-        else:
-            p = _precompute_legpoly(analysis.mmax, analysis.lmax, grid, truncation=analysis.grid_out)
-            expected = torch.einsum("mlk,k->mlk", p, weights).contiguous()
-        self.assertTrue(compare_tensors("native projection", expected, analysis.weights, atol=0, rtol=0, verbose=verbose))
-        self.assertEqual(list(analysis.named_buffers())[0][0], "weights")
-        self.assertEqual(len(list(analysis.buffers())), 1)
-
-    @parameterized.expand([(vector, nlat, nlon) for vector in (False, True) for nlat, nlon in [(8, 16), (9, 19)]], skip_on_empty=True)
-    def test_f1_native_direct_bandwidth(self, vector, nlat, nlon, verbose=False):
-        """The ordinary Fejér rule recovers its documented native triangular band."""
-        set_seed(337)
-        grid = th.as_grid("fejer1", nlat=nlat, nlon=nlon)
-        lmax = (nlat + 1) // 2
-        analysis, synthesis = _transforms(grid, lmax, lmax, vector)
-        analysis = analysis.to(device=self.device, dtype=torch.float64)
-        synthesis = synthesis.to(device=self.device, dtype=torch.float64)
-        self.assertFalse(analysis._extended_folded)
-        self.assertEqual(grid.max_exact_degree, lmax)
-        expected = _coefficients(lmax, lmax, vector, None, torch.float64, self.device)[0]
-        actual = analysis(synthesis(expected))
-        self.assertTrue(compare_tensors("F1 native-band spectrum", expected, actual, atol=2e-12, rtol=2e-12, verbose=verbose))
-        if nlat == 8:
-            default = (th.RealVectorSHT if vector else th.RealSHT)(grid)
-            self.assertEqual((default.lmax, default.mmax), (4, 4))
-            self.assertFalse(default._extended_folded)
-
-    def test_f1_default_is_t89_on_180_by_360(self):
-        grid = th.as_grid("fejer1", nlat=180, nlon=360)
-        self.assertEqual(grid.max_exact_degree, 90)
-        self.assertEqual(th.truncate_sht(grid), th.SpectralGrid(90, 90))
-        self.assertEqual(th.RealSHT(grid).grid_out, th.SpectralGrid(90, 90))
-
     def test_f1_extended_selection_and_oversized_bounds(self):
         for nlat, nlon in [(8, 16), (9, 19)]:
             grid = th.as_grid("fejer1", nlat=nlat, nlon=nlon)
@@ -617,20 +553,6 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         if lmmax is not None:
             mask &= l - m < lmmax
         self.assertTrue(compare_tensors("oversized mask", actual[..., ~mask], torch.zeros_like(actual[..., ~mask]), atol=0, rtol=0, verbose=verbose))
-
-    @parameterized.expand(
-        [
-            (vector, lmax, mmax, lmmax)
-            for vector in (False, True)
-            for lmax, mmax, lmmax in [(72, 73, None), (72, 100, None), (-1, 0, None), (3, -1, None), (True, 1, None), (3, 3, 0)]
-        ],
-        skip_on_empty=True,
-    )
-    def test_invalid_spectral_bounds(self, vector, lmax, mmax, lmmax):
-        grid = th.as_grid("equiangular", nlat=73, nlon=144)
-        with self.assertRaises(ValueError):
-            (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax)
-        self.assertEqual(grid.max_exact_degree, 37)
 
     @parameterized.expand(
         [

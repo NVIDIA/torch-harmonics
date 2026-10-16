@@ -148,6 +148,7 @@ class TestLegendrePolynomials(unittest.TestCase):
             [48, 24, "legendre-gauss"],
             [48, 24, "lobatto"],
             [96, 48, "legendre-gauss"],
+            [48, 24, "fejer1"],
         ],
         skip_on_empty=True,
     )
@@ -441,6 +442,12 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [33, 64, 32, "schmidt", "equiangular", 1e-9, 1e-9],
             [33, 64, 32, "schmidt", "legendre-gauss", 1e-9, 1e-9],
             [33, 64, 32, "schmidt", "lobatto", 1e-9, 1e-9],
+            [32, 64, 32, "ortho", "fejer1", 1e-9, 1e-9],
+            [32, 64, 32, "four-pi", "fejer1", 1e-9, 1e-9],
+            [32, 64, 32, "schmidt", "fejer1", 1e-9, 1e-9],
+            [33, 64, 32, "ortho", "fejer1", 1e-9, 1e-9],
+            [33, 64, 32, "four-pi", "fejer1", 1e-9, 1e-9],
+            [33, 64, 32, "schmidt", "fejer1", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -453,6 +460,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             mmax = nlat // 2
         elif grid == "lobatto":
             mmax = nlat - 1
+        elif grid == "fejer1":
+            mmax = (nlat + 1) // 2
         else:
             mmax = nlat
         lmax = mmax
@@ -497,6 +506,12 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [15, 30, 2, "schmidt", "equiangular", 1e-5, 1e-5],
             [15, 30, 2, "schmidt", "legendre-gauss", 1e-5, 1e-5],
             [15, 30, 2, "schmidt", "lobatto", 1e-5, 1e-5],
+            [12, 24, 2, "ortho", "fejer1", 1e-5, 1e-5],
+            [12, 24, 2, "four-pi", "fejer1", 1e-5, 1e-5],
+            [12, 24, 2, "schmidt", "fejer1", 1e-5, 1e-5],
+            [15, 30, 2, "ortho", "fejer1", 1e-5, 1e-5],
+            [15, 30, 2, "four-pi", "fejer1", 1e-5, 1e-5],
+            [15, 30, 2, "schmidt", "fejer1", 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
@@ -508,6 +523,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             mmax = nlat // 2
         elif grid == "lobatto":
             mmax = nlat - 1
+        elif grid == "fejer1":
+            mmax = (nlat + 1) // 2
         else:
             mmax = nlat
         lmax = mmax
@@ -537,6 +554,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 16, "equiangular", 1e-9, 1e-9],
             [32, 64, 16, "legendre-gauss", 1e-9, 1e-9],
             [32, 64, 16, "lobatto", 1e-9, 1e-9],
+            [32, 64, 16, "fejer1", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -588,6 +606,9 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, "schmidt", "equiangular", 1e-9, 1e-9],
             [32, 64, "schmidt", "legendre-gauss", 1e-9, 1e-9],
             [32, 64, "schmidt", "lobatto", 1e-9, 1e-9],
+            [32, 64, "ortho", "fejer1", 1e-9, 1e-9],
+            [32, 64, "four-pi", "fejer1", 1e-9, 1e-9],
+            [32, 64, "schmidt", "fejer1", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -723,6 +744,9 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 16, "schmidt", "equiangular", 1e-9, 1e-9],
             [32, 64, 16, "schmidt", "legendre-gauss", 1e-9, 1e-9],
             [32, 64, 16, "schmidt", "lobatto", 1e-9, 1e-9],
+            [32, 64, 16, "ortho", "fejer1", 1e-9, 1e-9],
+            [32, 64, 16, "four-pi", "fejer1", 1e-9, 1e-9],
+            [32, 64, 16, "schmidt", "fejer1", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -779,6 +803,9 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 32, "schmidt", "equiangular", 1e-9, 1e-9],
             [32, 64, 32, "schmidt", "legendre-gauss", 1e-9, 1e-9],
             [32, 64, 32, "schmidt", "lobatto", 1e-9, 1e-9],
+            [32, 64, 32, "ortho", "fejer1", 1e-9, 1e-9],
+            [32, 64, 32, "four-pi", "fejer1", 1e-9, 1e-9],
+            [32, 64, 32, "schmidt", "fejer1", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -835,6 +862,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [12, 24, "ortho", "equiangular", 1e-5, 1e-5],
             [12, 24, "ortho", "legendre-gauss", 1e-5, 1e-5],
             [12, 24, "ortho", "lobatto", 1e-5, 1e-5],
+            [12, 24, "ortho", "fejer1", 1e-5, 1e-5],
         ],
         skip_on_empty=True,
     )
@@ -860,6 +888,7 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
             [12, 24, 2, "equiangular"],
             [12, 24, 2, "legendre-gauss"],
             [11, 22, 2, "equiangular"],
+            [12, 24, 2, "fejer1"],
         ],
         skip_on_empty=True,
     )
@@ -929,6 +958,7 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
             [12, 24, "legendre-gauss", 1e-9, 1e-9],
             [12, 24, "equiangular", 1e-9, 1e-9],
             [12, 24, "lobatto", 1e-9, 1e-9],
+            [12, 24, "fejer1", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -942,6 +972,8 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
             lmax = mmax = nlat // 2
         elif grid == "lobatto":
             lmax = mmax = nlat - 1
+        elif grid == "fejer1":
+            lmax = mmax = (nlat + 1) // 2
         else:
             lmax = mmax = nlat
 
@@ -1015,6 +1047,9 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 16, "schmidt", "legendre-gauss", 1e-7, 1e-7],
             [32, 64, 16, "schmidt", "equiangular", 1e-7, 1e-7],
             [32, 64, 16, "schmidt", "lobatto", 1e-7, 1e-7],
+            [32, 64, 16, "ortho", "fejer1", 1e-7, 1e-7],
+            [32, 64, 16, "four-pi", "fejer1", 1e-7, 1e-7],
+            [32, 64, 16, "schmidt", "fejer1", 1e-7, 1e-7],
         ],
         skip_on_empty=True,
     )
@@ -1057,6 +1092,9 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 16, "schmidt", "legendre-gauss", 1e-7, 1e-7],
             [32, 64, 16, "schmidt", "equiangular", 1e-7, 1e-7],
             [32, 64, 16, "schmidt", "lobatto", 1e-7, 1e-7],
+            [32, 64, 16, "ortho", "fejer1", 1e-7, 1e-7],
+            [32, 64, 16, "four-pi", "fejer1", 1e-7, 1e-7],
+            [32, 64, 16, "schmidt", "fejer1", 1e-7, 1e-7],
         ],
         skip_on_empty=True,
     )
@@ -1102,6 +1140,9 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 16, "schmidt", "legendre-gauss", 5e-4, 5e-4],
             [32, 64, 16, "schmidt", "equiangular", 5e-4, 5e-4],
             [32, 64, 16, "schmidt", "lobatto", 5e-4, 5e-4],
+            [32, 64, 16, "ortho", "fejer1", 5e-4, 1e-4],
+            [32, 64, 16, "four-pi", "fejer1", 5e-4, 1e-4],
+            [32, 64, 16, "schmidt", "fejer1", 5e-4, 5e-4],
         ],
         skip_on_empty=True,
     )
@@ -1164,6 +1205,9 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 16, "schmidt", "legendre-gauss", 1e-9, 1e-9],
             [32, 64, 16, "schmidt", "equiangular", 1e-9, 1e-9],
             [32, 64, 16, "schmidt", "lobatto", 1e-9, 1e-9],
+            [32, 64, 16, "ortho", "fejer1", 1e-9, 1e-9],
+            [32, 64, 16, "four-pi", "fejer1", 1e-9, 1e-9],
+            [32, 64, 16, "schmidt", "fejer1", 1e-9, 1e-9],
         ],
         skip_on_empty=True,
     )
@@ -1226,6 +1270,7 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
             [12, 24, 2, "equiangular"],
             [12, 24, 2, "legendre-gauss"],
             [11, 22, 2, "equiangular"],
+            [12, 24, 2, "fejer1"],
         ],
         skip_on_empty=True,
     )
@@ -1283,7 +1328,7 @@ class TestUnsuitableGridWarning(unittest.TestCase):
             getattr(th, cls_name)(th.as_grid("trapezoidal", nlat=32, nlon=64))
         self.assertIn("must not be used", str(ctx.warning))
 
-    @parameterized.expand([[cls_name, grid] for cls_name in ["RealSHT", "InverseRealSHT"] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
+    @parameterized.expand([[cls_name, grid] for cls_name in ["RealSHT", "InverseRealSHT"] for grid in ["equiangular", "fejer1", "legendre-gauss", "lobatto"]])
     def test_supported_grids_do_not_warn(self, cls_name, grid):
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)

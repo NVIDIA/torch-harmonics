@@ -162,21 +162,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             ..., distributed.mmax_offset : distributed.mmax_offset + distributed.mmax_local, :, distributed.lat_offset : distributed.lat_offset + distributed.nlat_local
         ]
         torch.testing.assert_close(distributed.weights, block, atol=1e-13 if dtype == torch.float64 else 0, rtol=1e-13 if dtype == torch.float64 else 0)
-        self._check_distributed_sht(
-            17,
-            33,
-            lmax,
-            1,
-            1,
-            geometry,
-            vector,
-            1e-12 if dtype == torch.float64 else 1e-5,
-            1e-12 if dtype == torch.float64 else 1e-6,
-            mmax=mmax,
-            lmmax=lmmax,
-            dtype=dtype,
-            verbose=False,
-        )
         # Independent analytic top-degree zonal scalar harmonic and its vector derivative.
         # SciPy's recurrence supplies the spatial field; no shared synthesis is used.
         import numpy as np
@@ -330,6 +315,42 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
             [96, 192, 85, 1, 2, "legendre-gauss", False, 1e-10, 1e-10, 43, 43, torch.float64],
             [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-10, 1e-10, 43, 43, torch.float64],
+            # Fejer-1 at its default truncation
+            [32, 64, None, 32, 8, "fejer1", False, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "fejer1", True, 1e-5, 1e-6],
+            # extended (folded) analysis beyond the native band, 17x33 for uneven shards
+            [17, 33, 16, 1, 1, "equiangular", False, 1e-5, 1e-6, 16, None, torch.float32],
+            [17, 33, 15, 1, 1, "equiangular", False, 1e-5, 1e-6, 7, None, torch.float32],
+            [17, 33, 15, 1, 1, "equiangular", False, 1e-5, 1e-6, 9, None, torch.float32],
+            [17, 33, 15, 1, 1, "equiangular", False, 1e-5, 1e-6, 7, 8, torch.float32],
+            [17, 33, 15, 1, 1, "equiangular", False, 1e-5, 1e-6, 15, 5, torch.float32],
+            [17, 33, 17, 1, 1, "fejer1", False, 1e-5, 1e-6, 17, None, torch.float32],
+            [17, 33, 17, 1, 1, "fejer1", False, 1e-5, 1e-6, 17, 5, torch.float32],
+            [17, 33, 16, 1, 1, "fejer1", False, 1e-5, 1e-6, 9, None, torch.float32],
+            [17, 33, 16, 1, 1, "equiangular", True, 1e-5, 1e-6, 16, None, torch.float32],
+            [17, 33, 15, 1, 1, "equiangular", True, 1e-5, 1e-6, 7, None, torch.float32],
+            [17, 33, 15, 1, 1, "equiangular", True, 1e-5, 1e-6, 9, None, torch.float32],
+            [17, 33, 15, 1, 1, "equiangular", True, 1e-5, 1e-6, 7, 8, torch.float32],
+            [17, 33, 15, 1, 1, "equiangular", True, 1e-5, 1e-6, 15, 5, torch.float32],
+            [17, 33, 17, 1, 1, "fejer1", True, 1e-5, 1e-6, 17, None, torch.float32],
+            [17, 33, 17, 1, 1, "fejer1", True, 1e-5, 1e-6, 17, 5, torch.float32],
+            [17, 33, 16, 1, 1, "fejer1", True, 1e-5, 1e-6, 9, None, torch.float32],
+            [17, 33, 16, 1, 1, "equiangular", False, 1e-12, 1e-12, 16, None, torch.float64],
+            [17, 33, 15, 1, 1, "equiangular", False, 1e-12, 1e-12, 7, None, torch.float64],
+            [17, 33, 15, 1, 1, "equiangular", False, 1e-12, 1e-12, 9, None, torch.float64],
+            [17, 33, 15, 1, 1, "equiangular", False, 1e-12, 1e-12, 7, 8, torch.float64],
+            [17, 33, 15, 1, 1, "equiangular", False, 1e-12, 1e-12, 15, 5, torch.float64],
+            [17, 33, 17, 1, 1, "fejer1", False, 1e-12, 1e-12, 17, None, torch.float64],
+            [17, 33, 17, 1, 1, "fejer1", False, 1e-12, 1e-12, 17, 5, torch.float64],
+            [17, 33, 16, 1, 1, "fejer1", False, 1e-12, 1e-12, 9, None, torch.float64],
+            [17, 33, 16, 1, 1, "equiangular", True, 1e-12, 1e-12, 16, None, torch.float64],
+            [17, 33, 15, 1, 1, "equiangular", True, 1e-12, 1e-12, 7, None, torch.float64],
+            [17, 33, 15, 1, 1, "equiangular", True, 1e-12, 1e-12, 9, None, torch.float64],
+            [17, 33, 15, 1, 1, "equiangular", True, 1e-12, 1e-12, 7, 8, torch.float64],
+            [17, 33, 15, 1, 1, "equiangular", True, 1e-12, 1e-12, 15, 5, torch.float64],
+            [17, 33, 17, 1, 1, "fejer1", True, 1e-12, 1e-12, 17, None, torch.float64],
+            [17, 33, 17, 1, 1, "fejer1", True, 1e-12, 1e-12, 17, 5, torch.float64],
+            [17, 33, 16, 1, 1, "fejer1", True, 1e-12, 1e-12, 9, None, torch.float64],
         ],
         skip_on_empty=True,
     )
@@ -489,6 +510,8 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-5, 1e-6, 43, 43],
             [96, 192, 85, 1, 2, "legendre-gauss", False, 1e-10, 1e-10, 43, 43, torch.float64],
             [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-10, 1e-10, 43, 43, torch.float64],
+            [32, 64, None, 32, 8, "fejer1", False, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "fejer1", True, 1e-5, 1e-6],
         ],
         skip_on_empty=True,
     )
@@ -578,6 +601,8 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 8, "equiangular", True],
             [32, 64, 24, "legendre-gauss", False, 9, 6],
             [32, 64, 24, "legendre-gauss", True, 9, 6],
+            [33, 64, None, "fejer1", False],
+            [32, 64, None, "fejer1", True],
         ],
         skip_on_empty=True,
     )

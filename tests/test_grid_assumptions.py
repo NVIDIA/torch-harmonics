@@ -331,6 +331,13 @@ class TestGridNodeDistribution(unittest.TestCase):
         self.assertTrue(compare_tensors(f"equiangular dtheta (nlat={nlat})", dlat, dlat.mean().expand_as(dlat), atol=1e-12, rtol=0.0, verbose=verbose))
 
     @parameterized.expand([[nlat] for nlat in _NLATS])
+    def test_fejer1_nodes_are_midpoints(self, nlat, verbose=False):
+        """Fejer-1 nodes sit at the midpoints of nlat equal intervals in theta, so neither pole is a node."""
+        lats, _ = precompute_latitudes(nlat, grid="fejer1")
+        expected = math.pi * (torch.arange(nlat, dtype=torch.float64) + 0.5) / nlat
+        self.assertTrue(compare_tensors(f"fejer1 nodes (nlat={nlat})", lats, expected, atol=1e-14, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand([[nlat] for nlat in _NLATS])
     def test_equiangular_trapezoidal_nodes_are_equispaced_in_cos_theta(self, nlat, verbose=False):
         """
         Despite its name, ``trapezoidal`` is *not* equiangular in theta:

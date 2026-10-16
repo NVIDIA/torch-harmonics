@@ -203,6 +203,7 @@ class TestTruncateSht(unittest.TestCase):
             ["lobatto", (128, 256), SpectralGrid(127, 127)],
             ["equiangular", (128, 256), SpectralGrid(64, 64)],
             ["fejer1", (128, 256), SpectralGrid(64, 64)],
+            ["fejer1", (180, 360), SpectralGrid(90, 90)],
             ["trapezoidal", (128, 256), SpectralGrid(64, 64)],
         ]
     )
@@ -288,7 +289,7 @@ class TestShtLayerTruncationAgrees(unittest.TestCase):
         warnings.filterwarnings("ignore", message="Default SHT truncation changed", category=UserWarning)
         self.addCleanup(warnings.resetwarnings)
 
-    @parameterized.expand([[nlat, grid] for nlat in [32, 33] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
+    @parameterized.expand([[nlat, grid] for nlat in [32, 33] for grid in ["equiangular", "fejer1", "legendre-gauss", "lobatto"]])
     def test_layers_match_truncate_sht(self, nlat, grid, verbose=False):
         nlon = 2 * nlat
         expected = truncate_sht(as_grid(grid, nlat=nlat, nlon=nlon))
@@ -297,7 +298,7 @@ class TestShtLayerTruncationAgrees(unittest.TestCase):
                 layer = cls(as_grid(grid, nlat=nlat, nlon=nlon))
                 self.assertEqual((layer.lmax, layer.mmax, layer.lmmax), (expected.lmax, expected.mmax, expected.lmmax))
 
-    @parameterized.expand([[grid] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
+    @parameterized.expand([[grid] for grid in ["equiangular", "fejer1", "legendre-gauss", "lobatto"]])
     def test_layers_honour_an_explicit_truncation(self, grid):
         layer = th.RealSHT(th.as_grid(grid, nlat=64, nlon=128), lmax=17)
         self.assertEqual((layer.lmax, layer.mmax), (17, 17))
