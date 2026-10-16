@@ -163,14 +163,20 @@ class TestExtendedCCAnalysis(unittest.TestCase):
         disable_tf32()
 
     @parameterized.expand(
-        [(vector, nlat, lmmax) for vector in (False, True) for nlat in (8, 9, 34) for lmmax in (None, 3)],
+        [
+            (vector, nlat, 2 * nlat - 1, nlat - 1, lmmax)
+            for vector in (False, True)
+            for nlat in (8, 9, 34)
+            for lmmax in (None, 3)
+        ]
+        + [(vector, 257, 33, 16, None) for vector in (False, True)],
         skip_on_empty=True,
     )
-    def test_effective_projection(self, vector, nlat, lmmax):
+    def test_effective_projection(self, vector, nlat, nlon, mmax, lmmax):
         """Compare every row, complex contractions and gradients with runtime folding."""
         set_seed(417)
-        grid = th.EquiangularGrid(nlat=nlat, nlon=2 * nlat - 1)
-        analysis, _ = _transforms(grid, nlat - 1, nlat - 1, vector, lmmax=lmmax)
+        grid = th.EquiangularGrid(nlat=nlat, nlon=nlon)
+        analysis, _ = _transforms(grid, nlat - 1, mmax, vector, lmmax=lmmax)
         b = {name: value.to(self.device) for name, value in _precompute_cc_resampling(nlat, analysis.mmax, vector).items()}
         phase = torch.complex(*b["_cc_phase"])
         if vector:
