@@ -40,6 +40,7 @@ import torch.nn as nn
 import torch_harmonics as th
 from torch_harmonics.fft import rfft
 from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.utils import recast_buffers_for
 
 
 class ShallowWaterSolver(nn.Module):
@@ -74,8 +75,17 @@ class ShallowWaterSolver(nn.Module):
 
     Notes
     -----
-    The solver is built in float64. Cast it with ``.float()`` before moving it to a device
-    without float64, such as MPS, as ``ShallowWaterDataset`` does.
+    The solver keeps its buffers in float64 and casts them at use, so a time step runs in
+    the precision of the state it is given, and the initial conditions are generated in the
+    dtype they are asked for. Moved to a device without float64, such as MPS, the buffers
+    are downcast to float32.
+
+    Casting the solver itself, e.g. with ``.float()``, still works and saves the casts at
+    use: with the buffers and the state in the same precision they are no-ops, and a time
+    step gives the same result. The initial conditions are then generated in the solver's
+    precision, though, so a float32 initial condition is no longer the float64 draw
+    rounded, and a float64 one asked of a float32 solver is only float32-accurate. Keep an
+    uncast solver for a float64 reference.
     """
 
     @_rejects_legacy_signature(
@@ -142,6 +152,21 @@ class ShallowWaterSolver(nn.Module):
         # its layout changed with the descriptor (per-point, summing to 4*pi)
         self.register_buffer("quad_weights", quad_weights, persistent=False)
 
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
+
+    @staticmethod
+    def _cast(buf, like):
+        """A float64 buffer cast to the precision of ``like``, real or complex, which the computation runs in."""
+        return buf.to(torch.promote_types(like.real.dtype, torch.float32))
+
+    @staticmethod
+    def _complex_dtype(dtype):
+        """The complex dtype of spectral coefficients whose fields are ``dtype``."""
+        return torch.complex128 if dtype == torch.float64 else torch.complex64
+
     def grid2spec(self, ugrid):
         """Convert spatial data to spectral coefficients."""
         return self.sht(ugrid)
@@ -152,7 +177,7 @@ class ShallowWaterSolver(nn.Module):
 
     def vrtdivspec(self, ugrid):
         """Compute vorticity and divergence from velocity field."""
-        vrtdivspec = self.lap * self.radius * self.vsht(ugrid)
+        vrtdivspec = self._cast(self.lap, ugrid) * self.radius * self.vsht(ugrid)
         return vrtdivspec
 
     def divspec(self, ugrid):
@@ -165,11 +190,11 @@ class ShallowWaterSolver(nn.Module):
         # same contractions as the toroidal component in RealVectorSHT.forward
         t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
         t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
-        return self.lap * self.radius * torch.complex(t_re, t_im)
+        return self._cast(self.lap, ugrid) * self.radius * torch.complex(t_re, t_im)
 
     def getuv(self, vrtdivspec):
         """Compute wind vector from spectral coefficients of vorticity and divergence."""
-        return self.ivsht(self.invlap * vrtdivspec / self.radius)
+        return self.ivsht(self._cast(self.invlap, vrtdivspec) * vrtdivspec / self.radius)
 
     def gethuv(self, uspec):
         """Compute height and wind vector from spectral coefficients."""
@@ -180,7 +205,7 @@ class ShallowWaterSolver(nn.Module):
     def potential_vorticity(self, uspec):
         """Compute potential vorticity from spectral coefficients."""
         ugrid = self.spec2grid(uspec)
-        pvrt = (0.5 * self.havg * self.gravity / self.omega) * (ugrid[1] + self.coriolis) / ugrid[0]
+        pvrt = (0.5 * self.havg * self.gravity / self.omega) * (ugrid[1] + self._cast(self.coriolis, ugrid)) / ugrid[0]
         return pvrt
 
     def dimensionless(self, uspec):
@@ -199,7 +224,7 @@ class ShallowWaterSolver(nn.Module):
         ugrid = self.spec2grid(uspec[:2])
         uvgrid = self.getuv(uspec[1:])
 
-        tmp = uvgrid * (ugrid[1] + self.coriolis)
+        tmp = uvgrid * (ugrid[1] + self._cast(self.coriolis, ugrid))
         tmpspec = self.vrtdivspec(tmp)
         dudtspec[2] = tmpspec[0]
         dudtspec[1] = -1 * tmpspec[1]
@@ -208,19 +233,26 @@ class ShallowWaterSolver(nn.Module):
         dudtspec[0] = -1 * self.divspec(uvgrid * ugrid[0])
 
         tmpspec = self.grid2spec(ugrid[0] + 0.5 * (uvgrid[0] ** 2 + uvgrid[1] ** 2))
-        dudtspec[2] = dudtspec[2] - self.lap * tmpspec
+        dudtspec[2] = dudtspec[2] - self._cast(self.lap, tmpspec) * tmpspec
 
         return dudtspec
 
-    def galewsky_initial_condition(self):
-        """Initialize non-linear barotropically unstable shallow water test case."""
+    def galewsky_initial_condition(self, dtype=None):
+        """
+        Initialize non-linear barotropically unstable shallow water test case.
+
+        Computed in the precision of the solver's buffers and returned as the spectral
+        coefficients of fields in `dtype`, by default the default dtype.
+        """
+        dtype = torch.get_default_dtype() if dtype is None else dtype
         device = self.lap.device
+        work_dtype = self.lats.dtype
 
         umax = 80.0
-        phi0 = torch.asarray(torch.pi / 7.0, device=device)
-        phi1 = torch.asarray(0.5 * torch.pi - phi0, device=device)
+        phi0 = torch.asarray(torch.pi / 7.0, dtype=work_dtype, device=device)
+        phi1 = torch.asarray(0.5 * torch.pi - phi0, dtype=work_dtype, device=device)
         phi2 = 0.25 * torch.pi
-        en = torch.exp(torch.asarray(-4.0 / (phi1 - phi0) ** 2, device=device))
+        en = torch.exp(torch.asarray(-4.0 / (phi1 - phi0) ** 2, dtype=work_dtype, device=device))
         alpha = 1.0 / 3.0
         beta = 1.0 / 15.0
 
@@ -230,8 +262,8 @@ class ShallowWaterSolver(nn.Module):
         # use safe values outside the band to prevent exp from overflowing
         product = torch.where(mask, (lats - phi0) * (lats - phi1), -torch.ones_like(lats))
         u1 = (umax / en) * torch.exp(1.0 / product)
-        ugrid = torch.where(mask, u1, torch.zeros(self.nlat, self.nlon, device=device))
-        vgrid = torch.zeros((self.nlat, self.nlon), device=device)
+        ugrid = torch.where(mask, u1, torch.zeros(self.nlat, self.nlon, dtype=work_dtype, device=device))
+        vgrid = torch.zeros((self.nlat, self.nlon), dtype=work_dtype, device=device)
         hbump = self.hamp * torch.cos(lats) * torch.exp(-(((lons - torch.pi) / alpha) ** 2)) * torch.exp(-((phi2 - lats) ** 2) / beta)
 
         # intial velocity field
@@ -251,12 +283,19 @@ class ShallowWaterSolver(nn.Module):
         uspec[0] = phispec
         uspec[1:] = vrtdivspec
 
-        return torch.tril(uspec)
+        return torch.tril(uspec).to(self._complex_dtype(dtype))
 
-    def random_initial_condition(self, mach=0.1) -> torch.Tensor:
-        """Generate random initial condition on the sphere."""
+    def random_initial_condition(self, mach=0.1, dtype=None) -> torch.Tensor:
+        """
+        Generate random initial condition on the sphere.
+
+        Drawn in the precision of the solver's buffers and returned as the spectral
+        coefficients of fields in `dtype`, by default the default dtype, so the same draw
+        gives the same initial condition in any precision, rounded.
+        """
+        dtype = torch.get_default_dtype() if dtype is None else dtype
         device = self.lap.device
-        ctype = torch.complex128 if self.lap.dtype == torch.float64 else torch.complex64
+        ctype = self._complex_dtype(self.lap.dtype)
 
         # mach number relative to wave speed
         llimit = mlimit = 120
@@ -295,7 +334,7 @@ class ShallowWaterSolver(nn.Module):
         # uspec[0] = phispec
         # uspec[1:] = vrtdivspec
 
-        return torch.tril(uspec)
+        return torch.tril(uspec).to(self._complex_dtype(dtype))
 
     def forward(self, uspec: torch.Tensor, dnow: Optional[torch.Tensor] = None, dold: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -332,7 +371,7 @@ class ShallowWaterSolver(nn.Module):
 
         # implicit hyperdiffusion for vort and div. Out of place, as inductor cannot generate the
         # complex slice assignment uspec[1:] = ... in triton.
-        uspec = torch.cat((uspec[:1], self.hyperdiff * uspec[1:]))
+        uspec = torch.cat((uspec[:1], self._cast(self.hyperdiff, uspec) * uspec[1:]))
 
         return uspec, dnew
 
@@ -350,10 +389,11 @@ class ShallowWaterSolver(nn.Module):
         # no dlon here: self.quad_weights is the per-point solid angle and already
         # carries the longitudinal factor, per ring
         radius = 1 if dimensionless else self.radius
+        quad_weights = self._cast(self.quad_weights, ugrid)
         if polar_opt > 0:
-            out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * self.quad_weights[polar_opt:-polar_opt] * radius**2, dim=(-2, -1))
+            out = torch.sum(ugrid[..., polar_opt:-polar_opt, :] * quad_weights[polar_opt:-polar_opt] * radius**2, dim=(-2, -1))
         else:
-            out = torch.sum(ugrid * self.quad_weights * radius**2, dim=(-2, -1))
+            out = torch.sum(ugrid * quad_weights * radius**2, dim=(-2, -1))
         return out
 
     def plot_griddata(self, data, fig, cmap="twilight_shifted", vmax=None, vmin=None, projection="3d", title=None, antialiased=False):
