@@ -91,6 +91,13 @@ equiangular and Fejér-1 grids when explicit `lmax` exceeds
 complementary Clenshaw-Curtis nodes from a fine grid with `2*nlat + 1` rings for
 F1, then folds the quadrature and interpolation into real Legendre projection
 weights, following the doubled-meridian method of {cite}`Reinecke2023`.
+DUCC {cite}`DUCC` implements that method as a resampling at run time: its
+`analysis_2d` for the `"CC"` and `"F1"` geometries extends each order across
+the poles, resamples it onto a Clenshaw-Curtis grid and analyzes there. Here
+the same resampling is folded into the projection weights once, at
+construction, so every forward call is the usual Legendre contraction on the
+native rings. The recovery limits below are DUCC's `maximum_safe_l` for
+these geometries.
 The exclusive latitude recovery limits are `lmax <= nlat - 1` for equiangular
 and `lmax <= nlat` for Fejér-1. Both require `mmax <= (nlon + 1) // 2`.
 The order limit excludes the even-longitude Nyquist mode, which cannot recover

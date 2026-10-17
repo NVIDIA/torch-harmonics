@@ -179,6 +179,11 @@ def _precompute_folded_projection(
     ``W = U.T @ P = U @ P`` without conjugating complex longitude modes.
     Both vector derivative rows have parity ``(-1)**(m+1)``.
 
+    This is the latitude resampling of DUCC's ``analysis_2d`` for its CC and
+    F1 geometries (``resample_to_prepared_CC``, after Reinecke, Belkner and
+    Carron 2023, Appendix A), applied to the Legendre basis once rather than
+    to the data in every call.
+
     Only local orders are generated, on the full meridian; only the requested
     latitude shard is retained. Recurrence and FFT temporaries are bounded by
     order/degree chunks, without caching unfolded tables or dense operators.
@@ -269,7 +274,9 @@ class RealSHT(nn.Module):
 
     On equiangular and Fejér-1 grids, explicit ``lmax > grid.max_exact_degree``
     selects precomputed folded Clenshaw--Curtis analysis following
-    :cite:`Reinecke2023`, Appendix A, when the resolved bounds fit the
+    :cite:`Reinecke2023`, Appendix A, and the latitude resampling of DUCC
+    :cite:`DUCC`, folded into the weights at construction instead of applied
+    in every call, when the resolved bounds fit the
     geometry-specific latitude limits (``lmax <= nlat - 1`` for equiangular,
     ``lmax <= nlat`` for Fejér-1) and ``mmax <= (nlon + 1) // 2``. These are
     the accurate band-limited recovery limits; the latter excludes the complex
@@ -332,7 +339,7 @@ class RealSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang2018`, :cite:`Reinecke2023`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`, :cite:`Reinecke2023`, :cite:`DUCC`
     """
 
     @_rejects_legacy_signature(
@@ -647,7 +654,9 @@ class RealVectorSHT(nn.Module):
 
     On equiangular and Fejér-1 grids, explicit ``lmax > grid.max_exact_degree``
     selects precomputed folded Clenshaw--Curtis analysis following
-    :cite:`Reinecke2023`, Appendix A, when the resolved bounds fit the
+    :cite:`Reinecke2023`, Appendix A, and the latitude resampling of DUCC
+    :cite:`DUCC`, folded into the weights at construction instead of applied
+    in every call, when the resolved bounds fit the
     geometry-specific latitude limits (``lmax <= nlat - 1`` for equiangular,
     ``lmax <= nlat`` for Fejér-1) and ``mmax <= (nlon + 1) // 2``. These are
     the accurate band-limited recovery limits; the latter excludes the complex
@@ -710,7 +719,7 @@ class RealVectorSHT(nn.Module):
 
     References
     ----------
-    :cite:`Schaeffer2013`, :cite:`Wang2018`, :cite:`Reinecke2023`
+    :cite:`Schaeffer2013`, :cite:`Wang2018`, :cite:`Reinecke2023`, :cite:`DUCC`
     """
 
     @_rejects_legacy_signature(
