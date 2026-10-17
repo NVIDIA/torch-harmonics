@@ -678,6 +678,20 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
     def setUpClass(cls):
         disable_tf32()
 
+    def test_f1_extended_selection_and_oversized_bounds(self):
+        for nlat, nlon in [(8, 16), (9, 19)]:
+            grid = th.as_grid("fejer1", nlat=nlat, nlon=nlon)
+            supported = th.RealSHT(grid, lmax=nlat, mmax=nlat)
+            self.assertTrue(supported._extended_folded)
+            self.assertEqual(supported.grid_out, th.SpectralGrid(nlat, nlat))
+            oversized = th.RealSHT(grid, lmax=nlat + 1, mmax=nlat + 1)
+            self.assertFalse(oversized._extended_folded)
+            self.assertEqual(oversized.grid_out, th.SpectralGrid(nlat + 1, nlat + 1))
+        # With even nlon=2*nlat-2, lmax=nlat is latitude-supported but mmax
+        # would include the unrecoverable complex longitude Nyquist order.
+        nyquist_limited = th.RealSHT(th.as_grid("fejer1", nlat=8, nlon=14), lmax=8, mmax=8)
+        self.assertFalse(nyquist_limited._extended_folded)
+
     @parameterized.expand(
         [
             (vector, dtype, *case)
