@@ -48,10 +48,9 @@ from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.sht import (
     _fold_resampled_latitude,
     _fourier_shift_latitude,
+    _latitude_folding,
     _periodic_latitude_extension,
     _periodic_latitude_extension_adjoint,
-    _precompute_cc_resampling,
-    _precompute_f1_resampling,
     _precompute_folded_projection,
 )
 
@@ -59,30 +58,16 @@ _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
 
-# How each grid folds: its buffers, whether the native samples include the poles, and where
-# the complementary nodes sit, in native sample spacings from each native node.
-_RULES = {
-    "equiangular": dict(
-        precompute=_precompute_cc_resampling,
-        keys=("_cc_parity", "_cc_weights", "_cc_midpoint_weights", "_cc_phase"),
-        include_poles=True,
-        offset=0.5,
-    ),
-    "fejer1": dict(
-        precompute=_precompute_f1_resampling,
-        keys=("_f1_parity", "_f1_native_weights", "_f1_complementary_weights", "_f1_phase"),
-        include_poles=False,
-        offset=-0.5,
-    ),
-}
+# Where the complementary nodes sit, in native sample spacings from each native node: the
+# midpoints after each equiangular ring, the Clenshaw-Curtis nodes before each Fejer-1 ring.
+# The references below build the interpolation from this, not from the library's phases.
+_COMPLEMENT_OFFSET = {"equiangular": 0.5, "fejer1": -0.5}
 
 
 def _folding(grid, nlat, mmax, vector, device):
-    """(parity, native weights, complementary weights, phase, include_poles) of a grid."""
-    rule = _RULES[grid]
-    buffers = rule["precompute"](nlat, mmax, vector)
-    parity, native, complement, phase = (buffers[key].to(device) for key in rule["keys"])
-    return parity, native, complement, torch.complex(*phase), rule["include_poles"]
+    """(parity, native weights, complementary weights, phase, include_poles) of a grid, on device."""
+    parity, native, complement, phase, include_poles = _latitude_folding(th.as_grid(grid, nlat=nlat, nlon=2 * nlat), mmax, vector)
+    return parity.to(device), native.to(device), complement.to(device), phase.to(device), include_poles
 
 
 def _period(nlat, include_poles):
@@ -128,7 +113,7 @@ class TestLatitudeFolding(unittest.TestCase):
         frequencies = torch.cat((torch.arange(length // 2), torch.arange(-length // 2, 0))).to(self.device)
         theta = 2 * torch.pi * torch.arange(length, dtype=torch.float64, device=self.device) / length
         modes = torch.exp(1j * frequencies[:, None] * theta)
-        expected = torch.exp(1j * frequencies[:, None] * (theta + 2 * torch.pi * _RULES[grid]["offset"] / length))
+        expected = torch.exp(1j * frequencies[:, None] * (theta + 2 * torch.pi * _COMPLEMENT_OFFSET[grid] / length))
         expected[length // 2] = 0
         self.assertTrue(compare_tensors("half-sample shift", _fourier_shift_latitude(modes, phase), expected, atol=1e-13, rtol=1e-13, verbose=verbose))
 
@@ -152,7 +137,7 @@ class TestLatitudeFolding(unittest.TestCase):
         length = _period(nlat, include_poles)
         ncomplement = nlat - 1 if include_poles else nlat + 1
         freq = np.arange(1, length // 2)
-        delta = np.arange(ncomplement)[:, None] + _RULES[grid]["offset"] - np.arange(length)[None, :]
+        delta = np.arange(ncomplement)[:, None] + _COMPLEMENT_OFFSET[grid] - np.arange(length)[None, :]
         cardinal = (1 + 2 * np.cos(2 * np.pi * delta[..., None] * freq / length).sum(axis=-1)) / length
         shift = torch.tensor(cardinal, device=self.device, dtype=torch.complex128)
         eye = torch.eye(nlat, dtype=torch.complex128, device=self.device).expand(4, -1, -1)

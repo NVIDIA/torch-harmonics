@@ -74,10 +74,10 @@ def _precompute_cc_resampling(nlat: int, mmax: int, vector: bool = False) -> dic
     if vector:
         signs = -signs
     return {
-        "_cc_weights": dense_weights[::2].contiguous(),
-        "_cc_midpoint_weights": torch.cat((midpoint_weights, torch.zeros_like(midpoint_weights))),
-        "_cc_phase": phase,
-        "_cc_parity": signs,
+        "native_weights": dense_weights[::2].contiguous(),
+        "complementary_weights": torch.cat((midpoint_weights, torch.zeros_like(midpoint_weights))),
+        "phase": phase,
+        "parity": signs,
     }
 
 
@@ -98,11 +98,27 @@ def _precompute_f1_resampling(nlat: int, mmax: int, vector: bool = False) -> dic
     if vector:
         signs = -signs
     return {
-        "_f1_native_weights": dense_weights[1::2].contiguous(),
-        "_f1_complementary_weights": complementary_weights,
-        "_f1_phase": phase,
-        "_f1_parity": signs,
+        "native_weights": dense_weights[1::2].contiguous(),
+        "complementary_weights": complementary_weights,
+        "phase": phase,
+        "parity": signs,
     }
+
+
+def _latitude_folding(grid: RegularGridS2, mmax: int, vector: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, bool]:
+    """The folding buffers of a grid as ``(parity, native_weights, complementary_weights, phase, include_poles)``.
+
+    Equiangular grids fold onto the midpoints between their rings and sample the poles;
+    Fejer-1 grids fold onto the Clenshaw--Curtis nodes around their rings and do not. The
+    phase is returned complex.
+    """
+    if isinstance(grid, EquiangularGrid):
+        buffers, include_poles = _precompute_cc_resampling(grid.nlat, mmax, vector), True
+    elif isinstance(grid, Fejer1Grid):
+        buffers, include_poles = _precompute_f1_resampling(grid.nlat, mmax, vector), False
+    else:
+        raise ValueError(f"folded projection is not implemented for {type(grid).__name__}")
+    return buffers["parity"], buffers["native_weights"], buffers["complementary_weights"], torch.complex(*buffers["phase"]), include_poles
 
 
 def _periodic_latitude_extension(x: torch.Tensor, signs: torch.Tensor, include_poles: bool = True) -> torch.Tensor:
@@ -197,22 +213,7 @@ def _precompute_folded_projection(
     if mmax == mmin or truncation.lmax == 0 or kmax == kmin:
         return weights
 
-    if isinstance(grid, EquiangularGrid):
-        buffers = _precompute_cc_resampling(grid.nlat, mmax, vector)
-        native_weights = buffers["_cc_weights"]
-        complementary_weights = buffers["_cc_midpoint_weights"]
-        phase = torch.complex(*buffers["_cc_phase"])
-        parity = buffers["_cc_parity"]
-        include_poles = True
-    elif isinstance(grid, Fejer1Grid):
-        buffers = _precompute_f1_resampling(grid.nlat, mmax, vector)
-        native_weights = buffers["_f1_native_weights"]
-        complementary_weights = buffers["_f1_complementary_weights"]
-        phase = torch.complex(*buffers["_f1_phase"])
-        parity = buffers["_f1_parity"]
-        include_poles = False
-    else:
-        raise ValueError(f"folded projection is not implemented for {type(grid).__name__}")
+    parity, native_weights, complementary_weights, phase, include_poles = _latitude_folding(grid, mmax, vector)
     # At most ~8 MiB of real basis data per block (FFT workspaces are larger).
     order_chunk = min(16, mmax - mmin)
     degree_limit = max(1, 2**20 // (grid.nlat * order_chunk * (2 if vector else 1)))
