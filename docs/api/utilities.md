@@ -21,6 +21,8 @@ are arranged:
 
 Today `QuadratureS2` accepts any `PointSetS2`, `AttentionS2` and
 `NeighborhoodAttentionS2` any `GridS2`, and all other layers a `RegularGridS2`.
+`SpectralGrid` is separate from this spatial hierarchy: it describes the
+coefficient support of an SHT.
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics.grid
@@ -38,9 +40,11 @@ Today `QuadratureS2` accepts any `PointSetS2`, `AttentionS2` and
    PointSetS2
    GridS2
    RegularGridS2
+   SpectralGrid
    GridShardS2
    RegularGridShardS2
    EquiangularGrid
+   Fejer1Grid
    LegendreGaussGrid
    LobattoGrid
    TrapezoidalGrid
@@ -90,22 +94,27 @@ takes to build the descriptor the layers are given:
 
 | Grid string        | Quadrature rule | Nodes                                            | Key properties                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ------------------ | --------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `"equiangular"`    | Clenshaw–Curtis | Equally spaced in $\theta$ (including poles)     | Default grid. Exact for polynomials up to degree $N-1$. Simple, FFT-friendly.                                                                                                                                                                                                                                                                                                                                                                              |
+| `"equiangular"`    | Clenshaw–Curtis | Equally spaced in $\theta$ (including poles)     | Default grid. Exact through degree $N-1$ for even $N$ and $N$ for odd $N$. Native direct-analysis bound `(N+1)//2`; folded analysis can recover degrees through $N-2$.                                                                                                                                                                                                                                                                                     |
+| `"fejer1"`         | Fejér first     | Equally spaced in $\theta$ (poles excluded)      | Exact through degree $N-1$ for even $N$ and $N$ for odd $N$. Native direct-analysis bound `(N+1)//2`; folded analysis can recover degrees through $N-1$.                                                                                                                                                                                                                                                                                                   |
 | `"legendre-gauss"` | Gauss–Legendre  | Roots of $P_N(\cos\theta)$                       | Exact for polynomials up to degree $2N-1$. Optimal accuracy per node, but nodes are non-uniform.                                                                                                                                                                                                                                                                                                                                                           |
 | `"lobatto"`        | Gauss–Lobatto   | Roots of $P'_{N-1}(\cos\theta)$, plus endpoints  | Exact for polynomials up to degree $2N-3$. Includes both poles, useful when pole values are needed.                                                                                                                                                                                                                                                                                                                                                        |
 | `"trapezoidal"`    | Trapezoidal     | Equally spaced in $\cos\theta$ (including poles) | Supports periodic grids. Lower-order accuracy but simplest structure. The nodes are equispaced in $\cos\theta$, *not* in $\theta$, so the spacing in $\theta$ is strongly non-uniform: the polar spacing is a factor $\sqrt{N_\theta - 1}$ coarser than the equatorial one, a disparity that grows with resolution rather than staying fixed. Formerly named `"equiangular-trapezoidal"`, after nodes it does not have; that string is no longer accepted. |
 
 The longitudinal direction always uses equispaced nodes (see
-`precompute_longitudes`).
+`precompute_longitudes`). Folded scalar and vector SHT analysis on equiangular
+and Fejér-1 grids requires `mmax <= (nlon + 1) // 2`, excluding the longitude
+Nyquist order when `nlon` is even. See the {doc}`grids guide </guide/grids>`
+for the latitude limits and construction costs.
 
-Because only `"equiangular"` has uniform spacing in $\theta$, quantities derived
-from "one latitudinal grid spacing" must come from the grid's actual node
-distribution rather than from $\pi / (N_\theta - 1)$; see
-`compute_latitude_spacing` and `compute_theta_cutoff`. The gap is largest for
+Both `"equiangular"` and `"fejer1"` have uniform spacing in $\theta$:
+$\pi/(N_\theta-1)$ and $\pi/N_\theta$, respectively. Other grids have
+non-uniform latitude spacing. Use `compute_latitude_spacing` or
+`compute_theta_cutoff` to obtain the spacing for each grid. The gap is largest for
 `"trapezoidal"`, whose maximum spacing exceeds $\pi / (N_\theta - 1)$
 by a factor of about $2\sqrt{N_\theta - 1} / \pi$ — roughly $5\times$ at
 $N_\theta = 65$ and $17\times$ at $N_\theta = 721$. For `"lobatto"` the excess is
-a resolution-independent ~21%.
+a resolution-independent ~21%. `truncate_support` also considers longitude
+spacing when choosing the default support of localized operators.
 
 The localized operators additionally need to know which latitudes a cutoff can
 reach, which is what `latitude_support_band` returns; `effective_theta_cutoff`
@@ -127,6 +136,7 @@ applies the widening that the sparsity patterns are actually built with.
    legendre_gauss_weights
    lobatto_weights
    clenshaw_curtiss_weights
+   fejer1_weights
    trapezoidal_weights
 ```
 
@@ -176,6 +186,8 @@ one is given, and warns when the default it picks differs from a previous
 release's. The grid descriptor states the facts these decisions rest on --
 `max_exact_degree`, `max_azimuthal_order`, `max_node_spacing` -- and makes no
 decisions itself.
+
+`truncate_sht` returns the resolved bounds as a `SpectralGrid`.
 
 ```{eval-rst}
 .. currentmodule:: torch_harmonics

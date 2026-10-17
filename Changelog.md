@@ -4,6 +4,11 @@
 
 ### v1.0.0rc1 (unreleased)
 
+* **Breaking**: Explicit SHT `lmax` and `mmax` bounds are preserved independently instead of silently clamped to triangular truncation. Inconsistent bounds (`mmax > lmax`) raise `ValueError`, and `truncate_sht()` returns `SpectralGrid` instead of a tuple.
+* SHT transforms support independent non-inclusive `lmax`, `mmax`, and optional `lmmax` bounds for trapezoidal, rhomboidal, and pentagonal spectral truncation. The no-argument default remains triangular; `SpectralConvS2` and `DistributedSpectralConvS2` retain their square spectral dimensions and weight layouts.
+* New public, immutable `SpectralGrid` describes SHT coefficient support; forward and inverse transforms expose their input and output domains through `grid_in` and `grid_out`.
+* Added `Fejer1Grid` (`"fejer1"`), a pole-excluding regular grid with FFT-based Fejér quadrature. Its native direct-analysis bound is `lmax = (nlat + 1) // 2`; inverse transforms evaluate harmonics on the Fejér-1 nodes.
+* Scalar and vector SHT analysis, serial and distributed, uses precomputed folded Clenshaw-Curtis projection weights on equiangular and Fejér-1 grids when explicit `lmax` exceeds `grid.max_exact_degree`. This is the latitude resampling of DUCC and Reinecke, Belkner and Carron (2023), folded into the weights at construction. Band-limited recovery requires `lmax <= nlat - 1` for equiangular or `lmax <= nlat` for Fejér-1, and `mmax <= (nlon + 1) // 2` for both. The longitude bound excludes the even-`nlon` Nyquist order. Larger dimensions retain direct quadrature without clamping; accepted dimensions do not imply accurate recovery. Half-grid interpolation suppresses the unpaired Nyquist cosine to preserve zero-order reality.
 * Fixed GaussianRandomFieldS2 computing its spectrum in the global default dtype instead of dtype, which lost float64 precision and zeroed spectra for large tau.
 * Fixed `RealVectorSHT` and `DistributedRealVectorSHT` computing the `1/(l(l+1))` degree factor of their analysis weights in float32, which limited float64 vector analysis to a relative accuracy of about 1e-7.
 * `polar_halo_exchange` and `polar_halo_reduce` take a `lat_dim` argument, so channels-last tensors can be exchanged directly.

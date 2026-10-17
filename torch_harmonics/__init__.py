@@ -42,6 +42,7 @@ from .attention import AttentionS2, NeighborhoodAttentionS2
 from .disco import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
 from .grid import (
     EquiangularGrid,
+    Fejer1Grid,
     GridS2,
     GridShardS2,
     LegendreGaussGrid,
@@ -49,6 +50,7 @@ from .grid import (
     PointSetS2,
     RegularGridS2,
     RegularGridShardS2,
+    SpectralGrid,
     TrapezoidalGrid,
     as_grid,
     grid_params,

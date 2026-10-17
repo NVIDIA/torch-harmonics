@@ -35,7 +35,19 @@ from typing import Optional
 import torch
 
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.grid import GridS2
+from torch_harmonics.grid import GridS2, SpectralGrid
+
+
+def _mask_spectral_block(table: torch.Tensor, truncation: SpectralGrid, mmin: int, lmin: int) -> torch.Tensor:
+    """Zero modes outside global spectral support in a stored Legendre block."""
+    nm, nl = table.shape[-3:-1]
+    m = torch.arange(mmin, mmin + nm, device=table.device)[:, None]
+    l = torch.arange(lmin, lmin + nl, device=table.device)[None, :]
+    keep = (m < truncation.mmax) & (l < truncation.lmax) & (m <= l)
+    if truncation.lmmax is not None:
+        keep &= l - m < truncation.lmmax
+    table.masked_fill_(~keep[..., None], 0)
+    return table
 
 
 @torch.no_grad()
@@ -189,6 +201,7 @@ def _precompute_legpoly(
     lmin: Optional[int] = 0,
     kmin: Optional[int] = 0,
     kmax: Optional[int] = None,
+    truncation: Optional[SpectralGrid] = None,
 ) -> torch.Tensor:
     r"""
     Computes the values of (-1)^m c^l_m P^l_m(\cos \theta) on the colatitudes of a grid.
@@ -225,6 +238,8 @@ def _precompute_legpoly(
         One past the last latitude to evaluate, by default all of them. Unlike the order and
         degree ranges, restricting latitudes costs nothing: they are independent of one
         another, so the excluded ones are never computed in the first place.
+    truncation : SpectralGrid, optional
+        Global spectral support to mask in the stored block after the recurrence.
 
     Returns
     -------
@@ -235,7 +250,8 @@ def _precompute_legpoly(
     colats = grid.colats
     kmax = len(colats) if kmax is None else kmax
 
-    return legpoly(mmax, lmax, torch.cos(colats[kmin:kmax]), norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+    table = legpoly(mmax, lmax, torch.cos(colats[kmin:kmax]), norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+    return _mask_spectral_block(table, truncation, mmin, lmin) if truncation is not None else table
 
 
 @torch.no_grad()
@@ -370,6 +386,7 @@ def _precompute_dlegpoly(
     lmin: Optional[int] = 0,
     kmin: Optional[int] = 0,
     kmax: Optional[int] = None,
+    truncation: Optional[SpectralGrid] = None,
 ) -> torch.Tensor:
     r"""
     Cached, grid-keyed counterpart of :func:`dlegpoly`, mirroring :func:`_precompute_legpoly`.
@@ -400,6 +417,9 @@ def _precompute_dlegpoly(
         First latitude to evaluate, by default 0
     kmax : Optional[int]
         One past the last latitude to evaluate, by default all of them
+    truncation : SpectralGrid, optional
+        Global spectral support to mask in the physical output after derivative halos
+        have been computed.
 
     Returns
     -------
@@ -410,4 +430,5 @@ def _precompute_dlegpoly(
     colats = grid.colats
     kmax = len(colats) if kmax is None else kmax
 
-    return dlegpoly(mmax, lmax, colats[kmin:kmax], norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+    table = dlegpoly(mmax, lmax, colats[kmin:kmax], norm=norm, inverse=inverse, csphase=csphase, mmin=mmin, lmin=lmin)
+    return _mask_spectral_block(table, truncation, mmin, lmin) if truncation is not None else table
