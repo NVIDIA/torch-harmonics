@@ -4,7 +4,8 @@
 
 ### v1.0.0rc1 (unreleased)
 
-* **Breaking**: Explicit SHT `lmax` and `mmax` bounds are preserved independently instead of silently clamped to triangular truncation. Inconsistent bounds (`mmax > lmax`) raise `ValueError`, and `truncate_sht()` returns `SpectralGrid` instead of a tuple.
+* **Breaking**: SHT bounds remain independent; an `mmax`-only call sets `lmax = mmax`, while an `lmax`-only call sets `mmax = lmax` and requires explicit `mmax` above the recoverable order. The no-argument default remains triangular, and `truncate_sht()` returns `SpectralGrid` instead of a tuple.
+* `RegularGridS2` exposes forward recovery bounds; oversized Gauss and Lobatto analysis raises, while equiangular analysis warns.
 * Fixed GaussianRandomFieldS2 computing its spectrum in the global default dtype instead of dtype, which lost float64 precision and zeroed spectra for large tau.
 * Fixed `RealVectorSHT` and `DistributedRealVectorSHT` computing the `1/(l(l+1))` degree factor of their analysis weights in float32, which limited float64 vector analysis to a relative accuracy of about 1e-7.
 * `polar_halo_exchange` and `polar_halo_reduce` take a `lat_dim` argument, so channels-last tensors can be exchanged directly.

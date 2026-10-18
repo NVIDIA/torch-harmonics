@@ -801,6 +801,16 @@ class RegularGridS2(GridS2):
         """
         return self.nlon // 2 + 1
 
+    @property
+    def max_recoverable_degree(self) -> int:
+        """Exclusive degree bound supported by forward analysis."""
+        return self.max_exact_degree
+
+    @property
+    def max_recoverable_order(self) -> int:
+        """Exclusive order bound for independent complex coefficients."""
+        return (self.nlon + 1) // 2
+
     # -- decomposition -------------------------------------------------------
 
     @classmethod

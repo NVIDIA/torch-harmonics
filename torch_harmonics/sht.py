@@ -39,7 +39,7 @@ from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
-from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
 
@@ -154,6 +154,7 @@ class RealSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
+        _validate_forward_sht_degree(self.grid, self.lmax)
 
         # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
         # quadrature weights. It is a constant prefactor of a linear transform, so folding it
@@ -517,6 +518,7 @@ class RealVectorSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
+        _validate_forward_sht_degree(self.grid, self.lmax)
 
         # precompute associated Legendre polynomials
         dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)

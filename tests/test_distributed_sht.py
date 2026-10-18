@@ -195,17 +195,12 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             [32, 64, 8, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
             [33, 64, 9, 1, 10, "equiangular", True, 1e-5, 1e-6],
             [33, 64, 8, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
-            # upsampling
-            # Scalar SHT
+            # Equiangular analysis permits these high degrees and warns; the Gauss
+            # counterparts are now rejected and remain covered by inverse tests below.
             [32, 64, 64, 32, 8, "equiangular", False, 1e-5, 1e-6],
-            [32, 64, 64, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
             [33, 64, 65, 1, 10, "equiangular", False, 1e-5, 1e-6],
-            [33, 64, 64, 1, 10, "legendre-gauss", False, 1e-5, 1e-6],
-            # Vector SHT
             [32, 64, 64, 32, 8, "equiangular", True, 1e-5, 1e-6],
-            [32, 64, 64, 32, 8, "legendre-gauss", True, 1e-5, 1e-6],
             [33, 64, 65, 1, 10, "equiangular", True, 1e-5, 1e-6],
-            [33, 64, 64, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
             # Asymmetric truncation, including uneven order partitions.
             [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, None],
             [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, 6],
@@ -374,21 +369,34 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         B, C, H, W = batch_size, num_chan, nlat, nlon
 
+        grid_desc = th.as_grid(grid, nlat=H, nlon=W)
+        oversized = lmax is not None and lmax > grid_desc.max_recoverable_degree
+
         if vector:
-            forward_transform_local = th.RealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            backward_transform_local = th.InverseRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            backward_transform_dist = thd.DistributedInverseRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            forward_transform_local = None if oversized else th.RealVectorSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_local = th.InverseRealVectorSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_dist = thd.DistributedInverseRealVectorSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
         else:
-            forward_transform_local = th.RealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            backward_transform_local = th.InverseRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            backward_transform_dist = thd.DistributedInverseRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            forward_transform_local = None if oversized else th.RealSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_local = th.InverseRealSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_dist = thd.DistributedInverseRealSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
 
         # create tensors
-        if vector:
-            dummy_full = torch.randn((B, C, 2, H, W), dtype=dtype, device=self.device)
+        if forward_transform_local is not None:
+            if vector:
+                dummy_full = torch.randn((B, C, 2, H, W), dtype=dtype, device=self.device)
+            else:
+                dummy_full = torch.randn((B, C, H, W), dtype=dtype, device=self.device)
+            inp_full = forward_transform_local(dummy_full)
         else:
-            dummy_full = torch.randn((B, C, H, W), dtype=dtype, device=self.device)
-        inp_full = forward_transform_local(dummy_full)
+            # This is an inverse-only upsampling case; generate coefficients directly
+            # so it does not invoke forward analysis beyond the latitude recovery limit.
+            complex_dtype = torch.complex128 if dtype == torch.float64 else torch.complex64
+            shape = (B, C, 2, lmax, mmax) if vector else (B, C, lmax, mmax)
+            inp_full = torch.randn(shape, dtype=complex_dtype, device=self.device)
+            inp_full[..., 0] = inp_full[..., 0].real
+            if vector:
+                inp_full[..., 0, :] = 0
 
         #############################################################
         # local transform
@@ -523,6 +531,13 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         self.assertEqual(tuple(got.shape), tuple(ref.shape), "inverse block shape")
         ok = compare_tensors("inverse legendre block", got, ref.contiguous(), atol=1e-14, rtol=1e-14, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "inverse legendre block")
+
+    def test_distributed_forward_rejects_oversized_gauss_degree(self):
+        grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+        lmax = grid.max_recoverable_degree + 1
+        mmax = min(lmax, grid.max_recoverable_order)
+        with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
+            thd.DistributedRealSHT(grid, lmax=lmax, mmax=mmax)
 
 
 if __name__ == "__main__":
