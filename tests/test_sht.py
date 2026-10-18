@@ -714,9 +714,15 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
     def test_oversized_dimensions(self, vector, dtype, nlat, nlon, lmax, mmax, lmmax, verbose=False):
         set_seed(333)
         grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
+        requested_mmax = mmax
+        # lmax-only resolution now requires an explicit order above the recoverable
+        # longitude bound. Preserve these direct-quadrature cases by spelling out the
+        # same Nyquist order that the old inference selected.
+        if mmax is None and lmax > grid.max_recoverable_order:
+            mmax = min(lmax, grid.max_azimuthal_order)
         analysis = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax)
         self.assertFalse(analysis._extended_folded)
-        self.assertEqual(analysis.grid_out, th.SpectralGrid(lmax, min(lmax, nlon // 2 + 1) if mmax is None else mmax, lmmax))
+        self.assertEqual(analysis.grid_out, th.SpectralGrid(lmax, min(lmax, nlon // 2 + 1) if requested_mmax is None else requested_mmax, lmmax))
         # Native projection formula, with the degree factor in float64 like the transform.
         q = 2 * torch.pi * grid.colat_weights
         if vector:
@@ -746,7 +752,7 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         else:
             expected = torch.einsum("mk,mlk->lm", modes, w)
         actual = analysis(x)
-        if mmax is None:
+        if requested_mmax is None and mmax is None:
             explicit = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=analysis.mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
             self.assertFalse(explicit._extended_folded)
             self.assertTrue(compare_tensors("inferred and explicit orders", actual, explicit(x), atol=0, rtol=0, verbose=verbose))

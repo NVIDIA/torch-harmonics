@@ -1074,6 +1074,11 @@ class EquiangularGrid(RegularGridS2):
         r"""Clenshaw--Curtis is exact to roughly degree :math:`N_\theta - 1`, giving :math:`\lfloor (N_\theta + 1) / 2 \rfloor`."""
         return (self.nlat + 1) // 2
 
+    @property
+    def max_recoverable_degree(self) -> int:
+        """Exclusive degree bound recoverable by folded forward analysis."""
+        return self.nlat - 1
+
 
 @dataclass(frozen=True, eq=False)
 class Fejer1Grid(RegularGridS2):
@@ -1096,6 +1101,11 @@ class Fejer1Grid(RegularGridS2):
     def max_exact_degree(self) -> int:
         r"""Exclusive direct-quadrature bandwidth :math:`(N_\theta+1)//2`."""
         return (self.nlat + 1) // 2
+
+    @property
+    def max_recoverable_degree(self) -> int:
+        """Exclusive degree bound recoverable by folded forward analysis."""
+        return self.nlat
 
 
 @dataclass(frozen=True, eq=False)

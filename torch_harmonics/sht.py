@@ -48,13 +48,7 @@ def _extended_folded_analysis(grid: RegularGridS2, spectral_grid: SpectralGrid) 
     """Select extended analysis after the usual spectral support resolution."""
     # Oversized dimensions retain legacy direct quadrature for spectral upsampling.
     # Accurate folded recovery requires both latitude and longitude bandwidth limits.
-    if isinstance(grid, EquiangularGrid):
-        latitude_limit = grid.nlat - 1
-    elif isinstance(grid, Fejer1Grid):
-        latitude_limit = grid.nlat
-    else:
-        return False
-    return grid.max_exact_degree < spectral_grid.lmax <= latitude_limit and spectral_grid.mmax <= (grid.nlon + 1) // 2
+    return grid.max_exact_degree < spectral_grid.lmax <= grid.max_recoverable_degree and spectral_grid.mmax <= grid.max_recoverable_order
 
 
 def _precompute_cc_resampling(nlat: int, mmax: int, vector: bool = False) -> dict[str, torch.Tensor]:

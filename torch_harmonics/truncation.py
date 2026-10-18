@@ -206,7 +206,7 @@ def _validate_forward_sht_degree(grid: RegularGridS2, lmax: int) -> None:
     message = f"forward SHT lmax={lmax} exceeds grid '{grid.grid_type}' max_recoverable_degree={max_degree}"
     if grid.grid_type in ("legendre-gauss", "lobatto"):
         raise ValueError(message)
-    if grid.grid_type == "equiangular":
+    if grid.grid_type in ("equiangular", "fejer1"):
         warnings.warn(message, UserWarning, stacklevel=3)
     # Trapezoidal transforms already emit their quadrature warning at construction.
 

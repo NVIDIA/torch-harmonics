@@ -168,7 +168,12 @@ class TestGridSpectralBounds(unittest.TestCase):
     def test_max_exact_degree_matches_the_quadrature_rule(self, nlat, grid):
         descriptor = as_grid(grid, nlat=nlat, nlon=2 * nlat)
         self.assertEqual(descriptor.max_exact_degree, _EXACT_DEGREE[grid](nlat))
-        self.assertEqual(descriptor.max_recoverable_degree, descriptor.max_exact_degree)
+        expected_recoverable_degree = _EXACT_DEGREE[grid](nlat)
+        if grid == "equiangular":
+            expected_recoverable_degree = nlat - 1
+        elif grid == "fejer1":
+            expected_recoverable_degree = nlat
+        self.assertEqual(descriptor.max_recoverable_degree, expected_recoverable_degree)
 
     @parameterized.expand([[nlon, grid] for nlon in [63, 64, 256] for grid in _EXACT_DEGREE])
     def test_max_azimuthal_order_is_the_nyquist_limit(self, nlon, grid):
@@ -310,8 +315,9 @@ class TestSHTRecoveryValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
             th.RealSHT(grid, lmax=lmax, mmax=mmax)
 
-    def test_equiangular_forward_analysis_warns_above_recovery_limit(self):
-        grid = as_grid("equiangular", nlat=8, nlon=16)
+    @parameterized.expand([[grid] for grid in ("equiangular", "fejer1")])
+    def test_regular_grid_forward_analysis_warns_above_recovery_limit(self, grid_type):
+        grid = as_grid(grid_type, nlat=8, nlon=16)
         lmax = grid.max_recoverable_degree + 1
         with self.assertWarnsRegex(UserWarning, "max_recoverable_degree"):
             th.RealSHT(grid, lmax=lmax, mmax=min(lmax, grid.max_recoverable_order))
