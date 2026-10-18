@@ -40,7 +40,7 @@ from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_si
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
 from torch_harmonics.sht import _extended_folded_analysis, _precompute_folded_projection
-from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
 from .primitives import (
@@ -169,6 +169,7 @@ class DistributedRealSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
+        _validate_forward_sht_degree(self.grid, self.lmax)
 
         # compute splits
         # the grid decomposes itself in space; the spectral split below stays manual,
@@ -634,6 +635,7 @@ class DistributedRealVectorSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
+        _validate_forward_sht_degree(self.grid, self.lmax)
 
         # compute splits
         # the grid decomposes itself in space; the spectral split below stays manual,

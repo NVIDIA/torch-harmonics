@@ -40,7 +40,7 @@ from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import EquiangularGrid, Fejer1Grid, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _mask_spectral_block, _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
 from torch_harmonics.radial import split_radial
-from torch_harmonics.truncation import _warn_if_not_spectrally_accurate, truncate_sht
+from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
 
@@ -377,6 +377,7 @@ class RealSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
+        _validate_forward_sht_degree(self.grid, self.lmax)
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
         if self._extended_folded:
             weights = _precompute_folded_projection(self.grid, self._trunc, self.norm, self.csphase)
@@ -752,6 +753,7 @@ class RealVectorSHT(nn.Module):
         weights = self.grid.colat_weights
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
+        _validate_forward_sht_degree(self.grid, self.lmax)
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
         if self._extended_folded:
             weights = _precompute_folded_projection(self.grid, self._trunc, self.norm, self.csphase, vector=True)

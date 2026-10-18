@@ -181,11 +181,17 @@ Both routines answer the same question in dual spaces: given a grid, how much
 of an operator should be kept by default, and what happens when the caller says
 otherwise. `truncate_sht` bounds the spectrum an SHT retains; `truncate_support`
 bounds the angular radius a DISCO convolution or neighborhood attention reaches
-over. Each takes the bound the grid can support, applies an explicit override if
-one is given, and warns when the default it picks differs from a previous
-release's. The grid descriptor states the facts these decisions rest on --
-`max_exact_degree`, `max_azimuthal_order`, `max_node_spacing` -- and makes no
-decisions itself.
+over. Each applies an explicit override if one is given and warns when its
+default differs from a previous release's.
+
+`max_exact_degree` is the native quadrature bound; `max_recoverable_degree`
+describes forward analysis and defaults to it. `max_azimuthal_order` includes
+the even-length Nyquist bin, while `max_recoverable_order` excludes it.
+
+`truncate_sht` keeps a triangular default when neither bound is given, even
+with `lmmax` alone. A lone `mmax` sets `lmax = mmax`; a lone `lmax` sets
+`mmax = lmax` and raises above `max_recoverable_order` unless `mmax` is
+explicit. Explicit pairs are preserved independently.
 
 `truncate_sht` returns the resolved bounds as a `SpectralGrid`.
 
