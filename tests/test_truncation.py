@@ -322,11 +322,14 @@ class TestSHTRecoveryValidation(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "max_recoverable_degree"):
             th.RealSHT(grid, lmax=lmax, mmax=min(lmax, grid.max_recoverable_order))
 
-    def test_valid_forward_analysis_adds_no_warning(self):
-        grid = as_grid("legendre-gauss", nlat=8, nlon=16)
+    @parameterized.expand([[grid] for grid in ("legendre-gauss", "equiangular", "fejer1")])
+    def test_valid_forward_analysis_adds_no_warning(self, grid_type):
+        grid = as_grid(grid_type, nlat=8, nlon=16)
+        lmax = grid.max_recoverable_degree
+        mmax = min(lmax, grid.max_recoverable_order)
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            th.RealSHT(grid, lmax=8, mmax=8)
+            th.RealSHT(grid, lmax=lmax, mmax=mmax)
 
     def test_trapezoidal_overbound_keeps_its_single_existing_warning(self):
         grid = as_grid("trapezoidal", nlat=16, nlon=32)
