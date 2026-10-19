@@ -73,6 +73,48 @@ It is accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
 the distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
+## Spherical harmonic truncation
+
+An SHT keeps the modes with degree `l < lmax` and order `m < mmax` (and
+`l - m < lmmax` when given); all three bounds are exclusive. The grid determines
+how far each bound can go:
+
+| grid type          | `max_exact_degree` (default `lmax`) | `max_recoverable_degree` | `max_azimuthal_order` | forward SHT above `max_recoverable_degree` |
+| ------------------ | ----------------------------------- | ------------------------ | --------------------- | ------------------------------------------ |
+| `"equiangular"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns                                      |
+| `"legendre-gauss"` | `nlat`                              | `nlat`                   | `(nlon + 1) // 2`     | raises `ValueError`                        |
+| `"lobatto"`        | `nlat - 1`                          | `nlat - 1`               | `(nlon + 1) // 2`     | raises `ValueError`                        |
+| `"trapezoidal"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns (any SHT on this grid warns)         |
+| `"healpix"`        | SHT not supported yet               | SHT not supported yet    | SHT not supported yet | SHT not supported yet                      |
+
+- `max_exact_degree` is the degree up to which the latitude quadrature keeps
+  the associated Legendre functions discretely orthogonal.
+- `max_recoverable_degree` is the largest `lmax` a forward SHT accepts. It
+  equals `max_exact_degree` on every grid today.
+- `max_azimuthal_order` depends only on the longitude sampling. For even
+  `nlon` it excludes the Nyquist order `nlon / 2`: its sine component is zero at
+  every longitude, so the complex coefficient cannot be recovered.
+
+`th.truncate_sht(grid, lmax, mmax, lmmax)` resolves the bounds, and the SHTs use
+it:
+
+| arguments             | resolved bounds                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| none, or only `lmmax` | triangular: `lmax = mmax = min(max_exact_degree, max_azimuthal_order)`                 |
+| only `mmax`           | `lmax = mmax`                                                                          |
+| only `lmax`           | `mmax = lmax`; raises if that exceeds `max_azimuthal_order`, so pass `mmax` explicitly |
+| `lmax` and `mmax`     | kept as given, also beyond the grid limits; `mmax > lmax` raises                       |
+
+Explicit bounds beyond the grid limits are meant for the inverse SHT, which can
+synthesize any band, e.g. to upsample. Orders at or above `max_azimuthal_order`
+are zero-padded. For example:
+
+```python
+th.truncate_sht(th.as_grid("legendre-gauss", nlat=128, nlon=256))   # SpectralGrid(lmax=128, mmax=128, lmmax=None)
+th.truncate_sht(th.as_grid("equiangular", nlat=721, nlon=1440))    # SpectralGrid(lmax=361, mmax=361, lmmax=None)
+th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGrid(lmax=32, mmax=32, lmmax=None): longitude binds
+```
+
 ## Field shapes
 
 On a latitude-longitude grid a field has shape `(..., nlat, nlon)`. A HEALPix
