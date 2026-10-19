@@ -812,7 +812,8 @@ class RegularGridS2(GridS2):
 
         Non-inclusive. It depends only on the latitude nodes, i.e. on ``nlat`` and the
         quadrature rule; orders are bounded separately by :attr:`max_azimuthal_order`,
-        which depends only on ``nlon``. It equals :attr:`max_exact_degree` on every grid.
+        which depends only on ``nlon``. It equals
+        :attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` on every grid.
         """
         return self.max_exact_degree
 
