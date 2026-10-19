@@ -97,15 +97,18 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     On the trapezoidal grid, only the constant mode (``lmax=1``) is recovered
     exactly. Its default bound does not guarantee accurate SHT round trips.
 
-    The default longitudinal truncation is the Nyquist limit of the uniform
-    longitude grid: :math:`m_{\max} = \lfloor N_\lambda / 2 \rfloor + 1`.
+    The default longitudinal truncation is the largest order whose complex
+    coefficient the uniform longitude grid determines:
+    :math:`m_{\max} = \lfloor (N_\lambda + 1) / 2 \rfloor`. For even
+    :math:`N_\lambda` this excludes the Nyquist order :math:`N_\lambda / 2`,
+    whose sine component vanishes at every longitude node.
 
     With neither ``lmax`` nor ``mmax`` specified, the default remains
     triangular, including when only ``lmmax`` is specified:
     :math:`l_{\max} = m_{\max} = \min(l_{\max},\, m_{\max})`.
     With only ``mmax`` specified, ``lmax`` is set to ``mmax``. With only
     ``lmax`` specified, ``mmax`` is set to ``lmax``; if it exceeds the grid's
-    :attr:`~torch_harmonics.grid.RegularGridS2.max_recoverable_order`, specify
+    :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`, specify
     ``mmax`` explicitly. Two explicit bounds are preserved independently.
     Bounds must satisfy ``0 <= mmax <= lmax``. A mode is retained when
     :math:`m < m_{\max}`, :math:`m \le l < l_{\max}`, and, when ``lmmax`` is
@@ -114,10 +117,10 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     rhomboidal case when ``lmax`` does not clip it.
 
     The default bounds use :attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree`
-    and :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order` (which
-    includes the even-length Nyquist bin). Forward transforms validate degree
-    against ``max_recoverable_degree``; inverse transforms use the same resolved
-    bounds but can synthesize higher degrees when both bounds are explicit.
+    and :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`.
+    Forward transforms validate degree against ``max_recoverable_degree``;
+    inverse transforms use the same resolved bounds but can synthesize higher
+    degrees when both bounds are explicit.
 
     Parameters
     ----------
@@ -126,13 +129,13 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     lmax : int, optional
         User-defined maximum spherical harmonic degree (non-inclusive).
         If neither degree nor order is specified, it follows the table above.
-        If given alone, ``mmax`` is set to ``lmax`` and the recoverable-order
-        limit is enforced.
+        If given alone, ``mmax`` is set to ``lmax``, which must not exceed
+        :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`.
     mmax : int, optional
         User-defined maximum azimuthal harmonic order (non-inclusive).
         If given alone, ``lmax`` is set to ``mmax``. If neither is given, the
-        triangular default uses the smaller of the default ``lmax`` and the
-        Nyquist limit :math:`\lfloor N_\lambda / 2 \rfloor + 1`.
+        triangular default uses the smaller of the default ``lmax`` and
+        :math:`\lfloor (N_\lambda + 1) / 2 \rfloor`.
     lmmax : int, optional
         Maximum degree-minus-order bandwidth (non-inclusive). ``None`` leaves
         this bandwidth unrestricted.
@@ -177,14 +180,16 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
                 UserWarning,
                 stacklevel=2,
             )
-    if lmax is None and mmax is None:
         lmax = min(grid.max_exact_degree, grid.max_azimuthal_order)
         mmax = lmax
     elif lmax is None:
         lmax = mmax
     elif mmax is None:
-        if lmax > grid.max_recoverable_order:
-            raise ValueError(f"lmax={lmax} exceeds the grid's max_recoverable_order={grid.max_recoverable_order}; " "specify mmax explicitly to choose an order bound")
+        if lmax > grid.max_azimuthal_order:
+            raise ValueError(
+                f"lmax={lmax} without mmax would set mmax={lmax}, above the grid's max_azimuthal_order={grid.max_azimuthal_order}; "
+                f"pass mmax={grid.max_azimuthal_order} to truncate in longitude, or mmax={lmax} to zero-pad the missing orders"
+            )
         mmax = lmax
 
     return SpectralGrid(lmax, mmax, lmmax)

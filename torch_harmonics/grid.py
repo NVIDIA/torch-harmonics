@@ -795,21 +795,20 @@ class RegularGridS2(GridS2):
     @property
     def max_azimuthal_order(self) -> int:
         r"""
-        Nyquist limit of the longitudinal sampling, :math:`\lfloor N_\lambda / 2 \rfloor + 1`.
+        Largest recoverable order of the longitudinal sampling, :math:`\lfloor (N_\lambda + 1) / 2 \rfloor`.
 
-        Non-inclusive.
+        Non-inclusive. Orders below it have a complex coefficient that the
+        :math:`N_\lambda` longitude nodes determine. For even :math:`N_\lambda`
+        it excludes the Nyquist order :math:`N_\lambda / 2`: its sine component
+        vanishes at every node, so only the real part of that coefficient
+        survives sampling.
         """
-        return self.nlon // 2 + 1
+        return (self.nlon + 1) // 2
 
     @property
     def max_recoverable_degree(self) -> int:
         """Exclusive degree bound supported by forward analysis."""
         return self.max_exact_degree
-
-    @property
-    def max_recoverable_order(self) -> int:
-        """Exclusive order bound for independent complex coefficients."""
-        return (self.nlon + 1) // 2
 
     # -- decomposition -------------------------------------------------------
 

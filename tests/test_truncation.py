@@ -35,7 +35,7 @@ Tests for SHT mode truncation.
 The split of responsibility being pinned here is that a
 :class:`~torch_harmonics.grid.GridS2` reports what it can *represent* --
 ``max_exact_degree`` from the exactness of its quadrature rule, and
-``max_azimuthal_order`` from the Nyquist limit of its longitude sampling -- while
+``max_azimuthal_order`` from the order limit of its longitude sampling -- while
 :func:`~torch_harmonics.truncation.truncate_sht` decides what an SHT actually
 *keeps*: it applies user overrides, resolves spectral bounds, and warns
 where the default changed. The grid properties stay silent so that reading them
@@ -170,10 +170,8 @@ class TestGridSpectralBounds(unittest.TestCase):
         self.assertEqual(descriptor.max_recoverable_degree, descriptor.max_exact_degree)
 
     @parameterized.expand([[nlon, grid] for nlon in [63, 64, 256] for grid in _EXACT_DEGREE])
-    def test_max_azimuthal_order_is_the_nyquist_limit(self, nlon, grid):
-        descriptor = as_grid(grid, nlat=32, nlon=nlon)
-        self.assertEqual(descriptor.max_azimuthal_order, nlon // 2 + 1)
-        self.assertEqual(descriptor.max_recoverable_order, (nlon + 1) // 2)
+    def test_max_azimuthal_order_excludes_the_nyquist_order(self, nlon, grid):
+        self.assertEqual(as_grid(grid, nlat=32, nlon=nlon).max_azimuthal_order, (nlon + 1) // 2)
 
     @parameterized.expand([[grid] for grid in _EXACT_DEGREE])
     def test_reading_the_bounds_is_silent(self, grid):
@@ -184,7 +182,7 @@ class TestGridSpectralBounds(unittest.TestCase):
         g = as_grid(grid, nlat=128, nlon=256)
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            _ = g.max_exact_degree, g.max_azimuthal_order, g.max_recoverable_degree, g.max_recoverable_order
+            _ = g.max_exact_degree, g.max_azimuthal_order, g.max_recoverable_degree
 
 
 class TestTruncateSht(unittest.TestCase):
@@ -223,7 +221,7 @@ class TestTruncateSht(unittest.TestCase):
     @parameterized.expand([[nlon] for nlon in (63, 64)])
     def test_single_bounds_and_lmmax_keep_expected_defaults(self, nlon):
         grid = as_grid("legendre-gauss", nlat=64, nlon=nlon)
-        order_limit = grid.max_recoverable_order
+        order_limit = grid.max_azimuthal_order
         default = truncate_sht(grid)
 
         expected_default = min(grid.max_exact_degree, grid.max_azimuthal_order)
@@ -233,17 +231,18 @@ class TestTruncateSht(unittest.TestCase):
         self.assertEqual(truncate_sht(grid, mmax=order_limit), SpectralGrid(order_limit, order_limit))
         self.assertEqual(truncate_sht(grid, mmax=order_limit + 1), SpectralGrid(order_limit + 1, order_limit + 1))
         self.assertEqual(truncate_sht(grid, lmax=order_limit), SpectralGrid(order_limit, order_limit))
-        with self.assertRaisesRegex(ValueError, "specify mmax explicitly"):
+        with self.assertRaisesRegex(ValueError, "max_azimuthal_order"):
             truncate_sht(grid, lmax=order_limit + 1)
         self.assertEqual(truncate_sht(grid, lmax=order_limit + 1, mmax=order_limit), SpectralGrid(order_limit + 1, order_limit))
         self.assertEqual(truncate_sht(grid, lmax=order_limit + 1, mmax=order_limit + 1), SpectralGrid(order_limit + 1, order_limit + 1))
-        if nlon % 2 == 0:
-            self.assertEqual(default.mmax, grid.max_azimuthal_order)
+        # the default and a lone lmax share one order bound, which excludes the Nyquist order
+        self.assertEqual(default.mmax, order_limit)
+        self.assertEqual(truncate_sht(grid, lmax=default.lmax), default)
 
     def test_a_narrow_longitude_grid_limits_lmax(self):
         """mmax is the binding constraint when the longitude sampling is coarse."""
         trunc = truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=16))
-        self.assertEqual(trunc, SpectralGrid(9, 9))  # nlon // 2 + 1 = 9, below max_exact_degree = 128
+        self.assertEqual(trunc, SpectralGrid(8, 8))  # (nlon + 1) // 2 = 8, below max_exact_degree = 128
 
     @parameterized.expand([[grid] for grid in _EXACT_DEGREE])
     def test_user_truncation_overrides_the_grid_default(self, grid):
@@ -262,7 +261,7 @@ class TestTruncateSht(unittest.TestCase):
         self.assertEqual(truncate_sht(g, lmax=24, mmax=9, lmmax=6), SpectralGrid(24, 9, 6))
         self.assertEqual(truncate_sht(g, lmax=24, mmax=9), SpectralGrid(24, 9))
         narrow = as_grid("legendre-gauss", nlat=128, nlon=16)
-        self.assertEqual(truncate_sht(narrow, lmmax=3), SpectralGrid(9, 9, 3))
+        self.assertEqual(truncate_sht(narrow, lmmax=3), SpectralGrid(8, 8, 3))
 
     def test_zero_lmax_and_mmax_remain_explicit_requests(self):
         g = as_grid("legendre-gauss", nlat=32, nlon=64)
@@ -303,7 +302,7 @@ class TestSHTRecoveryValidation(unittest.TestCase):
     def test_forward_analysis_rejects_degree_above_recovery_limit(self, grid_type):
         grid = as_grid(grid_type, nlat=8, nlon=16)
         lmax = grid.max_recoverable_degree + 1
-        mmax = min(lmax, grid.max_recoverable_order)
+        mmax = min(lmax, grid.max_azimuthal_order)
         with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
             th.RealSHT(grid, lmax=lmax, mmax=mmax)
 
@@ -311,7 +310,7 @@ class TestSHTRecoveryValidation(unittest.TestCase):
         grid = as_grid("equiangular", nlat=8, nlon=16)
         lmax = grid.max_recoverable_degree + 1
         with self.assertWarnsRegex(UserWarning, "max_recoverable_degree"):
-            th.RealSHT(grid, lmax=lmax, mmax=min(lmax, grid.max_recoverable_order))
+            th.RealSHT(grid, lmax=lmax, mmax=min(lmax, grid.max_azimuthal_order))
 
     def test_valid_forward_analysis_adds_no_warning(self):
         grid = as_grid("legendre-gauss", nlat=8, nlon=16)
@@ -330,7 +329,7 @@ class TestSHTRecoveryValidation(unittest.TestCase):
 
     def test_inverse_requires_explicit_order_for_high_degree_synthesis(self):
         grid = as_grid("legendre-gauss", nlat=8, nlon=16)
-        with self.assertRaisesRegex(ValueError, "specify mmax explicitly"):
+        with self.assertRaisesRegex(ValueError, "max_azimuthal_order"):
             th.InverseRealSHT(grid, lmax=12)
 
         inverse = th.InverseRealSHT(grid, lmax=12, mmax=8)

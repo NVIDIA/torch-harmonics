@@ -535,7 +535,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     def test_distributed_forward_rejects_oversized_gauss_degree(self):
         grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
         lmax = grid.max_recoverable_degree + 1
-        mmax = min(lmax, grid.max_recoverable_order)
+        mmax = min(lmax, grid.max_azimuthal_order)
         with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
             thd.DistributedRealSHT(grid, lmax=lmax, mmax=mmax)
 
