@@ -807,7 +807,13 @@ class RegularGridS2(GridS2):
 
     @property
     def max_recoverable_degree(self) -> int:
-        """Exclusive degree bound supported by forward analysis."""
+        """
+        Largest ``lmax`` a forward SHT accepts on this grid.
+
+        Non-inclusive. It depends only on the latitude nodes, i.e. on ``nlat`` and the
+        quadrature rule; orders are bounded separately by :attr:`max_azimuthal_order`,
+        which depends only on ``nlon``. It equals :attr:`max_exact_degree` on every grid.
+        """
         return self.max_exact_degree
 
     # -- decomposition -------------------------------------------------------
