@@ -204,70 +204,63 @@ class TestTruncateSht(unittest.TestCase):
             ["lobatto", (128, 256), SpectralGrid(127, 127)],
             ["equiangular", (128, 256), SpectralGrid(64, 64)],
             ["trapezoidal", (128, 256), SpectralGrid(64, 64)],
+            # longitude binds: (nlon + 1) // 2, which excludes the Nyquist order of an even nlon
+            ["legendre-gauss", (64, 64), SpectralGrid(32, 32)],
+            ["legendre-gauss", (64, 63), SpectralGrid(32, 32)],
+            ["legendre-gauss", (128, 16), SpectralGrid(8, 8)],
+            ["legendre-gauss", (128, 17), SpectralGrid(9, 9)],
         ]
     )
     def test_documented_defaults(self, grid, shape, expected):
         self.assertEqual(truncate_sht(as_grid(grid, nlat=shape[0], nlon=shape[1])), expected)
 
-    @parameterized.expand([[nlat, grid] for nlat in _NLATS for grid in _EXACT_DEGREE])
-    def test_default_truncation_is_triangular(self, nlat, grid):
-        """The no-argument transform retains its old triangular shape."""
-        descriptor = as_grid(grid, nlat=nlat, nlon=2 * nlat)
-        trunc = truncate_sht(descriptor)
-        self.assertEqual(trunc.lmax, min(descriptor.max_exact_degree, descriptor.max_azimuthal_order))
-        self.assertEqual(trunc.lmax, trunc.mmax)
-        self.assertIsNone(trunc.lmmax)
+    @parameterized.expand([[nlat, nlon_factor, grid] for nlat in _NLATS for nlon_factor in (1, 2) for grid in _EXACT_DEGREE])
+    def test_default_truncation_is_triangular(self, nlat, nlon_factor, grid):
+        """
+        Without lmax and mmax the transform keeps its old triangular shape, bounded by
+        whichever of the latitude and longitude limits binds. lmmax alone does not change it.
+        """
+        g = as_grid(grid, nlat=nlat, nlon=nlon_factor * nlat)
+        bound = min(g.max_exact_degree, g.max_azimuthal_order)
+        self.assertEqual(truncate_sht(g), SpectralGrid(bound, bound))
+        self.assertEqual(truncate_sht(g, lmmax=3), SpectralGrid(bound, bound, 3))
 
-    @parameterized.expand([[nlon] for nlon in (63, 64)])
-    def test_single_bounds_and_lmmax_keep_expected_defaults(self, nlon):
-        grid = as_grid("legendre-gauss", nlat=64, nlon=nlon)
-        order_limit = grid.max_azimuthal_order
-        default = truncate_sht(grid)
+    @parameterized.expand([[grid, nlon] for grid in _EXACT_DEGREE for nlon in (63, 64)])
+    def test_lone_mmax_sets_lmax(self, grid, nlon):
+        """A lone mmax is honoured even above max_azimuthal_order; those orders are zero-padded."""
+        g = as_grid(grid, nlat=64, nlon=nlon)
+        for mmax in (0, 20, g.max_azimuthal_order, g.max_azimuthal_order + 1):
+            self.assertEqual(truncate_sht(g, mmax=mmax), SpectralGrid(mmax, mmax))
 
-        expected_default = min(grid.max_exact_degree, grid.max_azimuthal_order)
-        self.assertEqual(default, SpectralGrid(expected_default, expected_default))
-        self.assertEqual(truncate_sht(grid, lmmax=10), SpectralGrid(default.lmax, default.mmax, 10))
-        self.assertEqual(truncate_sht(grid, mmax=20), SpectralGrid(20, 20))
-        self.assertEqual(truncate_sht(grid, mmax=order_limit), SpectralGrid(order_limit, order_limit))
-        self.assertEqual(truncate_sht(grid, mmax=order_limit + 1), SpectralGrid(order_limit + 1, order_limit + 1))
-        self.assertEqual(truncate_sht(grid, lmax=order_limit), SpectralGrid(order_limit, order_limit))
+    @parameterized.expand([[grid, nlon] for grid in _EXACT_DEGREE for nlon in (63, 64)])
+    def test_lone_lmax_sets_mmax(self, grid, nlon):
+        """A lone lmax may not imply orders the longitude sampling cannot recover."""
+        g = as_grid(grid, nlat=64, nlon=nlon)
+        for lmax in (0, 20, g.max_azimuthal_order):
+            self.assertEqual(truncate_sht(g, lmax=lmax), SpectralGrid(lmax, lmax))
+        # the default and a lone lmax share one order bound
+        self.assertEqual(truncate_sht(g, lmax=truncate_sht(g).lmax), truncate_sht(g))
         with self.assertRaisesRegex(ValueError, "max_azimuthal_order"):
-            truncate_sht(grid, lmax=order_limit + 1)
-        self.assertEqual(truncate_sht(grid, lmax=order_limit + 1, mmax=order_limit), SpectralGrid(order_limit + 1, order_limit))
-        self.assertEqual(truncate_sht(grid, lmax=order_limit + 1, mmax=order_limit + 1), SpectralGrid(order_limit + 1, order_limit + 1))
-        # the default and a lone lmax share one order bound, which excludes the Nyquist order
-        self.assertEqual(default.mmax, order_limit)
-        self.assertEqual(truncate_sht(grid, lmax=default.lmax), default)
-
-    def test_a_narrow_longitude_grid_limits_lmax(self):
-        """mmax is the binding constraint when the longitude sampling is coarse."""
-        trunc = truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=16))
-        self.assertEqual(trunc, SpectralGrid(8, 8))  # (nlon + 1) // 2 = 8, below max_exact_degree = 128
+            truncate_sht(g, lmax=g.max_azimuthal_order + 1)
 
     @parameterized.expand([[grid] for grid in _EXACT_DEGREE])
-    def test_user_truncation_overrides_the_grid_default(self, grid):
-        """A user must be able to ask for a different truncation than the grid's."""
+    def test_explicit_bounds_are_kept(self, grid):
+        """Explicit lmax and mmax are preserved independently, past either grid limit."""
         g = as_grid(grid, nlat=128, nlon=256)
-        self.assertEqual(truncate_sht(g, lmax=20), SpectralGrid(20, 20))
-        self.assertEqual(truncate_sht(g, mmax=20), SpectralGrid(20, 20))
-        self.assertEqual(truncate_sht(g, lmax=50, mmax=20), SpectralGrid(50, 20))
+        order = g.max_azimuthal_order
+        for lmax, mmax, lmmax in [
+            (50, 20, None),
+            (5, 0, None),
+            (order + 1, order, None),
+            (order + 1, order + 1, None),
+            # rhomboidal, pentagonal and R42-style bounds
+            (85, 43, 43),
+            (64, 43, 43),
+            (24, 9, 6),
+        ]:
+            self.assertEqual(truncate_sht(g, lmax=lmax, mmax=mmax, lmmax=lmmax), SpectralGrid(lmax, mmax, lmmax))
         with self.assertRaisesRegex(ValueError, "mmax=21 exceeds lmax=20"):
             truncate_sht(g, lmax=20, mmax=21)
-
-    def test_rhomboidal_pentagonal_and_r42_bounds(self):
-        g = as_grid("legendre-gauss", nlat=128, nlon=256)
-        self.assertEqual(truncate_sht(g, lmax=85, mmax=43, lmmax=43), SpectralGrid(85, 43, 43))
-        self.assertEqual(truncate_sht(g, lmax=64, mmax=43, lmmax=43), SpectralGrid(64, 43, 43))
-        self.assertEqual(truncate_sht(g, lmax=24, mmax=9, lmmax=6), SpectralGrid(24, 9, 6))
-        self.assertEqual(truncate_sht(g, lmax=24, mmax=9), SpectralGrid(24, 9))
-        narrow = as_grid("legendre-gauss", nlat=128, nlon=16)
-        self.assertEqual(truncate_sht(narrow, lmmax=3), SpectralGrid(8, 8, 3))
-
-    def test_zero_lmax_and_mmax_remain_explicit_requests(self):
-        g = as_grid("legendre-gauss", nlat=32, nlon=64)
-        self.assertEqual(truncate_sht(g, lmax=0), SpectralGrid(0, 0))
-        self.assertEqual(truncate_sht(g, mmax=0), SpectralGrid(0, 0))
-        self.assertEqual(truncate_sht(g, lmax=5, mmax=0), SpectralGrid(5, 0))
 
     def test_invalid_bound_is_rejected_before_default_resolution(self):
         g = as_grid("legendre-gauss", nlat=32, nlon=64)
@@ -293,51 +286,6 @@ class TestTruncateSht(unittest.TestCase):
             g = as_grid(grid, nlat=128, nlon=256)
             truncate_sht(g, lmax=32)
             truncate_sht(g, mmax=32)
-
-
-class TestSHTRecoveryValidation(unittest.TestCase):
-    """Forward analysis checks recovery bounds; inverse synthesis may upsample."""
-
-    @parameterized.expand([[grid] for grid in ("legendre-gauss", "lobatto")])
-    def test_forward_analysis_rejects_degree_above_recovery_limit(self, grid_type):
-        grid = as_grid(grid_type, nlat=8, nlon=16)
-        lmax = grid.max_recoverable_degree + 1
-        mmax = min(lmax, grid.max_azimuthal_order)
-        with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
-            th.RealSHT(grid, lmax=lmax, mmax=mmax)
-
-    def test_equiangular_forward_analysis_warns_above_recovery_limit(self):
-        grid = as_grid("equiangular", nlat=8, nlon=16)
-        lmax = grid.max_recoverable_degree + 1
-        with self.assertWarnsRegex(UserWarning, "max_recoverable_degree"):
-            th.RealSHT(grid, lmax=lmax, mmax=min(lmax, grid.max_azimuthal_order))
-
-    def test_valid_forward_analysis_adds_no_warning(self):
-        grid = as_grid("legendre-gauss", nlat=8, nlon=16)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)
-            th.RealSHT(grid, lmax=8, mmax=8)
-
-    def test_trapezoidal_overbound_keeps_its_single_existing_warning(self):
-        grid = as_grid("trapezoidal", nlat=16, nlon=32)
-        lmax = grid.max_recoverable_degree + 1
-        with warnings.catch_warnings(record=True) as emitted:
-            warnings.simplefilter("always", UserWarning)
-            th.RealSHT(grid, lmax=lmax, mmax=lmax)
-        self.assertEqual(len(emitted), 1)
-        self.assertIn("grid 'trapezoidal' must not be used", str(emitted[0].message))
-
-    def test_inverse_requires_explicit_order_for_high_degree_synthesis(self):
-        grid = as_grid("legendre-gauss", nlat=8, nlon=16)
-        with self.assertRaisesRegex(ValueError, "max_azimuthal_order"):
-            th.InverseRealSHT(grid, lmax=12)
-
-        inverse = th.InverseRealSHT(grid, lmax=12, mmax=8)
-        coeffs = torch.randn(1, 12, 8, dtype=torch.complex128)
-        coeffs[..., 0] = coeffs[..., 0].real
-        signal = inverse(coeffs)
-        self.assertEqual(tuple(signal.shape), (1, 8, 16))
-        self.assertTrue(torch.isfinite(signal).all())
 
 
 class TestShtLayerTruncationAgrees(unittest.TestCase):
