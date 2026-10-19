@@ -188,7 +188,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
         if lmax > grid.max_azimuthal_order:
             raise ValueError(
                 f"lmax={lmax} without mmax would set mmax={lmax}, above the grid's max_azimuthal_order={grid.max_azimuthal_order}; "
-                f"pass mmax={grid.max_azimuthal_order} to truncate in longitude, or mmax={lmax} to zero-pad the missing orders"
+                f"pass mmax={grid.max_azimuthal_order} to truncate in longitude, or mmax={lmax} to keep the square coefficient array, whose orders above nlon // 2 the grid cannot resolve"
             )
         mmax = lmax
 

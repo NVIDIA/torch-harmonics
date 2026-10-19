@@ -227,7 +227,7 @@ class TestTruncateSht(unittest.TestCase):
 
     @parameterized.expand([[grid, nlon] for grid in _EXACT_DEGREE for nlon in (63, 64)])
     def test_lone_mmax_sets_lmax(self, grid, nlon):
-        """A lone mmax is honoured even above max_azimuthal_order; those orders are zero-padded."""
+        """A lone mmax is honoured even above max_azimuthal_order, although the grid cannot resolve those orders."""
         g = as_grid(grid, nlat=64, nlon=nlon)
         for mmax in (0, 20, g.max_azimuthal_order, g.max_azimuthal_order + 1):
             self.assertEqual(truncate_sht(g, mmax=mmax), SpectralGrid(mmax, mmax))

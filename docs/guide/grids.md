@@ -105,9 +105,14 @@ it:
 | only `lmax`           | `mmax = lmax`; raises if that exceeds `max_azimuthal_order`, so pass `mmax` explicitly |
 | `lmax` and `mmax`     | kept as given, also beyond the grid limits; `mmax > lmax` raises                       |
 
-Explicit bounds beyond the grid limits are meant for the inverse SHT, which can
-synthesize any band, e.g. to upsample. Orders at or above `max_azimuthal_order`
-are zero-padded. For example:
+Explicit bounds beyond the grid limits act differently on degrees and orders.
+The inverse SHT synthesizes any degree, e.g. to upsample in latitude, while the
+forward SHT stops at `max_recoverable_degree`. Orders are limited by the
+longitude sampling in both directions: orders above `nlon // 2` come out of the
+forward SHT as zeros and are ignored by the inverse SHT, and for even `nlon` the
+order `nlon / 2` keeps only its real part.
+
+The defaults for a few grids:
 
 ```python
 th.truncate_sht(th.as_grid("legendre-gauss", nlat=128, nlon=256))   # SpectralGrid(lmax=128, mmax=128, lmmax=None)
