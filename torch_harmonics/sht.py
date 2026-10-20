@@ -81,15 +81,15 @@ class RealSHT(nn.Module):
         Non-inclusive maximum spherical harmonic degree.
     mmax : int, optional
         Non-inclusive maximum spherical harmonic order.
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
-    lmmax : int, optional
-        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
-        ``None`` leaves this bandwidth unrestricted.
 
     Examples
     --------
@@ -129,9 +129,10 @@ class RealSHT(nn.Module):
         grid: RegularGridS2,
         lmax: Optional[int] = None,
         mmax: Optional[int] = None,
+        lmmax: Optional[int] = None,
+        *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        lmmax: Optional[int] = None,
     ):
 
         super().__init__()
@@ -267,15 +268,15 @@ class InverseRealSHT(nn.Module):
         Non-inclusive maximum spherical harmonic degree.
     mmax : int, optional
         Non-inclusive maximum spherical harmonic order.
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
-    lmmax : int, optional
-        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
-        ``None`` leaves this bandwidth unrestricted.
 
     Examples
     --------
@@ -327,9 +328,10 @@ class InverseRealSHT(nn.Module):
         grid: RegularGridS2,
         lmax: Optional[int] = None,
         mmax: Optional[int] = None,
+        lmmax: Optional[int] = None,
+        *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        lmmax: Optional[int] = None,
     ):
 
         super().__init__()
@@ -450,15 +452,15 @@ class RealVectorSHT(nn.Module):
         Non-inclusive maximum spherical harmonic degree.
     mmax : int, optional
         Non-inclusive maximum spherical harmonic order.
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
-    lmmax : int, optional
-        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
-        ``None`` leaves this bandwidth unrestricted.
 
     Examples
     --------
@@ -498,9 +500,10 @@ class RealVectorSHT(nn.Module):
         grid: RegularGridS2,
         lmax: Optional[int] = None,
         mmax: Optional[int] = None,
+        lmmax: Optional[int] = None,
+        *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        lmmax: Optional[int] = None,
     ):
 
         super().__init__()
@@ -652,15 +655,15 @@ class InverseRealVectorSHT(nn.Module):
         Non-inclusive maximum spherical harmonic degree.
     mmax : int, optional
         Non-inclusive maximum spherical harmonic order.
+    lmmax : int, optional
+        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
+        ``None`` leaves this bandwidth unrestricted.
     norm : str
         Normalization convention (``"ortho"``, ``"schmidt"``, ``"unnorm"``),
         by default ``"ortho"``.
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
-    lmmax : int, optional
-        Non-inclusive upper bound on degree minus order: retain only ``l - m < lmmax``.
-        ``None`` leaves this bandwidth unrestricted.
 
     Examples
     --------
@@ -707,9 +710,10 @@ class InverseRealVectorSHT(nn.Module):
         grid: RegularGridS2,
         lmax: Optional[int] = None,
         mmax: Optional[int] = None,
+        lmmax: Optional[int] = None,
+        *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
-        lmmax: Optional[int] = None,
     ):
 
         super().__init__()
