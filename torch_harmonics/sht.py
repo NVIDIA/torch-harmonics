@@ -628,18 +628,9 @@ class RealVectorSHT(nn.Module):
     associated Legendre polynomials.
 
     On equiangular and Fejér-1 grids, explicit ``lmax > grid.max_exact_degree``
-    selects precomputed folded Clenshaw--Curtis analysis following
-    :cite:`Reinecke2023`, Appendix A, and the latitude resampling of DUCC
-    :cite:`DUCC`, folded into the weights at construction instead of applied
-    in every call, when the resolved bounds fit the
-    geometry-specific latitude limits (``lmax <= nlat - 1`` for equiangular,
-    ``lmax <= nlat`` for Fejér-1) and ``mmax <= (nlon + 1) // 2``. These are
-    the accurate band-limited recovery limits; the latter excludes the complex
-    longitude Nyquist order when ``nlon`` is even. Oversized dimensions retain
-    legacy direct quadrature without implying accurate recovery. The default
-    truncation is unchanged. Extended analysis is intended for float32 and
-    float64; its latitude FFT has length ``2 * (nlat - 1)`` for equiangular
-    and ``2 * nlat`` for Fejér-1 grids.
+    selects the same precomputed folded analysis as :class:`~torch_harmonics.RealSHT`,
+    under the same recovery limits, with the tangential parity of the derivative
+    components.
 
     .. seealso::
         :doc:`/guide/spherical_harmonic_transforms`

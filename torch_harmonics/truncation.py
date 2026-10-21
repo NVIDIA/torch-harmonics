@@ -242,10 +242,7 @@ def _warn_if_default_moved(grid: PointSetS2) -> None:
     # two independent reasons the default can have moved, and a grid can hit both
     reasons = []
     if abs(grid.max_latitude_spacing - legacy) > 1e-9 * legacy:
-        if grid.is_uniform_in_theta:
-            reasons.append(f"its uniform latitudinal spacing is {grid.max_latitude_spacing:.6f} rather than pi/(nlat-1)")
-        else:
-            reasons.append(f"its nodes are not uniform in theta, so the latitudinal spacing is {grid.max_latitude_spacing:.6f} rather than pi/(nlat-1)")
+        reasons.append(f"its nodes are not uniform in theta, so the latitudinal spacing is {grid.max_latitude_spacing:.6f} rather than pi/(nlat-1)")
     if grid.max_longitude_spacing > grid.max_latitude_spacing:
         reasons.append(
             f"its in-ring spacing ({grid.max_longitude_spacing:.6f}) exceeds its latitudinal spacing ({grid.max_latitude_spacing:.6f}), and the support has to reach the coarser neighbour"
