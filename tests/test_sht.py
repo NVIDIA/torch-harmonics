@@ -644,7 +644,8 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
 @parameterized_class(("device"), _devices)
 class TestUnsuitableGridWarning(unittest.TestCase):
     """
-    The SHT must object loudly when handed a grid whose quadrature cannot support it.
+    The SHT must object loudly when handed a grid whose quadrature cannot support it,
+    or a degree its analysis cannot recover.
 
     ``trapezoidal`` is the only such grid today: it converges as
     :math:`O(h^2)` rather than spectrally, so the associated Legendre polynomials are
@@ -668,6 +669,41 @@ class TestUnsuitableGridWarning(unittest.TestCase):
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             getattr(th, cls_name)(th.as_grid(grid, nlat=32, nlon=64), lmax=8)
+
+    @parameterized.expand(
+        [
+            [cls_name, grid]
+            for cls_name in ["RealSHT", "RealVectorSHT", "InverseRealSHT", "InverseRealVectorSHT"]
+            for grid in ["legendre-gauss", "lobatto", "equiangular", "fejer1", "trapezoidal"]
+        ]
+    )
+    def test_forward_degree_limit(self, cls_name, grid):
+        """
+        One degree past max_recoverable_degree, analysis raises on Gauss and Lobatto and
+        warns on equiangular and Fejer-1; at the limit it is silent. Synthesis may upsample,
+        so the inverse is silent on both sides. Trapezoidal keeps its single unsuitable-grid
+        warning either way.
+        """
+        desc = th.as_grid(grid, nlat=8, nlon=16)
+        forward = not cls_name.startswith("Inverse")
+        for lmax in (desc.max_recoverable_degree, desc.max_recoverable_degree + 1):
+            past = lmax > desc.max_recoverable_degree
+            kwargs = dict(lmax=lmax, mmax=min(lmax, desc.max_azimuthal_order))
+            with self.subTest(lmax=lmax):
+                if forward and past and grid in ("legendre-gauss", "lobatto"):
+                    with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
+                        getattr(th, cls_name)(desc, **kwargs)
+                    continue
+                expected = ["must not be used"] if grid == "trapezoidal" else []
+                if forward and past and grid in ("equiangular", "fejer1"):
+                    expected.append("max_recoverable_degree")
+                with warnings.catch_warnings(record=True) as emitted:
+                    warnings.simplefilter("always", UserWarning)
+                    getattr(th, cls_name)(desc, **kwargs)
+                messages = [str(w.message) for w in emitted]
+                self.assertEqual(len(messages), len(expected), messages)
+                for message, fragment in zip(messages, expected):
+                    self.assertIn(fragment, message)
 
 
 @parameterized_class(("device",), _devices)
@@ -714,9 +750,9 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
     def test_oversized_dimensions(self, vector, dtype, nlat, nlon, lmax, mmax, lmmax, verbose=False):
         set_seed(333)
         grid = th.as_grid("equiangular", nlat=nlat, nlon=nlon)
-        # lmax-only resolution now requires an explicit order above the recoverable
-        # longitude bound. Preserve these direct-quadrature cases by spelling out the
-        # same Nyquist order that the old inference selected.
+        # lmax-only resolution requires an explicit order above the recoverable
+        # longitude bound, so spell out the largest order the longitude sampling
+        # recovers.
         if mmax is None:
             mmax = min(lmax, grid.max_azimuthal_order)
         analysis = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax)

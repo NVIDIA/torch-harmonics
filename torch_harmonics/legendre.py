@@ -40,6 +40,8 @@ from torch_harmonics.grid import GridS2, SpectralGrid
 
 def _mask_spectral_block(table: torch.Tensor, truncation: SpectralGrid, mmin: int, lmin: int) -> torch.Tensor:
     """Zero modes outside global spectral support in a stored Legendre block."""
+    if not truncation.onesided:
+        raise NotImplementedError("Legendre tables are stored for orders m >= 0 only; two-sided spectral grids are not supported yet")
     nm, nl = table.shape[-3:-1]
     m = torch.arange(mmin, mmin + nm, device=table.device)[:, None]
     l = torch.arange(lmin, lmin + nl, device=table.device)[None, :]

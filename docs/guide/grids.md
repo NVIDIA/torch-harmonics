@@ -82,6 +82,55 @@ the SHTs, spectral and DISCO convolutions, resampling, random fields and the
 distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
+## Spherical harmonic truncation
+
+An SHT keeps the modes with degree `l < lmax` and order `m < mmax` (and
+`l - m < lmmax` when given); all three bounds are exclusive. The grid determines
+how far each bound can go:
+
+| grid type          | `max_exact_degree` (default `lmax`) | `max_recoverable_degree` | `max_azimuthal_order` | forward SHT above `max_recoverable_degree` |
+| ------------------ | ----------------------------------- | ------------------------ | --------------------- | ------------------------------------------ |
+| `"equiangular"`    | `(nlat + 1) // 2`                   | `nlat - 1`               | `(nlon + 1) // 2`     | warns                                      |
+| `"fejer1"`         | `(nlat + 1) // 2`                   | `nlat`                   | `(nlon + 1) // 2`     | warns                                      |
+| `"legendre-gauss"` | `nlat`                              | `nlat`                   | `(nlon + 1) // 2`     | raises `ValueError`                        |
+| `"lobatto"`        | `nlat - 1`                          | `nlat - 1`               | `(nlon + 1) // 2`     | raises `ValueError`                        |
+| `"trapezoidal"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns (any SHT on this grid warns)         |
+| `"healpix"`        | SHT not supported yet               | SHT not supported yet    | SHT not supported yet | SHT not supported yet                      |
+
+- `max_exact_degree` is the degree up to which the latitude quadrature keeps
+  the associated Legendre functions discretely orthogonal.
+- `max_recoverable_degree` is the largest `lmax` a forward SHT accepts. It
+  equals `max_exact_degree` except on equiangular and Fejér-1 grids, where
+  folded analysis (below) recovers degrees beyond the direct quadrature.
+- `max_azimuthal_order` depends only on the longitude sampling. For even
+  `nlon` it excludes the Nyquist order `nlon / 2`: its sine component is zero at
+  every longitude, so the complex coefficient cannot be recovered.
+
+`th.truncate_sht(grid, lmax, mmax, lmmax)` resolves the bounds, and the SHTs use
+it:
+
+| arguments             | resolved bounds                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| none, or only `lmmax` | triangular: `lmax = mmax = min(max_exact_degree, max_azimuthal_order)`                 |
+| only `mmax`           | `lmax = mmax`                                                                          |
+| only `lmax`           | `mmax = lmax`; raises if that exceeds `max_azimuthal_order`, so pass `mmax` explicitly |
+| `lmax` and `mmax`     | kept as given, also beyond the grid limits; `mmax > lmax` raises                       |
+
+Explicit bounds beyond the grid limits act differently on degrees and orders.
+The inverse SHT synthesizes any degree, e.g. to upsample in latitude, while the
+forward SHT stops at `max_recoverable_degree`. Orders are limited by the
+longitude sampling in both directions: orders above `nlon // 2` come out of the
+forward SHT as zeros and are ignored by the inverse SHT, and for even `nlon` the
+order `nlon / 2` keeps only its real part.
+
+The defaults for a few grids:
+
+```python
+th.truncate_sht(th.as_grid("legendre-gauss", nlat=128, nlon=256))   # SpectralGrid(lmax=128, mmax=128, lmmax=None, onesided=True)
+th.truncate_sht(th.as_grid("equiangular", nlat=721, nlon=1440))    # SpectralGrid(lmax=361, mmax=361, lmmax=None, onesided=True)
+th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGrid(lmax=32, mmax=32, lmmax=None, onesided=True): longitude binds
+```
+
 ## Folded high-bandwidth SHT analysis
 
 `RealSHT`, `RealVectorSHT`, `DistributedRealSHT` and
@@ -103,7 +152,7 @@ and `lmax <= nlat` for Fejér-1. Both require `mmax <= (nlon + 1) // 2`.
 The order limit excludes the even-longitude Nyquist mode, which cannot recover
 a complex coefficient. For example, `lmax=mmax=180` on a 180 by 360 F1 grid
 represents degrees and orders through 179. Larger requested dimensions,
-including an inferred `mmax` beyond the recovery limit, retain direct
+including an `mmax` beyond the recovery limit, retain direct
 quadrature without clamping `lmax`, `mmax` or `lmmax`; accepted dimensions do
 not imply accurate recovery. Independent `lmax`, `mmax` and optional `lmmax`
 domains are supported.
@@ -128,15 +177,15 @@ range on the full meridian, then retain their latitude shard. Polar ranks repeat
 that initialization work, but forward communication remains the existing two
 azimuth redistributions and polar reduce-scatter. There is no latitude gather.
 
-For even `nlon`, the inferred azimuthal bound can include the Nyquist order and
-disable extended analysis for the whole transform. For example, `mmax` is
-inferred as 33 below, including order 32, so the transform uses direct quadrature
-even though `lmax=70` is within the latitude recovery limit. Set `mmax=32` to
-exclude Nyquist and select extended analysis:
+For even `nlon`, an `mmax` above `max_azimuthal_order` includes the Nyquist
+order and disables extended analysis for the whole transform. Below, `lmax=70`
+is within the latitude recovery limit, but `mmax=33` includes order 32, so the
+transform uses direct quadrature; `mmax=32` excludes Nyquist and selects
+extended analysis. A lone `lmax=70` raises, since it would imply `mmax=70`:
 
 ```python
 grid = th.as_grid("equiangular", nlat=129, nlon=64)
-direct = th.RealSHT(grid, lmax=70)  # inferred mmax=33 includes the Nyquist order
+direct = th.RealSHT(grid, lmax=70, mmax=33)  # mmax=33 includes the Nyquist order 32
 extended = th.RealSHT(grid, lmax=70, mmax=32)
 ```
 
@@ -208,6 +257,12 @@ independent of the spatial grid hierarchy and stores only the exclusive bounds
 `l - m < lmmax`; it does not change the storage shape. For example,
 `SpectralGrid(lmax=85, mmax=43, lmmax=43)` is R42 and retains modes satisfying
 `0 <= m < 43`, `m <= l < 85`, and `l - m < 43`.
+
+`onesided=True`, the default and the only layout the SHTs support so far, stores
+the orders `m >= 0` that a real-to-complex SHT produces: the negative orders of a
+real field follow from `a(l, -m) = (-1)^m conj(a(l, m))`. A two-sided grid,
+`onesided=False`, stores `-mmax < m < mmax` with shape `(lmax, 2 * mmax - 1)`, as
+a future complex-to-complex SHT will need; `mmax` and `lmmax` then bound `|m|`.
 
 Forward SHTs map from a spatial grid to a spectral grid. Inverse SHTs map back
 to the spatial grid. The `.grid` attribute is the spatial descriptor in both

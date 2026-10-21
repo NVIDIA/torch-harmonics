@@ -682,12 +682,14 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ok = compare_tensors("inverse legendre block", got, ref.contiguous(), atol=1e-14, rtol=1e-14, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "inverse legendre block")
 
-    def test_distributed_forward_rejects_oversized_gauss_degree(self):
+    @parameterized.expand([["DistributedRealSHT"], ["DistributedRealVectorSHT"]])
+    def test_distributed_forward_rejects_oversized_gauss_degree(self, cls_name):
+        """The distributed constructors validate on their own, so they are guarded separately."""
         grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
         lmax = grid.max_recoverable_degree + 1
-        mmax = min(lmax, grid.max_recoverable_order)
+        mmax = min(lmax, grid.max_azimuthal_order)
         with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
-            thd.DistributedRealSHT(grid, lmax=lmax, mmax=mmax)
+            getattr(thd, cls_name)(grid, lmax=lmax, mmax=mmax)
 
 
 if __name__ == "__main__":
