@@ -51,68 +51,45 @@ def _extended_folded_analysis(grid: RegularGridS2, spectral_grid: SpectralGrid) 
     return grid.max_exact_degree < spectral_grid.lmax <= grid.max_recoverable_degree and spectral_grid.mmax <= grid.max_azimuthal_order
 
 
-def _precompute_cc_resampling(nlat: int, mmax: int, vector: bool = False) -> dict[str, torch.Tensor]:
-    """Small real construction buffers for folding, including the longitude scale."""
-    dense_weights = 2.0 * torch.pi * EquiangularGrid(nlat=2 * nlat - 1, nlon=1).colat_weights
-    midpoint_weights = dense_weights[1::2]
-    frequencies = torch.fft.fftfreq(2 * (nlat - 1), dtype=torch.float64)
-    angle = torch.pi * frequencies
-    # Encode the phase as real float64 components for complex reconstruction below.
-    phase = torch.stack((angle.cos(), angle.sin()), dim=0)
-    # The unpaired Nyquist sample represents a cosine, with equal +/- frequencies.
-    # At half-grid positions their phases cancel. Suppressing this bin preserves
-    # conjugation for arbitrary inputs; the supported harmonic band has no such mode.
-    phase[:, nlat - 1] = 0.0
-    signs = torch.ones(mmax, 1, dtype=torch.int8)
-    signs[1::2] = -1
-    if vector:
-        signs = -signs
-    return {
-        "native_weights": dense_weights[::2].contiguous(),
-        "complementary_weights": torch.cat((midpoint_weights, torch.zeros_like(midpoint_weights))),
-        "phase": phase,
-        "parity": signs,
-    }
-
-
-def _precompute_f1_resampling(nlat: int, mmax: int, vector: bool = False) -> dict[str, torch.Tensor]:
-    """Real construction buffers for Fejér-1-to-complementary-CC folding."""
-    dense_weights = 2.0 * torch.pi * EquiangularGrid(nlat=2 * nlat + 1, nlon=1).colat_weights
-    complementary_weights = torch.zeros(2 * nlat, dtype=torch.float64)
-    complementary_weights[: nlat + 1] = dense_weights[::2]
-    frequencies = torch.fft.fftfreq(2 * nlat, dtype=torch.float64)
-    angle = -torch.pi * frequencies
-    phase = torch.stack((angle.cos(), angle.sin()), dim=0)
-    # The unpaired meridional Nyquist cosine vanishes at the half-step targets.
-    # Supported harmonics do not contain this frequency; suppressing it retains
-    # conjugate symmetry for arbitrary complex longitude modes.
-    phase[:, nlat] = 0.0
-    signs = torch.ones(mmax, 1, dtype=torch.int8)
-    signs[1::2] = -1
-    if vector:
-        signs = -signs
-    return {
-        "native_weights": dense_weights[1::2].contiguous(),
-        "complementary_weights": complementary_weights,
-        "phase": phase,
-        "parity": signs,
-    }
-
-
 def _latitude_folding(grid: RegularGridS2, mmax: int, vector: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, bool]:
     """The folding buffers of a grid as ``(parity, native_weights, complementary_weights, phase, include_poles)``.
 
-    Equiangular grids fold onto the midpoints between their rings and sample the poles;
-    Fejer-1 grids fold onto the Clenshaw--Curtis nodes around their rings and do not. The
-    phase is returned complex.
+    Both rules interleave the native rings with complementary ones on a fine
+    Clenshaw--Curtis grid. Equiangular grids fold onto the midpoints between their rings
+    and sample the poles; Fejer-1 grids fold onto the Clenshaw--Curtis nodes around their
+    rings and do not. The weights include the longitude scale ``2 pi``, and the phase of
+    the half-step shift is complex.
     """
     if isinstance(grid, EquiangularGrid):
-        buffers, include_poles = _precompute_cc_resampling(grid.nlat, mmax, vector), True
+        # native rings are the even fine rings, the shift runs forward to the midpoints
+        dense_weights = 2.0 * torch.pi * EquiangularGrid(nlat=2 * grid.nlat - 1, nlon=1).colat_weights
+        native_weights, complement, include_poles, direction = dense_weights[::2], dense_weights[1::2], True, 1.0
     elif isinstance(grid, Fejer1Grid):
-        buffers, include_poles = _precompute_f1_resampling(grid.nlat, mmax, vector), False
+        # native rings are the odd fine rings, the shift runs backward to the even ones
+        dense_weights = 2.0 * torch.pi * EquiangularGrid(nlat=2 * grid.nlat + 1, nlon=1).colat_weights
+        native_weights, complement, include_poles, direction = dense_weights[1::2], dense_weights[::2], False, -1.0
     else:
         raise ValueError(f"folded projection is not implemented for {type(grid).__name__}")
-    return buffers["parity"], buffers["native_weights"], buffers["complementary_weights"], torch.complex(*buffers["phase"]), include_poles
+
+    # period of the meridian extension; the zero padding selects the complementary rings
+    period = 2 * (grid.nlat - 1) if include_poles else 2 * grid.nlat
+    complementary_weights = torch.zeros(period, dtype=torch.float64)
+    complementary_weights[: complement.numel()] = complement
+
+    angle = direction * torch.pi * torch.fft.fftfreq(period, dtype=torch.float64)
+    phase = torch.complex(angle.cos(), angle.sin())
+    # The unpaired meridional Nyquist cosine vanishes at the half-step targets.
+    # Supported harmonics do not contain this frequency; suppressing it retains
+    # conjugate symmetry for arbitrary complex longitude modes.
+    phase[period // 2] = 0
+
+    # scalar parity (-1)^m, tangential vector parity (-1)^(m+1)
+    parity = torch.ones(mmax, 1, dtype=torch.int8)
+    parity[1::2] = -1
+    if vector:
+        parity = -parity
+
+    return parity, native_weights.contiguous(), complementary_weights, phase, include_poles
 
 
 def _periodic_latitude_extension(x: torch.Tensor, signs: torch.Tensor, include_poles: bool = True) -> torch.Tensor:
