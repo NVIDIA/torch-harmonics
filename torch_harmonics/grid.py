@@ -44,6 +44,7 @@ from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
 
 __all__ = [
+    "SpectralGrid",
     "PointSetS2",
     "GridS2",
     "RegularGridS2",
@@ -92,6 +93,56 @@ def _as_int(owner: Any, name: str) -> None:
     if type(value) is not int:
         # frozen dataclass, so normalize through object.__setattr__
         object.__setattr__(owner, name, int(value))
+
+
+@dataclass(frozen=True)
+class SpectralGrid:
+    r"""Descriptor for the spherical harmonic modes retained by an SHT.
+
+    The retained modes satisfy ``|m| < mmax`` and ``|m| <= l < lmax``;
+    ``lmmax`` optionally adds the exclusive bound ``l - |m| < lmmax``. ``shape``
+    is the dense coefficient-storage shape, independent of the mask. Bounds must
+    satisfy ``0 <= mmax <= lmax``, and ``lmmax`` must be positive if given.
+    Unlike :class:`RegularGridS2`, this descriptor has no sample points or
+    quadrature weights.
+
+    ``onesided`` says which orders are stored. The coefficients of a real field
+    satisfy :math:`a_{l,-m} = (-1)^m \overline{a_{l,m}}` (with the Condon--Shortley
+    phase), so a real-to-complex SHT stores only ``m >= 0`` and ``shape`` is
+    ``(lmax, mmax)``; this is the convention ``torch.stft`` calls ``onesided``. A
+    two-sided grid stores ``-mmax < m < mmax`` for complex fields, with ``shape``
+    ``(lmax, 2 * mmax - 1)``. Only one-sided grids are supported by the SHTs so far.
+    """
+
+    lmax: int
+    mmax: int
+    lmmax: Optional[int] = None
+    onesided: bool = True
+
+    @staticmethod
+    def _normalize_bound(name: str, value: int, minimum: int, relation: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < minimum:
+            raise ValueError(f"{name} must be a {relation} integer, got {value!r}")
+        return int(value)
+
+    def __post_init__(self) -> None:
+        lmax = self._normalize_bound("lmax", self.lmax, 0, "non-negative")
+        mmax = self._normalize_bound("mmax", self.mmax, 0, "non-negative")
+        lmmax = None if self.lmmax is None else self._normalize_bound("lmmax", self.lmmax, 1, "positive")
+        if mmax > lmax:
+            raise ValueError(f"mmax={mmax} exceeds lmax={lmax}; orders m >= lmax cannot be represented")
+        if not isinstance(self.onesided, bool):
+            raise ValueError(f"onesided must be a bool, got {self.onesided!r}")
+        object.__setattr__(self, "lmax", lmax)
+        object.__setattr__(self, "mmax", mmax)
+        object.__setattr__(self, "lmmax", lmmax)
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        """Dense coefficient-storage shape, ``(lmax, mmax)`` one-sided or ``(lmax, 2 * mmax - 1)`` two-sided."""
+        if self.onesided:
+            return (self.lmax, self.mmax)
+        return (self.lmax, max(2 * self.mmax - 1, 0))
 
 
 # The per-point tensors are built once per descriptor and cached on it. Caching matters
@@ -345,7 +396,7 @@ class PointSetS2:
     #
     # These are facts about what the sampling can represent, not decisions about
     # what an SHT should keep. The policy -- applying user overrides, enforcing
-    # triangular truncation, warning about changed defaults -- lives in
+    # spectral truncation, warning about changed defaults -- lives in
     # :mod:`torch_harmonics.truncation`, so these properties stay silent.
 
     @property
@@ -756,11 +807,27 @@ class RegularGridS2(GridS2):
     @property
     def max_azimuthal_order(self) -> int:
         r"""
-        Nyquist limit of the longitudinal sampling, :math:`\lfloor N_\lambda / 2 \rfloor + 1`.
+        Largest recoverable order of the longitudinal sampling, :math:`\lfloor (N_\lambda + 1) / 2 \rfloor`.
 
-        Non-inclusive.
+        Non-inclusive. Orders below it have a complex coefficient that the
+        :math:`N_\lambda` longitude nodes determine. For even :math:`N_\lambda`
+        it excludes the Nyquist order :math:`N_\lambda / 2`: its sine component
+        vanishes at every node, so only the real part of that coefficient
+        survives sampling.
         """
-        return self.nlon // 2 + 1
+        return (self.nlon + 1) // 2
+
+    @property
+    def max_recoverable_degree(self) -> int:
+        """
+        Largest ``lmax`` a forward SHT accepts on this grid.
+
+        Non-inclusive. It depends only on the latitude nodes, i.e. on ``nlat`` and the
+        quadrature rule; orders are bounded separately by :attr:`max_azimuthal_order`,
+        which depends only on ``nlon``. It equals
+        :attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` on every grid.
+        """
+        return self.max_exact_degree
 
     # -- decomposition -------------------------------------------------------
 

@@ -1,11 +1,9 @@
 # Grids
 
-Every layer in torch-harmonics takes a *grid descriptor*: a small, immutable
-object that says where the sample points sit on the sphere and which quadrature
-weights go with them. Everything that depends on the sampling -- the default
-truncation of an SHT, the default support radius of a DISCO convolution or
-neighborhood attention, the shape of a field -- is derived from it, so the
-resolution and the grid type are always passed together.
+Layers that operate on sampled fields take a *spatial grid descriptor*: a small,
+immutable object that says where the sample points sit on the sphere and which
+quadrature weights go with them. The SHTs also expose the spectral coefficient
+domain at their input or output through a `SpectralGrid`.
 
 The {doc}`grid descriptors tutorial <../tutorials/grid_descriptors>` walks
 through building descriptors, what they know, and how layers use them.
@@ -75,6 +73,53 @@ It is accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
 the distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
+## Spherical harmonic truncation
+
+An SHT keeps the modes with degree `l < lmax` and order `m < mmax` (and
+`l - m < lmmax` when given); all three bounds are exclusive. The grid determines
+how far each bound can go:
+
+| grid type          | `max_exact_degree` (default `lmax`) | `max_recoverable_degree` | `max_azimuthal_order` | forward SHT above `max_recoverable_degree` |
+| ------------------ | ----------------------------------- | ------------------------ | --------------------- | ------------------------------------------ |
+| `"equiangular"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns                                      |
+| `"legendre-gauss"` | `nlat`                              | `nlat`                   | `(nlon + 1) // 2`     | raises `ValueError`                        |
+| `"lobatto"`        | `nlat - 1`                          | `nlat - 1`               | `(nlon + 1) // 2`     | raises `ValueError`                        |
+| `"trapezoidal"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns (any SHT on this grid warns)         |
+| `"healpix"`        | SHT not supported yet               | SHT not supported yet    | SHT not supported yet | SHT not supported yet                      |
+
+- `max_exact_degree` is the degree up to which the latitude quadrature keeps
+  the associated Legendre functions discretely orthogonal.
+- `max_recoverable_degree` is the largest `lmax` a forward SHT accepts. It
+  equals `max_exact_degree` on every grid today.
+- `max_azimuthal_order` depends only on the longitude sampling. For even
+  `nlon` it excludes the Nyquist order `nlon / 2`: its sine component is zero at
+  every longitude, so the complex coefficient cannot be recovered.
+
+`th.truncate_sht(grid, lmax, mmax, lmmax)` resolves the bounds, and the SHTs use
+it:
+
+| arguments             | resolved bounds                                                                        |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| none, or only `lmmax` | triangular: `lmax = mmax = min(max_exact_degree, max_azimuthal_order)`                 |
+| only `mmax`           | `lmax = mmax`                                                                          |
+| only `lmax`           | `mmax = lmax`; raises if that exceeds `max_azimuthal_order`, so pass `mmax` explicitly |
+| `lmax` and `mmax`     | kept as given, also beyond the grid limits; `mmax > lmax` raises                       |
+
+Explicit bounds beyond the grid limits act differently on degrees and orders.
+The inverse SHT synthesizes any degree, e.g. to upsample in latitude, while the
+forward SHT stops at `max_recoverable_degree`. Orders are limited by the
+longitude sampling in both directions: orders above `nlon // 2` come out of the
+forward SHT as zeros and are ignored by the inverse SHT, and for even `nlon` the
+order `nlon / 2` keeps only its real part.
+
+The defaults for a few grids:
+
+```python
+th.truncate_sht(th.as_grid("legendre-gauss", nlat=128, nlon=256))   # SpectralGrid(lmax=128, mmax=128, lmmax=None, onesided=True)
+th.truncate_sht(th.as_grid("equiangular", nlat=721, nlon=1440))    # SpectralGrid(lmax=361, mmax=361, lmmax=None, onesided=True)
+th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGrid(lmax=32, mmax=32, lmmax=None, onesided=True): longitude binds
+```
+
 ## Field shapes
 
 On a latitude-longitude grid a field has shape `(..., nlat, nlon)`. A HEALPix
@@ -100,6 +145,44 @@ ring colatitudes in radians and `grid.lats` the geographic latitudes. Two kinds
 of quadrature weights are available, and they are not interchangeable:
 `grid.quad_weights` has one entry per point and sums to `4*pi`, while
 `grid.colat_weights` has one entry per ring and sums to 2.
+
+## Spatial and spectral domains
+
+A spatial grid describes physical sample locations and quadrature weights. A
+`SpectralGrid` describes the spherical harmonic modes an SHT retains. It is
+independent of the spatial grid hierarchy and stores only the exclusive bounds
+`lmax`, `mmax`, and optional `lmmax`. The bounds must satisfy
+`0 <= mmax <= lmax`; exceeding `lmax` raises `ValueError`.
+
+`SpectralGrid.shape` is the dense coefficient shape `(lmax, mmax)`. When
+`lmmax` is set, it masks modes inside that rectangle using the exclusive bound
+`l - m < lmmax`; it does not change the storage shape. For example,
+`SpectralGrid(lmax=85, mmax=43, lmmax=43)` is R42 and retains modes satisfying
+`0 <= m < 43`, `m <= l < 85`, and `l - m < 43`.
+
+`onesided=True`, the default and the only layout the SHTs support so far, stores
+the orders `m >= 0` that a real-to-complex SHT produces: the negative orders of a
+real field follow from `a(l, -m) = (-1)^m conj(a(l, m))`. A two-sided grid,
+`onesided=False`, stores `-mmax < m < mmax` with shape `(lmax, 2 * mmax - 1)`, as
+a future complex-to-complex SHT will need; `mmax` and `lmmax` then bound `|m|`.
+
+Forward SHTs map from a spatial grid to a spectral grid. Inverse SHTs map back
+to the spatial grid. The `.grid` attribute is the spatial descriptor in both
+directions; `grid_in` and `grid_out` identify the
+actual input and output domains:
+
+For a `SphericalProductGrid`, these descriptors describe the angular domains.
+The radial shells remain a separate axis in the field and are available on the
+layer through `.radial`.
+
+```python
+grid = th.as_grid("legendre-gauss", nlat=128, nlon=256)
+sht = th.RealSHT(grid, lmax=85, mmax=43, lmmax=43)
+isht = th.InverseRealSHT(grid, lmax=85, mmax=43, lmmax=43)
+
+assert sht.grid_out == isht.grid_in
+assert sht.grid_in == isht.grid_out
+```
 
 ## Mapping between grids
 

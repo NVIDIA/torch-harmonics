@@ -31,9 +31,9 @@
 
 import math
 import warnings
-from typing import Optional, Tuple
+from typing import Optional
 
-from torch_harmonics.grid import PointSetS2, RegularGridS2, require_point_set, require_regular_grid
+from torch_harmonics.grid import PointSetS2, RegularGridS2, SpectralGrid, require_point_set, require_regular_grid
 
 
 def _warn_if_not_spectrally_accurate(grid: RegularGridS2) -> None:
@@ -61,15 +61,13 @@ def _warn_if_not_spectrally_accurate(grid: RegularGridS2) -> None:
     )
 
 
-def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None) -> Tuple[int, int]:
+def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, lmmax: Optional[int] = None) -> SpectralGrid:
     r"""
-    Determine the maximum spherical harmonic degree and order for an SHT based
-    on the spatial grid.
+    Resolve the three non-inclusive spectral bounds of a regular-grid SHT.
 
-    When ``lmax`` or ``mmax`` are not provided, they are inferred from the grid
-    resolution.  The default truncation for each grid type is chosen so that the
-    associated Legendre polynomials up to the returned degree can be
-    square-integrated exactly by the corresponding quadrature rule:
+    The default latitude bound follows the quadrature table below. The
+    trapezoidal grid uses the equiangular default, although its quadrature is
+    not spectrally accurate at that bound:
 
     .. list-table:: Default latitudinal truncation :math:`l_{\max}` for :math:`N_\theta` latitude points
        :header-rows: 1
@@ -87,21 +85,42 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
          - Yes
          - :math:`2 N_\theta - 3`
          - :math:`N_\theta - 1`
-       * - ``"equiangular"`` / ``"trapezoidal"``
+       * - ``"equiangular"``
          - Yes
          - :math:`\approx N_\theta - 1`
          - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
+       * - ``"trapezoidal"``
+         - Yes
+         - :math:`1`
+         - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
 
-    The default longitudinal truncation is the Nyquist limit of the uniform
-    longitude grid: :math:`m_{\max} = \lfloor N_\lambda / 2 \rfloor + 1`.
+    On the trapezoidal grid, only the constant mode (``lmax=1``) is recovered
+    exactly. Its default bound does not guarantee accurate SHT round trips.
 
-    Finally, a **triangular truncation** is applied:
-    :math:`l_{\max} = m_{\max} = \min(l_{\max},\, m_{\max})`, so that every
-    retained degree has a full set of orders.
+    The default longitudinal truncation is the largest order whose complex
+    coefficient the uniform longitude grid determines:
+    :math:`m_{\max} = \lfloor (N_\lambda + 1) / 2 \rfloor`. For even
+    :math:`N_\lambda` this excludes the Nyquist order :math:`N_\lambda / 2`,
+    whose sine component vanishes at every longitude node.
 
-    The bounds are taken from
-    :attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` and
-    :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`.
+    With neither ``lmax`` nor ``mmax`` specified, the default remains
+    triangular, including when only ``lmmax`` is specified:
+    :math:`l_{\max} = m_{\max} = \min(l_{\max},\, m_{\max})`.
+    With only ``mmax`` specified, ``lmax`` is set to ``mmax``. With only
+    ``lmax`` specified, ``mmax`` is set to ``lmax``; if it exceeds the grid's
+    :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`, specify
+    ``mmax`` explicitly. Two explicit bounds are preserved independently.
+    Bounds must satisfy ``0 <= mmax <= lmax``. A mode is retained when
+    :math:`m < m_{\max}`, :math:`m \le l < l_{\max}`, and, when ``lmmax`` is
+    given, :math:`l - m < lm_{\max}`. ``lmmax=None`` leaves the upper
+    :math:`l-m` bandwidth unrestricted; ``lmmax=mmax`` gives the classical
+    rhomboidal case when ``lmax`` does not clip it.
+
+    The default bounds use :attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree`
+    and :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`.
+    Forward transforms validate degree against ``max_recoverable_degree``;
+    inverse transforms use the same resolved bounds but can synthesize higher
+    degrees when both bounds are explicit.
 
     Parameters
     ----------
@@ -109,53 +128,85 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
         Descriptor of the spatial grid the transform operates on.
     lmax : int, optional
         User-defined maximum spherical harmonic degree (non-inclusive).
-        If not provided, the maximum degree is determined from the latitude
-        grid as shown in the table above.
+        If neither degree nor order is specified, it follows the table above.
+        If given alone, ``mmax`` is set to ``lmax``, which must not exceed
+        :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`.
     mmax : int, optional
         User-defined maximum azimuthal harmonic order (non-inclusive).
-        If not provided, set to the Nyquist limit
-        :math:`\lfloor N_\lambda / 2 \rfloor + 1`.
+        If given alone, ``lmax`` is set to ``mmax``. If neither is given, the
+        triangular default uses the smaller of the default ``lmax`` and
+        :math:`\lfloor (N_\lambda + 1) / 2 \rfloor`.
+    lmmax : int, optional
+        Maximum degree-minus-order bandwidth (non-inclusive). ``None`` leaves
+        this bandwidth unrestricted.
 
     Returns
     -------
-    lmax : int
-        Maximum spherical harmonic degree (non-inclusive).
-    mmax : int
-        Maximum azimuthal harmonic order (non-inclusive).
+    SpectralGrid
+        Descriptor of the resolved coefficient support. ``lmmax`` is ``None``
+        when the degree-minus-order bandwidth is unrestricted.
 
     Examples
     --------
     >>> from torch_harmonics import as_grid, truncate_sht
-    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256))
-    (128, 128)
-    >>> truncate_sht(as_grid("lobatto", nlat=128, nlon=256))
-    (127, 127)
-    >>> truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256), lmax=32)
-    (32, 32)
+    >>> trunc = truncate_sht(as_grid("legendre-gauss", nlat=128, nlon=256))
+    >>> (trunc.lmax, trunc.mmax, trunc.lmmax)
+    (128, 128, None)
+    >>> trunc = truncate_sht(
+    ...     as_grid("legendre-gauss", nlat=128, nlon=256),
+    ...     lmax=85,
+    ...     mmax=43,
+    ...     lmmax=43,
+    ... )
+    >>> (trunc.lmax, trunc.mmax, trunc.lmmax)
+    (85, 43, 43)
     """
 
     # a shard has no spectral bounds of its own; say so with the migration message
     # rather than letting an AttributeError surface from deeper in
     grid = require_regular_grid(grid)
 
-    # fall back to what the grid can actually represent. `is None` rather than a
-    # falsy test: lmax=0 is meaningless but should not silently become the default.
-    if lmax is None:
-        lmax = grid.max_exact_degree
+    if lmax is not None:
+        lmax = SpectralGrid._normalize_bound("lmax", lmax, 0, "non-negative")
+    if mmax is not None:
+        mmax = SpectralGrid._normalize_bound("mmax", mmax, 0, "non-negative")
+    if lmmax is not None:
+        lmmax = SpectralGrid._normalize_bound("lmmax", lmmax, 1, "positive")
+
+    if lmax is None and mmax is None:
         if grid.grid_type in ("equiangular", "trapezoidal"):
             warnings.warn(
                 "Default SHT truncation changed in v0.9.0: equiangular/trapezoidal grids now truncate to (nlat+1)//2. " "Specify lmax explicitly to override.",
                 UserWarning,
                 stacklevel=2,
             )
-    if mmax is None:
-        mmax = grid.max_azimuthal_order
+        lmax = min(grid.max_exact_degree, grid.max_azimuthal_order)
+        mmax = lmax
+    elif lmax is None:
+        lmax = mmax
+    elif mmax is None:
+        if lmax > grid.max_azimuthal_order:
+            raise ValueError(
+                f"lmax={lmax} without mmax would set mmax={lmax}, above the grid's max_azimuthal_order={grid.max_azimuthal_order}; "
+                f"pass mmax={grid.max_azimuthal_order} to truncate in longitude, or mmax={lmax} to keep the square coefficient array, whose orders above nlon // 2 the grid cannot resolve"
+            )
+        mmax = lmax
 
-    # perform triangular truncation
-    lmax = min(lmax, mmax)
-    mmax = lmax
+    return SpectralGrid(lmax, mmax, lmmax)
 
-    return lmax, mmax
+
+def _validate_forward_sht_degree(grid: RegularGridS2, lmax: int) -> None:
+    """Validate latitude recovery for forward SHT analysis."""
+    max_degree = grid.max_recoverable_degree
+    if lmax <= max_degree:
+        return
+
+    message = f"forward SHT lmax={lmax} exceeds grid '{grid.grid_type}' max_recoverable_degree={max_degree}"
+    if grid.grid_type in ("legendre-gauss", "lobatto"):
+        raise ValueError(message)
+    if grid.grid_type == "equiangular":
+        warnings.warn(message, UserWarning, stacklevel=3)
+    # Trapezoidal transforms already emit their quadrature warning at construction.
 
 
 def _warn_if_default_moved(grid: PointSetS2) -> None:
