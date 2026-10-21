@@ -739,7 +739,8 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
                 (32, 64, 64, None, 11),
                 (33, 64, 65, 65, 20),
                 (73, 144, 73, 72, 18),
-                (25, 32, 24, None, None),
+                # mmax=17 includes the Nyquist order 16 of nlon=32, so folding stays off
+                (25, 32, 24, 17, None),
                 (25, 32, 24, 17, 6),
                 (25, 32, 24, 18, None),
                 (73, 144, 74, None, None),
