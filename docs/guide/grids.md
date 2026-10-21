@@ -115,9 +115,9 @@ order `nlon / 2` keeps only its real part.
 The defaults for a few grids:
 
 ```python
-th.truncate_sht(th.as_grid("legendre-gauss", nlat=128, nlon=256))   # SpectralGrid(lmax=128, mmax=128, lmmax=None)
-th.truncate_sht(th.as_grid("equiangular", nlat=721, nlon=1440))    # SpectralGrid(lmax=361, mmax=361, lmmax=None)
-th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGrid(lmax=32, mmax=32, lmmax=None): longitude binds
+th.truncate_sht(th.as_grid("legendre-gauss", nlat=128, nlon=256))   # SpectralGrid(lmax=128, mmax=128, lmmax=None, onesided=True)
+th.truncate_sht(th.as_grid("equiangular", nlat=721, nlon=1440))    # SpectralGrid(lmax=361, mmax=361, lmmax=None, onesided=True)
+th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGrid(lmax=32, mmax=32, lmmax=None, onesided=True): longitude binds
 ```
 
 ## Field shapes
@@ -159,6 +159,12 @@ independent of the spatial grid hierarchy and stores only the exclusive bounds
 `l - m < lmmax`; it does not change the storage shape. For example,
 `SpectralGrid(lmax=85, mmax=43, lmmax=43)` is R42 and retains modes satisfying
 `0 <= m < 43`, `m <= l < 85`, and `l - m < 43`.
+
+`onesided=True`, the default and the only layout the SHTs support so far, stores
+the orders `m >= 0` that a real-to-complex SHT produces: the negative orders of a
+real field follow from `a(l, -m) = (-1)^m conj(a(l, m))`. A two-sided grid,
+`onesided=False`, stores `-mmax < m < mmax` with shape `(lmax, 2 * mmax - 1)`, as
+a future complex-to-complex SHT will need; `mmax` and `lmmax` then bound `|m|`.
 
 Forward SHTs map from a spatial grid to a spectral grid. Inverse SHTs map back
 to the spatial grid. The `.grid` attribute is the spatial descriptor in both

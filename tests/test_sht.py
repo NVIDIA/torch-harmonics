@@ -331,6 +331,12 @@ class TestSpectralLegendreMask(unittest.TestCase):
         self.assertTrue((wide_edge.abs() > 0).any())
         self.assertTrue(torch.equal(narrow[..., 0, 5, :], wide[..., 0, 5, :]))
 
+    @parameterized.expand([("scalar", _precompute_legpoly), ("derivative", _precompute_dlegpoly)])
+    def test_two_sided_truncation_is_rejected(self, case, builder):
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        with self.assertRaises(NotImplementedError):
+            builder(9, 16, grid, truncation=th.SpectralGrid(16, 9, onesided=False))
+
     def test_r42_noninclusive_edge(self):
         grid = th.as_grid("legendre-gauss", nlat=96, nlon=192)
         trunc = th.truncate_sht(grid, lmax=85, mmax=43, lmmax=43)

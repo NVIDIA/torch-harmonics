@@ -4,7 +4,7 @@
 
 ### v1.0.0rc1 (unreleased)
 
-* **Breaking**: SHT bounds remain independent; an `mmax`-only call sets `lmax = mmax`, while an `lmax`-only call sets `mmax = lmax` and requires explicit `mmax` above the recoverable order. The no-argument default remains triangular, and `truncate_sht()` returns `SpectralGrid` instead of a tuple.
+* **Breaking**: SHT bounds remain independent; an `mmax`-only call sets `lmax = mmax`, while an `lmax`-only call sets `mmax = lmax` and requires explicit `mmax` above the recoverable order. The no-argument default remains triangular, and `truncate_sht()` returns `SpectralGrid` instead of a tuple. `SpectralGrid` carries a `onesided` flag, `True` for the `m >= 0` storage of the real SHTs; two-sided grids are reserved for complex SHTs and rejected for now.
 * **Breaking**: The SHTs and their distributed counterparts take an optional `lmmax` after `mmax`, retaining only modes with `l - m < lmmax`. `norm` and `csphase` are now keyword-only, so the signature reads `(grid, lmax, mmax, lmmax, *, norm, csphase)`.
 * `RegularGridS2` exposes forward recovery bounds; oversized Gauss and Lobatto analysis raises, while equiangular analysis warns.
 * **Breaking**: The SHT order bound `max_azimuthal_order` is `(nlon + 1) // 2` instead of `nlon // 2 + 1`. For even `nlon` the Nyquist order `nlon / 2` is no longer retained by default: its sine component vanishes at every longitude node, so its complex coefficient cannot be recovered. Defaults change only where longitude sampling binds, e.g. a 64x64 Gauss grid now truncates to (32, 32) instead of (33, 33); grids with `nlon = 2 * nlat` are unaffected.

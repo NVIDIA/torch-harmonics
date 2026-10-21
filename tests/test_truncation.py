@@ -87,6 +87,23 @@ class TestSpectralGrid(unittest.TestCase):
         spectral_grid = SpectralGrid(lmax, mmax, lmmax)
         self.assertEqual(spectral_grid.shape, (lmax, mmax))
         self.assertEqual(spectral_grid.lmmax, lmmax)
+        self.assertTrue(spectral_grid.onesided)
+
+    @parameterized.expand(
+        [
+            ("triangular", 128, 128, (128, 255)),
+            ("r42", 85, 43, (85, 85)),
+            ("single_order", 5, 1, (5, 1)),
+            ("empty_orders", 5, 0, (5, 0)),
+        ]
+    )
+    def test_two_sided_shape(self, case, lmax, mmax, shape):
+        self.assertEqual(SpectralGrid(lmax, mmax, onesided=False).shape, shape)
+
+    @parameterized.expand([("int", 1), ("none", None), ("string", "yes")])
+    def test_invalid_onesided_raises(self, case, onesided):
+        with self.assertRaises(ValueError):
+            SpectralGrid(5, 3, onesided=onesided)
 
     @parameterized.expand(
         [
@@ -122,6 +139,7 @@ class TestSpectralGrid(unittest.TestCase):
         self.assertEqual(hash(first), hash(equal))
         self.assertNotEqual(first, different)
         self.assertEqual(len({first, equal, different}), 2)
+        self.assertNotEqual(first, SpectralGrid(24, 9, 6, onesided=False))
         with self.assertRaises(AttributeError):
             first.lmax = 25
 
