@@ -84,6 +84,9 @@ class QuadratureS2(nn.Module):
     * ``"equiangular"`` -- Clenshaw--Curtis quadrature on equiangular nodes.
       Nodes are equally spaced in :math:`\theta`.  Exact for polynomials of
       degree up to approximately :math:`N - 1`.
+    * ``"fejer1"`` -- Fejér's first rule on midpoint-spaced rings that exclude
+      both poles. Exact through degree :math:`N - 1` for even :math:`N`, and
+      :math:`N` for odd :math:`N`.
     * ``"trapezoidal"`` -- Trapezoidal rule on the :math:`\cos\theta` interval.
       Nodes are equally spaced in :math:`\cos\theta`, not in :math:`\theta`.
     * ``"healpix"`` -- the equal-area HEALPix pixelization

@@ -247,7 +247,7 @@ runs them in a separate job; see [Running distributed tests](#running-distribute
 | Change type | Suggested tests |
 |-------------|-----------------|
 | Grids / HEALPix | `tests/test_grid_assumptions.py`, `tests/test_neighborhood.py`, `tests/test_cache.py` |
-| SHT / quadrature / resampling | `tests/test_sht.py`, `tests/test_truncation.py`, `tests/test_quadrature.py`, `tests/test_resample.py`, `tests/test_spectral_convolution.py` |
+| SHT / quadrature / resampling | `tests/test_sht.py`, `tests/test_legendre.py`, `tests/test_latitude_folding.py`, `tests/test_truncation.py`, `tests/test_quadrature.py`, `tests/test_resample.py`, `tests/test_spectral_convolution.py` |
 | DISCO convolution | `tests/test_convolution.py`, `tests/test_filter_basis.py`, `tests/test_neighborhood.py` |
 | Attention | `tests/test_attention.py`, `tests/test_attention_layout.py`, `tests/test_neighborhood.py` |
 | Example models, losses, metrics | `tests/test_example_models.py`, `tests/test_losses.py`, `tests/test_metrics.py` |
