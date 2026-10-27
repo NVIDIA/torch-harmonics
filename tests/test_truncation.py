@@ -62,12 +62,13 @@ _EXACT_DEGREE = {
     "legendre-gauss": lambda nlat: nlat,
     "lobatto": lambda nlat: nlat - 1,
     "equiangular": lambda nlat: (nlat + 1) // 2,
+    "fejer1": lambda nlat: (nlat + 1) // 2,
     "trapezoidal": lambda nlat: (nlat + 1) // 2,
 }
 
 # grids whose default lmax changed in v0.9.0 and therefore still announce it
 _WARNING_GRIDS = ["equiangular", "trapezoidal"]
-_QUIET_GRIDS = ["legendre-gauss", "lobatto"]
+_QUIET_GRIDS = ["fejer1", "legendre-gauss", "lobatto"]
 
 _NLATS = [32, 33, 128, 129]
 
@@ -185,7 +186,12 @@ class TestGridSpectralBounds(unittest.TestCase):
     def test_max_exact_degree_matches_the_quadrature_rule(self, nlat, grid):
         descriptor = as_grid(grid, nlat=nlat, nlon=2 * nlat)
         self.assertEqual(descriptor.max_exact_degree, _EXACT_DEGREE[grid](nlat))
-        self.assertEqual(descriptor.max_recoverable_degree, descriptor.max_exact_degree)
+        expected_recoverable_degree = _EXACT_DEGREE[grid](nlat)
+        if grid == "equiangular":
+            expected_recoverable_degree = nlat - 1
+        elif grid == "fejer1":
+            expected_recoverable_degree = nlat
+        self.assertEqual(descriptor.max_recoverable_degree, expected_recoverable_degree)
 
     @parameterized.expand([[nlon, grid] for nlon in [63, 64, 256] for grid in _EXACT_DEGREE])
     def test_max_azimuthal_order_excludes_the_nyquist_order(self, nlon, grid):
@@ -221,6 +227,8 @@ class TestTruncateSht(unittest.TestCase):
             ["legendre-gauss", (128, 256), SpectralGrid(128, 128)],
             ["lobatto", (128, 256), SpectralGrid(127, 127)],
             ["equiangular", (128, 256), SpectralGrid(64, 64)],
+            ["fejer1", (128, 256), SpectralGrid(64, 64)],
+            ["fejer1", (180, 360), SpectralGrid(90, 90)],
             ["trapezoidal", (128, 256), SpectralGrid(64, 64)],
             # longitude binds: (nlon + 1) // 2, which excludes the Nyquist order of an even nlon
             ["legendre-gauss", (64, 64), SpectralGrid(32, 32)],
@@ -318,7 +326,7 @@ class TestShtLayerTruncationAgrees(unittest.TestCase):
         warnings.filterwarnings("ignore", message="Default SHT truncation changed", category=UserWarning)
         self.addCleanup(warnings.resetwarnings)
 
-    @parameterized.expand([[nlat, grid] for nlat in [32, 33] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
+    @parameterized.expand([[nlat, grid] for nlat in [32, 33] for grid in ["equiangular", "fejer1", "legendre-gauss", "lobatto"]])
     def test_layers_match_truncate_sht(self, nlat, grid, verbose=False):
         nlon = 2 * nlat
         expected = truncate_sht(as_grid(grid, nlat=nlat, nlon=nlon))
@@ -327,7 +335,7 @@ class TestShtLayerTruncationAgrees(unittest.TestCase):
                 layer = cls(as_grid(grid, nlat=nlat, nlon=nlon))
                 self.assertEqual((layer.lmax, layer.mmax, layer.lmmax), (expected.lmax, expected.mmax, expected.lmmax))
 
-    @parameterized.expand([[grid] for grid in ["equiangular", "legendre-gauss", "lobatto"]])
+    @parameterized.expand([[grid] for grid in ["equiangular", "fejer1", "legendre-gauss", "lobatto"]])
     def test_layers_honour_an_explicit_truncation(self, grid):
         layer = th.RealSHT(th.as_grid(grid, nlat=64, nlon=128), lmax=17)
         self.assertEqual((layer.lmax, layer.mmax), (17, 17))
@@ -421,11 +429,12 @@ class TestTruncateSupport(unittest.TestCase):
         with self.assertWarns(UserWarning):
             truncate_support(as_grid(grid, nlat=32, nlon=64))
 
-    def test_the_default_is_silent_on_equiangular(self):
-        """Equiangular spacing is pi/(nlat-1), so nothing changed there."""
+    @parameterized.expand([[grid] for grid in ("equiangular", "fejer1")])
+    def test_the_default_is_silent_on_unchanged_or_new_grids(self, grid):
+        """Equiangular is unchanged and Fejer-1 has no previous cutoff to announce."""
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            truncate_support(as_grid("equiangular", nlat=32, nlon=64))
+            truncate_support(as_grid(grid, nlat=32, nlon=64))
 
     def test_a_grid_that_overrides_the_cutoff_is_obeyed(self):
         """

@@ -54,8 +54,8 @@ class ShallowWaterSolver(nn.Module):
     ----------
     grid : RegularGridS2
         Grid the fields are sampled on, e.g. ``as_grid("equiangular", nlat=256, nlon=512)``.
-        Its quadrature must support an SHT, so ``"equiangular"``, ``"legendre-gauss"`` or
-        ``"lobatto"``.
+        Its quadrature must support an SHT, so ``"equiangular"``, ``"fejer1"``,
+        ``"legendre-gauss"`` or ``"lobatto"``.
     dt : float
         Time step size
     lmax : int, optional

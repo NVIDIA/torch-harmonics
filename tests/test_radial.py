@@ -362,6 +362,30 @@ class TestLayersOnProductGrids(unittest.TestCase):
             _loss(reference(xk)).backward()
             self.assertTrue(_close(f"{name} input gradient on shell {k}", x.grad.select(rdim_in, k), xk.grad))
 
+    def test_folded_fejer_analysis_acts_on_each_shell(self):
+        angular = as_grid("fejer1", nlat=10, nlon=20)
+        product = SphericalProductGrid(angular, _RADIAL)
+        cases = [
+            ("scalar", lambda grid: th.RealSHT(grid, lmax=10, mmax=10), 1, (2, _RADIAL.nr, *angular.shape)),
+            ("vector", lambda grid: th.RealVectorSHT(grid, lmax=10, mmax=10), 2, (2, 2, _RADIAL.nr, *angular.shape)),
+        ]
+
+        for name, build, radial_dim, shape in cases:
+            with self.subTest(transform=name):
+                layer = build(product).to(self.device)
+                reference = build(angular).to(self.device)
+                self.assertTrue(layer._extended_folded)
+                x = torch.randn(shape, device=self.device, dtype=torch.float32, requires_grad=True)
+
+                out = layer(x)
+                _loss(out).backward()
+                for k in range(_RADIAL.nr):
+                    xk = x.detach().select(radial_dim, k).clone().requires_grad_(True)
+                    expected = reference(xk)
+                    _loss(expected).backward()
+                    self.assertTrue(_close(f"{name} output on shell {k}", out.detach().select(radial_dim, k), expected.detach()))
+                    self.assertTrue(_close(f"{name} gradient on shell {k}", x.grad.select(radial_dim, k), xk.grad))
+
     def test_repr_names_the_radial_grid(self):
         layer = th.RealSHT(SphericalProductGrid(_REGULAR, _RADIAL))
         self.assertIn(repr(_RADIAL), repr(layer))
