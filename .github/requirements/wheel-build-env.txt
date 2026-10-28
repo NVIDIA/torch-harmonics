@@ -2,7 +2,7 @@
 # These run with --no-build-isolation, so this is the toolchain that actually compiles the
 # extension and stamps the version into the published wheels. Pinned so that a compromised or
 # simply broken upstream release cannot silently change what we ship.
-pip==26.2.1
+pip==26.2.2
 setuptools==84.0.0
 wheel==0.48.0
 setuptools-scm==10.3.4
