@@ -35,7 +35,7 @@ from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors, disable_tf32, maybe_autocast, requires_torch_compile, set_seed
+from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors, disable_tf32, maybe_autocast, param_grad_ulps, requires_torch_compile, set_seed
 from torch.library import opcheck
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, HealpixGrid, as_grid
@@ -667,7 +667,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
         # compare
         self.assertTrue(compare_tensors("input grad", x_grad.to(x_ref_grad.dtype), x_ref_grad, atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("weight grad", conv.weight.grad.to(w_ref.grad.dtype), w_ref.grad, atol=atol, rtol=rtol, verbose=verbose))
+        # the weight gradient is a sum over batch and grid, see param_grad_ulps
+        pg_ulps = param_grad_ulps(batch_size * max(in_shape[0] * in_shape[1], out_shape[0] * out_shape[1]), dtype)
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad.to(w_ref.grad.dtype), w_ref.grad, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps, eps_dtype=dtype))
 
     @parameterized.expand(
         [
@@ -721,9 +723,9 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (3, 3), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 1e-2],
             # 32 channels make the weight grad large (|w.grad| ~ 70, where one bf16 step is 0.5), so
-            # cancellation leaves near-zero entries ~2^-8 * 70 off in both paths: atol covers two roundings
-            # (0.3 failed by <1% on B200 and passed on H100/GB200, depending on accumulation order)
-            [8, 32, 32, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 6e-1, 5e-2],
+            # cancellation leaves near-zero entries ~2^-8 * 70 off in both paths; the weight grad's
+            # range-scaled atol (param_grad_ulps) covers that, the row tolerance does not need to
+            [8, 32, 32, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, False, 3e-1, 5e-2],
             # transpose convolution
             [8, 4, 2, (41, 80), (41, 80), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
             [8, 4, 2, (41, 80), (41, 80), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, True, False, 3e-1, 1e-2],
@@ -841,11 +843,12 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         inp_grad_opt = inp.grad.clone()
 
         # compare results
-        self.assertTrue(compare_tensors("output", out_naive, out_opt, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("output", out_opt, out_naive, atol=atol, rtol=rtol, verbose=verbose))
 
-        # compare
-        self.assertTrue(compare_tensors("input grad", inp_grad_naive, inp_grad_opt, atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("weight grad", conv_naive.weight.grad, conv_opt.weight.grad, atol=atol, rtol=rtol, verbose=verbose))
+        # compare; the weight gradient is a sum over batch and grid, see param_grad_ulps
+        pg_ulps = param_grad_ulps(batch_size * max(nlat_in * nlon_in, nlat_out * nlon_out), dtype)
+        self.assertTrue(compare_tensors("input grad", inp_grad_opt, inp_grad_naive, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_opt.weight.grad, conv_naive.weight.grad, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps, eps_dtype=dtype))
 
     @parameterized.expand(
         [
@@ -906,16 +909,16 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False, 1e-4, 1e-4],
-            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True, 1e-4, 1e-4],
-            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True, 1e-4, 1e-4],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", False],
+            [8, 4, 2, (16, 32), (8, 16), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", False],
+            [8, 4, 2, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", True],
+            [8, 4, 2, (8, 16), (16, 32), (5), "piecewise linear", "mean", "legendre-gauss", "legendre-gauss", True],
         ],
         skip_on_empty=True,
     )
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is not available")
     def test_device_instantiation(
-        self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, atol, rtol, verbose=False
+        self, batch_size, in_channels, out_channels, in_shape, out_shape, kernel_shape, basis_type, basis_norm_mode, grid_in, grid_out, transpose, verbose=False
     ):
 
         set_seed(333)
@@ -963,7 +966,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         # since we specified the device specifier everywhere, it should always
         # use the cpu and it should be the same everywhere
         for name in ("psi_row_ker", "psi_row_lat", "psi_seg_off", "psi_seg", "psi_val_off", "psi_vals"):
-            self.assertTrue(compare_tensors(name, getattr(conv_host, name).cpu(), getattr(conv_device, name).cpu(), atol=atol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(name, getattr(conv_device, name).cpu(), getattr(conv_host, name).cpu(), atol=0.0, rtol=0.0, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -1227,6 +1230,10 @@ class TestKpackedPath(unittest.TestCase):
     """Tests specific to the tensor-core kpacked forward, whose backward is the arc scatter."""
 
     device = torch.device("cuda")
+
+    def setUp(self):
+        # the fp32 references below must not run on TF32 tensor cores
+        disable_tf32()
 
     def _make_conv(self, batch, channels, in_shape, out_shape=None, theta_cutoff=0.05, grid_in="legendre-gauss", grid_out="legendre-gauss", fused=False):
         if out_shape is None:
@@ -1591,9 +1598,11 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
         out_opt.backward(grad_output)
         inp_grad_opt = inp.grad.clone()
 
-        self.assertTrue(compare_tensors("output", out_naive, out_opt, atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("input grad", inp_grad_naive, inp_grad_opt, atol=atol, rtol=rtol, verbose=verbose))
-        self.assertTrue(compare_tensors("weight grad", conv_naive.weight.grad, conv_opt.weight.grad, atol=atol, rtol=rtol, verbose=verbose))
+        # the weight gradient is a sum over batch and points, see param_grad_ulps
+        pg_ulps = param_grad_ulps(inp.shape[0] * max(conv_opt.grid_in.npoints, conv_opt.grid_out.npoints), dtype)
+        self.assertTrue(compare_tensors("output", out_opt, out_naive, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("input grad", inp_grad_opt, inp_grad_naive, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("weight grad", conv_opt.weight.grad, conv_naive.weight.grad, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps, eps_dtype=dtype))
 
     @parameterized.expand(
         [

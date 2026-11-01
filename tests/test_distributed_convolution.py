@@ -40,6 +40,7 @@ from testutils import (
     disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
+    param_grad_ulps,
     reduce_success,
     set_seed,
     setup_class_from_context,
@@ -415,36 +416,30 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         # evaluate FWD pass
         out_gather_full = self._gather_helper_fwd(out_local, conv_dist)
-        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("output", out_gather_full, out_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_bwd(igrad_local, conv_dist)
-        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
         # evaluate parameter gradients — local per-rank contributions
         # summed across the h and w groups must match the serial gradient.
-        # Parameter grads are sums over batch + local spatial → accumulate
-        # reduction noise that per-element output / input-grad checks
-        # don't see. Use a higher factor for fp32 (where the base tolerance
-        # is tight at 1e-6/1e-5 and H100's a2a reductions can drift up to
-        # ~5e-3 absolute) than for AMP (where the base is already 4–5
-        # orders of magnitude looser; the same factor would make the
-        # bound meaninglessly large).
-        param_grad_tol_factor = 10.0 if is_amp else 1000.0
-        pg_atol, pg_rtol = atol * param_grad_tol_factor, rtol * param_grad_tol_factor
-        if dtype == torch.bfloat16 and basis_type == "piecewise linear":
-            # bf16 parameter gradients accumulate over batch and distributed
-            # spatial shards. Keep output/dgrad tolerances tight, but allow
-            # small absolute drift near zero-valued weight-gradient entries.
-            pg_atol = max(pg_atol, 3.0)
+        # Parameter grads are sums over batch and the whole grid, reassociated
+        # across ranks, so their absolute rounding error scales with the
+        # largest entries rather than the entry it lands on: entries that
+        # cancel to ~0 carry the same error as their neighbours. The atol is
+        # therefore floored at ULPs of max|ref|, see param_grad_ulps.
+        pg_ulps = param_grad_ulps(B * max(nlat_in * nlon_in, nlat_out * nlon_out), dtype)
         if conv_dist.weight.grad is not None:
             wgrad = self._allreduce_param_grad(conv_dist.weight.grad)
-            self.assertTrue(compare_tensors("weight grad", conv_local.weight.grad, wgrad, atol=pg_atol, rtol=pg_rtol, verbose=verbose))
+            ok = compare_tensors("weight grad", wgrad, conv_local.weight.grad, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps, eps_dtype=dtype)
+            self.assertTrue(reduce_success(ok, self.device), "weight grad")
         if getattr(conv_dist, "bias", None) is not None and conv_dist.bias.grad is not None:
             bgrad = self._allreduce_param_grad(conv_dist.bias.grad)
-            self.assertTrue(compare_tensors("bias grad", conv_local.bias.grad, bgrad, atol=pg_atol, rtol=pg_rtol, verbose=verbose))
+            ok = compare_tensors("bias grad", bgrad, conv_local.bias.grad, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps, eps_dtype=dtype)
+            self.assertTrue(reduce_success(ok, self.device), "bias grad")
 
     def _run_kpacked_fallback(self, fused: bool, dtype: torch.dtype, atol: float, rtol: float):
         """Shared body for kpacked-fallback tests.
@@ -501,11 +496,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
 
         verbose = self.world_rank == 0
         out_gather = self._gather_helper_fwd(out_local, conv_dist)
-        ok = compare_tensors("output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("output", out_gather, out_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         igrad_gather = self._gather_helper_bwd(igrad_local, conv_dist)
-        ok = compare_tensors("gradients", igrad_full, igrad_gather, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("gradients", igrad_gather, igrad_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
     def test_kpacked_fallback_bf16_unfused(self):

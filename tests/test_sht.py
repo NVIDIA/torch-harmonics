@@ -790,11 +790,11 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         actual = analysis(x)
         self.assertEqual(actual.shape, ((2,) if vector else ()) + analysis.grid_out.shape)
         tol = 1e-5 if dtype == torch.float32 else 1e-12
-        self.assertTrue(compare_tensors("oversized direct quadrature", expected, actual, atol=tol, rtol=tol, verbose=verbose))
+        self.assertTrue(compare_tensors("oversized direct quadrature", actual, expected, atol=tol, rtol=tol, verbose=verbose))
         gradient = torch.randn_like(actual)
         actual_grad = torch.autograd.grad(actual, x, gradient)[0]
         expected_grad = torch.autograd.grad(expected, x, gradient)[0]
-        self.assertTrue(compare_tensors("oversized input gradient", expected_grad, actual_grad, atol=tol, rtol=tol, verbose=verbose))
+        self.assertTrue(compare_tensors("oversized input gradient", actual_grad, expected_grad, atol=tol, rtol=tol, verbose=verbose))
         l = torch.arange(analysis.lmax, device=self.device)[:, None]
         m = torch.arange(analysis.mmax, device=self.device)[None, :]
         mask = m <= l

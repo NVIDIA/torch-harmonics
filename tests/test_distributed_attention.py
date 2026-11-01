@@ -40,6 +40,7 @@ from testutils import (
     disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
+    param_grad_ulps,
     reduce_success,
     set_seed,
     setup_class_from_context,
@@ -426,28 +427,29 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # ---- compare forward ----
         out_gather = self._gather_helper_fwd(out_local, attn_dist)
-        ok = compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("forward output", out_gather, out_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output")
 
         # ---- compare backward ----
         for inp in ["q", "k", "v"]:
             use_out = inp == "q"
             igrad_gather = self._gather_helper_bwd(igrad_local[inp], attn_dist, use_out_shapes=use_out)
-            ok = compare_tensors(f"input gradient {inp}", igrad_full[inp], igrad_gather, atol=atol, rtol=rtol, verbose=verbose)
+            ok = compare_tensors(f"input gradient {inp}", igrad_gather, igrad_full[inp], atol=atol, rtol=rtol, verbose=verbose)
             self.assertTrue(reduce_success(ok, self.device), f"input gradient {inp}")
 
         # ---- compare parameter gradients ----
         # summed over the spatial ranks first, which is the caller's job (see
         # _allreduce_param_grad). A parameter gradient sums over every point, so the two
-        # sides add the same terms in different orders: atol scales with the gradient.
+        # sides add the same terms in different orders: atol scales with the gradient's
+        # range, see param_grad_ulps.
+        pg_ulps = param_grad_ulps(B * max(Hi * Wi, Ho * Wo), dtype)
         named_serial = dict(attn_serial.named_parameters())
         named_dist = dict(attn_dist.named_parameters())
         self.assertEqual(sorted(named_serial), sorted(named_dist), "the two layers have different parameters")
         self.assertEqual("scale" in named_dist, trainable_scale)
         for name, p_serial in named_serial.items():
             pgrad = self._allreduce_param_grad(named_dist[name].grad)
-            atol_p = atol * max(1.0, float(p_serial.grad.abs().max()))
-            ok = compare_tensors(f"parameter gradient {name}", p_serial.grad, pgrad, atol=atol_p, rtol=rtol, verbose=verbose)
+            ok = compare_tensors(f"parameter gradient {name}", pgrad, p_serial.grad, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps, eps_dtype=dtype)
             self.assertTrue(reduce_success(ok, self.device), f"parameter gradient {name}")
 
     @parameterized.expand(
@@ -565,7 +567,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # ---- compare forward ----
         out_gather = self._gather_helper_fwd(out_local, attn_dist)
-        ok = compare_tensors("forward output", out_full, out_gather, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("forward output", out_gather, out_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output")
 
         # ---- contract: frozen input grads must be None on both ----
@@ -590,8 +592,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             igrad_gather = self._gather_helper_bwd(igrad_local[n], attn_dist, use_out_shapes=use_out)
             ok = compare_tensors(
                 f"input grad {n} (frozen={frozen})",
-                igrad_full[n],
                 igrad_gather,
+                igrad_full[n],
                 atol=atol,
                 rtol=rtol,
                 verbose=verbose,
