@@ -39,6 +39,7 @@ from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
+from torch_harmonics.sht import _extended_folded_analysis, _precompute_folded_projection
 from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
 
@@ -60,6 +61,12 @@ class DistributedRealSHT(nn.Module):
 
     The endpoints ``grid_in`` and ``grid_out`` describe global domains; ``grid``
     remains the global spatial descriptor.
+
+    Folded equiangular CC and Fejér-1 analysis use the same precomputed real
+    effective projection as :class:`~torch_harmonics.RealSHT`. Each rank builds
+    only its global order range on the full meridian and retains its latitude
+    shard. Forward and backward use the existing collectives without latitude
+    gathers.
 
     **Distribution scheme.**
     The input tensor has shape ``(B, C, nlat_local, nlon_local)`` where latitudes
@@ -183,31 +190,45 @@ class DistributedRealSHT(nn.Module):
         self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
-        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
-        # quadrature weights. It is a constant prefactor of a linear transform, so folding it
-        # here is exact and saves a pointwise multiply on a complex tensor in every forward.
-        weights = 2.0 * torch.pi * weights
+        self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
+        if self._extended_folded:
+            weights = _precompute_folded_projection(
+                self.grid,
+                self._trunc,
+                self.norm,
+                self.csphase,
+                vector=False,
+                mmin=self.mmax_offset,
+                mmax=self.mmax_offset + self.mmax_local,
+                kmin=self.lat_offset,
+                kmax=self.lat_offset + self.nlat_local,
+            )
+        else:
+            # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
+            # quadrature weights. It is a constant prefactor of a linear transform, so folding it
+            # here is exact and saves a pointwise multiply on a complex tensor in every forward.
+            weights = 2.0 * torch.pi * weights
 
-        # build only the block this rank keeps, rather than the whole table. The contraction
-        # over k is a distributed matmul completed by a reduce-scatter in the forward, so only
-        # the local latitudes are needed; l is contracted in full. Latitudes restrict for free
-        # via kmin/kmax -- they are independent of each other -- whereas the order range needs
-        # mmin, since reaching P^m_m means walking the seed up from m=0.
-        weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
+            # build only the block this rank keeps, rather than the whole table. The contraction
+            # over k is a distributed matmul completed by a reduce-scatter in the forward, so only
+            # the local latitudes are needed; l is contracted in full. Latitudes restrict for free
+            # via kmin/kmax -- they are independent of each other -- whereas the order range needs
+            # mmin, since reaching P^m_m means walking the seed up from m=0.
+            weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
 
-        # combine quadrature weights with the legendre weights
-        pct = _precompute_legpoly(
-            self.mmax_offset + self.mmax_local,
-            self.lmax,
-            self.grid,
-            norm=self.norm,
-            csphase=self.csphase,
-            truncation=self._trunc,
-            mmin=self.mmax_offset,
-            kmin=self.lat_offset,
-            kmax=self.lat_offset + self.nlat_local,
-        )
-        weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
+            # combine quadrature weights with the legendre weights
+            pct = _precompute_legpoly(
+                self.mmax_offset + self.mmax_local,
+                self.lmax,
+                self.grid,
+                norm=self.norm,
+                csphase=self.csphase,
+                truncation=self._trunc,
+                mmin=self.mmax_offset,
+                kmin=self.lat_offset,
+                kmax=self.lat_offset + self.nlat_local,
+            )
+            weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
@@ -545,6 +566,10 @@ class DistributedRealVectorSHT(nn.Module):
             Serial counterpart with full mathematical description and parameter
             documentation.
 
+    Folded equiangular CC and Fejér-1 analysis use the same precomputed real
+    effective projection as :class:`~torch_harmonics.RealVectorSHT`, with
+    global-order tangential parity. It adds no forward or backward collectives.
+
     Parameters
     ----------
     grid : RegularGridS2
@@ -632,36 +657,51 @@ class DistributedRealVectorSHT(nn.Module):
         self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
-        # build only the block this rank keeps: local latitudes, local orders, all degrees,
-        # see DistributedRealSHT.__init__
-        weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
+        self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
+        if self._extended_folded:
+            weights = _precompute_folded_projection(
+                self.grid,
+                self._trunc,
+                self.norm,
+                self.csphase,
+                vector=True,
+                mmin=self.mmax_offset,
+                mmax=self.mmax_offset + self.mmax_local,
+                kmin=self.lat_offset,
+                kmax=self.lat_offset + self.nlat_local,
+            )
+        else:
+            # build only the block this rank keeps: local latitudes, local orders, all degrees,
+            # see DistributedRealSHT.__init__
+            weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
 
-        # compute weights
-        dpct = _precompute_dlegpoly(
-            self.mmax_offset + self.mmax_local,
-            self.lmax,
-            self.grid,
-            norm=self.norm,
-            csphase=self.csphase,
-            truncation=self._trunc,
-            mmin=self.mmax_offset,
-            kmin=self.lat_offset,
-            kmax=self.lat_offset + self.nlat_local,
-        )
+            # compute weights
+            dpct = _precompute_dlegpoly(
+                self.mmax_offset + self.mmax_local,
+                self.lmax,
+                self.grid,
+                norm=self.norm,
+                csphase=self.csphase,
+                truncation=self._trunc,
+                mmin=self.mmax_offset,
+                kmin=self.lat_offset,
+                kmax=self.lat_offset + self.nlat_local,
+            )
 
-        # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
-        # quadrature weights (see DistributedRealSHT.__init__)
-        weights = 2.0 * torch.pi * weights
+            # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
+            # quadrature weights (see DistributedRealSHT.__init__)
+            weights = 2.0 * torch.pi * weights
 
-        # combine integration weights, normalization factor in to one. The degrees are
-        # float64: an integer arange divided by a float gives the default dtype, float32,
-        # and that rounding of 1/(l(l+1)) would survive a later .double()
-        l = torch.arange(0, self.lmax, dtype=torch.float64)
-        norm_factor = 1.0 / l / (l + 1)
-        norm_factor[0] = 1.0
-        weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor).contiguous()
-        # since the second component is imaginary, we need to take complex conjugation into account
-        weights[1] = -1 * weights[1]
+            # combine integration weights, normalization factor in to one. The degrees are
+            # float64: an integer arange divided by a float gives the default dtype, float32,
+            # and that rounding of 1/(l(l+1)) would survive a later .double()
+            l = torch.arange(0, self.lmax, dtype=torch.float64)
+            norm_factor = 1.0 / l / (l + 1)
+            if self.lmax:
+                norm_factor[0] = 1.0
+            weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor).contiguous()
+            # since the second component is imaginary, we need to take complex conjugation into account
+            weights[1] = -1 * weights[1]
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)

@@ -19,7 +19,7 @@ import torch_harmonics as th
 grid = th.as_grid("legendre-gauss", nlat=128, nlon=256)
 sht = th.RealSHT(grid)
 
-th.grid_types()                   # ('equiangular', 'legendre-gauss', 'lobatto', 'trapezoidal', 'healpix')
+th.grid_types()                   # ('equiangular', 'fejer1', 'legendre-gauss', 'lobatto', 'trapezoidal', 'healpix')
 th.grid_params("healpix")         # ('nside',)
 ```
 
@@ -33,19 +33,29 @@ equiangular grid raises instead of being ignored.
 | grid type          | class               | parameters    | nodes                                                      | poles | spherical harmonic transform |
 | ------------------ | ------------------- | ------------- | ---------------------------------------------------------- | ----- | ---------------------------- |
 | `"equiangular"`    | `EquiangularGrid`   | `nlat`,`nlon` | equispaced in colatitude                                   | yes   | yes                          |
+| `"fejer1"`         | `Fejer1Grid`        | `nlat`,`nlon` | equispaced half a ring from each pole                      | no    | yes                          |
 | `"legendre-gauss"` | `LegendreGaussGrid` | `nlat`,`nlon` | Gauss-Legendre nodes                                       | no    | yes                          |
 | `"lobatto"`        | `LobattoGrid`       | `nlat`,`nlon` | Gauss-Lobatto nodes                                        | yes   | yes                          |
 | `"trapezoidal"`    | `TrapezoidalGrid`   | `nlat`,`nlon` | equispaced in `cos(colatitude)`                            | yes   | only at low truncation       |
 | `"healpix"`        | `HealpixGrid`       | `nside`       | `12 * nside**2` equal-area pixels on `4 * nside - 1` rings | no    | no                           |
 
-The first four are latitude-longitude grids: `nlat` latitude rings with `nlon`
+The first five are latitude-longitude grids: `nlat` latitude rings with `nlon`
 equispaced longitudes each. They differ only in where the rings sit and in the
 quadrature rule that goes with them. All layers accept them.
 
 **Equiangular.** Rings equally spaced in colatitude, including both poles, with
-Clenshaw-Curtis quadrature. This is the layout of most reanalysis and climate
-data, for example ERA5 at 0.25 degrees (`nlat=721, nlon=1440`). Its default SHT
-truncation is `lmax = (nlat + 1) // 2`.
+Clenshaw-Curtis quadrature. Regular latitude-longitude reanalysis fields, such
+as ERA5 at 0.25 degrees (`nlat=721, nlon=1440`), use this layout. The native
+SHT latitude bound is `grid.max_exact_degree = (nlat + 1) // 2`. Explicitly
+higher bounds use folded analysis when the degree and order limits below are
+satisfied.
+
+**Fejér-1.** Rings are equally spaced in colatitude at
+`theta[j] = pi * (j + 0.5) / nlat`, so neither pole is sampled. Fejér's first
+quadrature rule integrates polynomials through degree `nlat - 1` for even
+`nlat` and `nlat` for odd `nlat`. Ordinary direct SHT analysis therefore uses
+the exclusive native bound `grid.max_exact_degree = (nlat + 1) // 2` (T89 on a
+180-ring grid).
 
 **Legendre-Gauss.** Rings at the Gauss-Legendre nodes, which exclude the poles.
 The quadrature is exact up to degree `2 * nlat - 1`, the best achievable with
@@ -68,9 +78,9 @@ before v1.0.0.
 whose length grows from 4 at the poles to `4 * nside` at the equator. Its
 quadrature integrates only constants exactly, so it does not support an SHT.
 It is accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
-`DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and
-`QuadratureS2`; the SHTs, spectral convolutions, resampling, random fields and
-the distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
+`DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and `QuadratureS2`;
+the SHTs, spectral convolutions, resampling, random fields and the
+distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
 ## Spherical harmonic truncation
@@ -81,7 +91,8 @@ how far each bound can go:
 
 | grid type          | `max_exact_degree` (default `lmax`) | `max_recoverable_degree` | `max_azimuthal_order` | forward SHT above `max_recoverable_degree` |
 | ------------------ | ----------------------------------- | ------------------------ | --------------------- | ------------------------------------------ |
-| `"equiangular"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns                                      |
+| `"equiangular"`    | `(nlat + 1) // 2`                   | `nlat - 1`               | `(nlon + 1) // 2`     | warns                                      |
+| `"fejer1"`         | `(nlat + 1) // 2`                   | `nlat`                   | `(nlon + 1) // 2`     | warns                                      |
 | `"legendre-gauss"` | `nlat`                              | `nlat`                   | `(nlon + 1) // 2`     | raises `ValueError`                        |
 | `"lobatto"`        | `nlat - 1`                          | `nlat - 1`               | `(nlon + 1) // 2`     | raises `ValueError`                        |
 | `"trapezoidal"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns (any SHT on this grid warns)         |
@@ -90,7 +101,8 @@ how far each bound can go:
 - `max_exact_degree` is the degree up to which the latitude quadrature keeps
   the associated Legendre functions discretely orthogonal.
 - `max_recoverable_degree` is the largest `lmax` a forward SHT accepts. It
-  equals `max_exact_degree` on every grid today.
+  equals `max_exact_degree` except on equiangular and Fejér-1 grids, where
+  folded analysis (below) recovers degrees beyond the direct quadrature.
 - `max_azimuthal_order` depends only on the longitude sampling. For even
   `nlon` it excludes the Nyquist order `nlon / 2`: its sine component is zero at
   every longitude, so the complex coefficient cannot be recovered.
@@ -119,6 +131,93 @@ th.truncate_sht(th.as_grid("legendre-gauss", nlat=128, nlon=256))   # SpectralGr
 th.truncate_sht(th.as_grid("equiangular", nlat=721, nlon=1440))    # SpectralGrid(lmax=361, mmax=361, lmmax=None, onesided=True)
 th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGrid(lmax=32, mmax=32, lmmax=None, onesided=True): longitude binds
 ```
+
+## Folded high-bandwidth SHT analysis
+
+`RealSHT`, `RealVectorSHT`, `DistributedRealSHT` and
+`DistributedRealVectorSHT` support folded high-bandwidth analysis on both
+equiangular and Fejér-1 grids when explicit `lmax` exceeds
+`grid.max_exact_degree`. The construction interleaves the input rings with
+complementary Clenshaw-Curtis nodes from a fine grid with `2*nlat + 1` rings for
+F1, then folds the quadrature and interpolation into real Legendre projection
+weights, following the doubled-meridian method of {cite}`Reinecke2023`.
+DUCC {cite}`DUCC` implements that method as a resampling at run time: its
+`analysis_2d` for the `"CC"` and `"F1"` geometries extends each order across
+the poles, resamples it onto a Clenshaw-Curtis grid and analyzes there. Here
+the same resampling is folded into the projection weights once, at
+construction, so every forward call is the usual Legendre contraction on the
+native rings. The recovery limits below are DUCC's `maximum_safe_l` for
+these geometries.
+The exclusive latitude recovery limits are `lmax <= nlat - 1` for equiangular
+and `lmax <= nlat` for Fejér-1. Both require `mmax <= (nlon + 1) // 2`.
+The order limit excludes the even-longitude Nyquist mode, which cannot recover
+a complex coefficient. For example, `lmax=mmax=180` on a 180 by 360 F1 grid
+represents degrees and orders through 179. Larger requested dimensions,
+including an `mmax` beyond the recovery limit, retain direct
+quadrature without clamping `lmax`, `mmax` or `lmmax`; accepted dimensions do
+not imply accurate recovery. Independent `lmax`, `mmax` and optional `lmmax`
+domains are supported.
+
+Writing the folded latitude operator as $U_m = Q_n + A_m^* Q_c A_m$, analysis
+is $P_m^T U_m x_m = W_m^T x_m$ with $W_m = U_m^T P_m$. Here $Q_n$ and $Q_c$
+are the fine Clenshaw-Curtis weights on native and complementary rings,
+respectively; their roles reverse between CC and F1. Half-grid interpolation
+suppresses the unpaired meridional Nyquist cosine in the complementary term.
+This makes $U_m$ real and symmetric. Scalar continuation uses $(-1)^m$ and
+tangential vector continuation uses $(-1)^{m+1}$. Both derivative components
+use the same vector parity. Precomputation runs in float64 degree/order blocks;
+modules retain only real, nonpersistent weights and cast them when requested.
+A two-entry cache can retain up to two completed float64 projection tables in
+host memory, in addition to the independent projection buffers owned by each
+module.
+
+This increases construction time while removing meridional FFTs from every
+analysis call. Persistent storage remains one scalar projection table or two
+vector projection tables. Distributed ranks generate their local global-order
+range on the full meridian, then retain their latitude shard. Polar ranks repeat
+that initialization work, but forward communication remains the existing two
+azimuth redistributions and polar reduce-scatter. There is no latitude gather.
+
+For even `nlon`, an `mmax` above `max_azimuthal_order` includes the Nyquist
+order and disables extended analysis for the whole transform. Below, `lmax=70`
+is within the latitude recovery limit, but `mmax=33` includes order 32, so the
+transform uses direct quadrature; `mmax=32` excludes Nyquist and selects
+extended analysis. A lone `lmax=70` raises, since it would imply `mmax=70`:
+
+```python
+grid = th.as_grid("equiangular", nlat=129, nlon=64)
+direct = th.RealSHT(grid, lmax=70, mmax=33)  # mmax=33 includes the Nyquist order 32
+extended = th.RealSHT(grid, lmax=70, mmax=32)
+```
+
+```python
+grid = th.as_grid("equiangular", nlat=73, nlon=144)
+sht = th.RealSHT(grid, lmax=72, mmax=72)
+isht = th.InverseRealSHT(grid, lmax=72, mmax=72)
+# Degrees and orders through 71; sht.grid_out == th.SpectralGrid(72, 72).
+```
+
+The default is `lmax=mmax=37` on the equiangular grid above. On the Fejér-1
+grid below, the default is `lmax=mmax=36`:
+
+```python
+f1 = th.as_grid("fejer1", nlat=72, nlon=144)
+f1_sht = th.RealSHT(f1, lmax=72, mmax=72)  # degrees and orders through 71
+```
+
+`max_exact_degree` describes the native direct quadrature limit on both grids.
+Analysis within that limit uses the original direct path, and synthesis
+continues to evaluate harmonics directly on the requested grid. The extended
+analysis paths are intended for float32 and float64. Their constructor
+precomputation uses a latitude FFT of length `2 * (nlat - 1)` for equiangular
+and `2 * nlat` for F1.
+
+For either grid, folded analysis uses more constructor work and projection
+memory than native quadrature, while avoiding meridional resampling during each
+forward call. On a 180 by 360 Fejér-1 grid with `lmax=mmax=180`, a float64
+scalar projection is about 44.5 MiB and a vector projection about 89 MiB; temporary
+construction memory is block bounded. The cache may retain two projections.
+Synthesis evaluates Legendre functions directly on the requested grid.
 
 ## Field shapes
 

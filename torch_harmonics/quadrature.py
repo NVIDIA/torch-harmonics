@@ -50,7 +50,7 @@ def _precompute_quadrature_weights(
     n : int
         Number of grid points
     grid : str, optional
-        Grid type (``"trapezoidal"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``), by default ``"equiangular"``
+        Grid type (``"trapezoidal"``, ``"legendre-gauss"``, ``"lobatto"``, ``"equiangular"``, ``"fejer1"``), by default ``"equiangular"``
     a : float, optional
         Lower bound of interval, by default 0.0
     b : float, optional
@@ -73,7 +73,9 @@ def _precompute_quadrature_weights(
         raise ValueError(f"Periodic grid is only supported on trapezoidal grids, got {grid!r}.")
 
     # compute coordinates
-    if grid == "trapezoidal":
+    if grid == "fejer1":
+        xlg, wlg = fejer1_weights(n, a=a, b=b)
+    elif grid == "trapezoidal":
         xlg, wlg = trapezoidal_weights(n, a=a, b=b, periodic=periodic)
     elif grid == "legendre-gauss":
         xlg, wlg = legendre_gauss_weights(n, a=a, b=b)
@@ -122,7 +124,8 @@ def precompute_latitudes(nlat: int, grid: Optional[str] = "equiangular") -> Tupl
         Number of latitudinal nodes.
     grid : str, optional
         Quadrature grid type. One of ``"equiangular"`` (Clenshaw–Curtis),
-        ``"legendre-gauss"``, ``"lobatto"``, or ``"trapezoidal"``.
+        ``"legendre-gauss"``, ``"lobatto"``, ``"trapezoidal"``, or
+        ``"fejer1"``.
         Default is ``"equiangular"``.
 
     Returns
@@ -148,9 +151,10 @@ def compute_latitude_spacing(nlat: int, grid: Optional[str] = "equiangular") -> 
     r"""
     Return the largest gap between adjacent latitude nodes of a grid.
 
-    This is the grid's own notion of "one latitudinal grid spacing". Only the
-    ``equiangular`` grid has uniform spacing, in which case this reduces to the
-    familiar :math:`\pi / (N_\theta - 1)`. Gauss--Lobatto nodes cluster towards
+    This is the grid's own notion of "one latitudinal grid spacing". The
+    ``equiangular`` and ``fejer1`` grids have uniform spacing of
+    :math:`\pi / (N_\theta - 1)` and :math:`\pi / N_\theta`, respectively.
+    Gauss--Lobatto nodes cluster towards
     the equator, and ``trapezoidal`` nodes are equispaced in
     :math:`\cos\theta` rather than in :math:`\theta`, so both are considerably
     coarser near the poles than a node count alone would suggest.
@@ -178,9 +182,10 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     Returns one latitudinal node spacing (:func:`compute_latitude_spacing`) of
     the grid, times ``scale``, so that the supports of adjacent output points
     overlap. The spacing is the grid's actual maximum gap, which differs from
-    :math:`\pi / (N_\theta - 1)` on grids that are not uniform in :math:`\theta`.
+    :math:`\pi / (N_\theta - 1)` when a grid has different spacing in :math:`\theta`.
     On ``lobatto`` and ``trapezoidal`` grids that older heuristic was too small near
-    the poles, so polar output points saw only their own latitude ring.
+    the poles, so polar output points saw only their own latitude ring. Fejér-1 is
+    uniform too, but uses the spacing :math:`\pi/N_\theta` because it omits the poles.
 
     Parameters
     ----------
@@ -201,9 +206,9 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     Warns
     -----
     UserWarning
-        On grids whose node spacing is not uniform in :math:`\theta`, where this
-        returns a different value than the ``pi / (N_\theta - 1)`` heuristic used
-        before v1.0.0. Equiangular grids are unaffected and do not warn.
+        On existing grids whose maximum node spacing differs from the
+        ``pi / (N_\theta - 1)`` heuristic used before v1.0.0. Equiangular and newly
+        introduced Fejér-1 grids do not warn.
 
     Notes
     -----
@@ -212,13 +217,13 @@ def compute_theta_cutoff(nlat: int, grid: Optional[str] = "equiangular", scale: 
     """
     dlat_max = compute_latitude_spacing(nlat, grid=grid)
 
-    # only the equiangular grid is uniform in theta, so only there does the
-    # superseded heuristic still agree (up to arccos roundoff)
+    # Equiangular keeps the superseded heuristic; Fejer-1 is also uniform, but its
+    # half-step nodes have spacing pi/nlat rather than pi/(nlat-1).
     legacy = math.pi / float(nlat - 1)
-    if abs(dlat_max - legacy) > 1e-9 * legacy:
+    if grid != "fejer1" and abs(dlat_max - legacy) > 1e-9 * legacy:
         consequence = "the previous value under-covered the poles" if dlat_max > legacy else "the previous value was slightly wider than the grid warrants"
         warnings.warn(
-            f"Default theta_cutoff changed in v1.0.0: the '{grid}' grid is not uniform in theta, so the cutoff is now "
+            f"Default theta_cutoff changed in v1.0.0: the '{grid}' grid spacing differs from pi/(nlat-1), so the cutoff is now "
             f"its maximum latitudinal node spacing ({dlat_max:.6f}) rather than pi/(nlat-1) ({legacy:.6f}); "
             f"{consequence}. Specify theta_cutoff explicitly to override.",
             UserWarning,
@@ -500,3 +505,50 @@ def clenshaw_curtiss_weights(n: int, a: Optional[float] = -1.0, b: Optional[floa
     wcc = wcc * (b - a) * 0.5
 
     return tcc, wcc
+
+
+def fejer1_weights(n: int, a: Optional[float] = -1.0, b: Optional[float] = 1.0) -> Tuple[torch.Tensor, torch.Tensor]:
+    r"""Fejér's first quadrature rule on ``[a, b]`` using an FFT construction.
+
+    The nodes are the roots of the Chebyshev polynomial :math:`T_n`,
+    :math:`x_j=\cos((j+\tfrac12)\pi/n)`, returned in increasing order. The
+    rule integrates polynomials through degree ``n - 1`` for even ``n`` and
+    ``n`` for odd ``n``. Its weights are evaluated from the even cosine moments
+    with a real FFT, in :math:`O(n\log n)` time and :math:`O(n)` storage.
+
+    Parameters
+    ----------
+    n : int
+        Number of quadrature nodes; must be positive.
+    a, b : float, optional
+        Interval endpoints, by default ``[-1, 1]``.
+
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        Nodes and weights in increasing node order, both float64.
+    """
+    if n < 1:
+        raise ValueError(f"n must be positive, got {n}")
+
+    # Fejer-I weights follow by expanding in cos(k theta). Only even moments
+    # are nonzero: integral_0^pi cos(2k theta) sin(theta) dtheta =
+    # -2 / (4 k**2 - 1). Evaluate this cosine series on a half-shifted grid
+    # with a length-2n inverse FFT instead of forming an O(n**2) cosine table.
+    length = 2 * n
+    spectrum = torch.zeros(n + 1, dtype=torch.complex128)
+    spectrum[0] = length
+    k = torch.arange(1, (n - 1) // 2 + 1, dtype=torch.float64)
+    if k.numel():
+        frequency = 2 * k.to(torch.int64)
+        coefficient = -1.0 / (4 * k.square() - 1)
+        phase = torch.polar(torch.ones_like(k), frequency.to(torch.float64) * math.pi / (2 * n))
+        spectrum[frequency] = length * coefficient * phase
+
+    weights = (2.0 / n) * torch.fft.irfft(spectrum, n=length)[:n]
+    theta = math.pi * (torch.arange(n, dtype=torch.float64) + 0.5) / n
+    nodes = torch.flip(torch.cos(theta), dims=(0,))
+
+    nodes = (b - a) * 0.5 * nodes + (b + a) * 0.5
+    weights = (b - a) * 0.5 * weights
+    return nodes, weights

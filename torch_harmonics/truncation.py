@@ -93,6 +93,10 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
          - Yes
          - :math:`1`
          - :math:`\lfloor (N_\theta + 1) / 2 \rfloor`
+       * - ``"fejer1"``
+         - No
+         - :math:`N_\theta` for odd and :math:`N_\theta - 1` for even
+         - :math:`\lceil N_\theta / 2 \rceil`
 
     On the trapezoidal grid, only the constant mode (``lmax=1``) is recovered
     exactly. Its default bound does not guarantee accurate SHT round trips.
@@ -204,7 +208,7 @@ def _validate_forward_sht_degree(grid: RegularGridS2, lmax: int) -> None:
     message = f"forward SHT lmax={lmax} exceeds grid '{grid.grid_type}' max_recoverable_degree={max_degree}"
     if grid.grid_type in ("legendre-gauss", "lobatto"):
         raise ValueError(message)
-    if grid.grid_type == "equiangular":
+    if grid.grid_type in ("equiangular", "fejer1"):
         warnings.warn(message, UserWarning, stacklevel=3)
     # Trapezoidal transforms already emit their quadrature warning at construction.
 
@@ -218,11 +222,13 @@ def _warn_if_default_moved(grid: PointSetS2) -> None:
     silent, and only the routine that *chose* to default announces it. That split is
     pinned by ``test_the_descriptor_does_not_warn``.
 
-    Only the latitude/longitude grids can have moved, since they are the only ones
-    that existed before the change; a ragged grid has no ``pi / (nlat - 1)`` past to
-    differ from and is passed over rather than warned about spuriously.
+    Only an existing latitude/longitude grid can have moved. The newly introduced
+    Fejer-1 grid has no prior default to preserve; a ragged grid likewise has no
+    ``pi / (nlat - 1)`` past to differ from.
     """
     if not isinstance(grid, RegularGridS2):
+        return
+    if grid.grid_type == "fejer1":
         return
 
     spacing = grid.max_node_spacing

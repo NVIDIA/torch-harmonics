@@ -48,7 +48,7 @@ grid_size_lon=${grid_size_lon:-$default_grid_size_lon}
 run_distributed=${run_distributed:-$default_run_distributed}
 
 echo "Running sequential tests:"
-python3 -m pytest tests/test_convolution.py tests/test_sht.py
+python3 -m pytest tests/test_convolution.py tests/test_legendre.py tests/test_sht.py tests/test_latitude_folding.py
 
 # Run distributed tests if requested
 if [ "$run_distributed" = "true" ]; then

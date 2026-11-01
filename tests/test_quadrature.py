@@ -54,6 +54,8 @@ class TestQuadrature(unittest.TestCase):
         [
             [64, 128, 2, 3, "equiangular", False, 1e-6, 1e-6],
             [64, 128, 2, 3, "equiangular", True, 1e-6, 1e-6],
+            [64, 128, 2, 3, "fejer1", False, 1e-6, 1e-6],
+            [65, 128, 2, 3, "fejer1", True, 1e-6, 1e-6],
             [65, 128, 1, 1, "legendre-gauss", False, 1e-6, 1e-6],
             [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
             [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
@@ -80,74 +82,7 @@ class TestQuadrature(unittest.TestCase):
         [
             # nlat, nlon, grid
             [64, 128, "equiangular"],
-            [65, 128, "legendre-gauss"],
-            [65, 128, "lobatto"],
-            [64, 128, "trapezoidal"],
-        ]
-    )
-    def test_odd_latitude_integral(self, nlat, nlon, grid, verbose=False):
-        """cos(theta) is odd in cos-theta, so its integral over S^2 must be zero.
-
-        Analytically: 2*pi * integral_{-1}^{1} t dt = 0.
-        This exercises the sign and symmetry of the latitude quadrature weights.
-        """
-        set_seed(333)
-
-        quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=False).to(self.device)
-
-        # cos(theta) on the grid: precompute_latitudes returns colatitude angles
-        # theta in [0, pi], so cos(theta) in [-1, 1]
-        lats, _ = precompute_latitudes(nlat, grid=grid)
-        cos_theta = torch.cos(lats).to(torch.float32).to(self.device)  # shape [nlat]
-        # broadcast over batch=1, channel=1, and all longitudes
-        f = cos_theta.view(1, 1, nlat, 1).expand(1, 1, nlat, nlon)
-
-        out = quad(f)
-        expected = torch.zeros(1, 1, device=self.device)
-
-        self.assertTrue(compare_tensors("odd latitude integral", out, expected, atol=1e-5, rtol=0.0, verbose=verbose))
-
-    @parameterized.expand(
-        [
-            # nlat, nlon, grid, atol, rtol
-            [64, 128, "equiangular", 1e-5, 1e-5],
-            [65, 128, "legendre-gauss", 1e-5, 1e-5],
-            [65, 128, "lobatto", 1e-5, 1e-5],
-            [64, 128, "trapezoidal", 1e-2, 1e-2],
-        ]
-    )
-    def test_polynomial_latitude_integral(self, nlat, nlon, grid, atol, rtol, verbose=False):
-        """cos^2(theta) integrates to 4*pi/3 (unnormalized) or 1/3 (normalized).
-
-        Analytically: 2*pi * integral_{-1}^{1} t^2 dt = 2*pi * 2/3 = 4*pi/3.
-        Gauss-type quadrature rules integrate quadratic polynomials in cos-theta
-        exactly; the trapezoidal rule (trapezoidal) has O(h^2) error.
-        """
-        set_seed(333)
-
-        lats, _ = precompute_latitudes(nlat, grid=grid)
-        cos2_theta = torch.cos(lats).pow(2).to(dtype=torch.float32, device=self.device)  # shape [nlat]
-        f = cos2_theta.view(1, 1, nlat, 1).expand(1, 1, nlat, nlon)
-
-        for normalize, expected_val in [(False, 4.0 * math.pi / 3.0), (True, 1.0 / 3.0)]:
-            quad = th.QuadratureS2(th.as_grid(grid, nlat=nlat, nlon=nlon), normalize=normalize).to(self.device)
-            out = quad(f)
-            expected = torch.full((1, 1), expected_val, device=self.device)
-            self.assertTrue(
-                compare_tensors(
-                    f"cos^2 integral (normalize={normalize})",
-                    out,
-                    expected,
-                    atol=atol,
-                    rtol=rtol,
-                    verbose=verbose,
-                )
-            )
-
-    @parameterized.expand(
-        [
-            # nlat, nlon, grid
-            [64, 128, "equiangular"],
+            [64, 128, "fejer1"],
             [65, 128, "legendre-gauss"],
             [65, 128, "lobatto"],
             [64, 128, "trapezoidal"],
@@ -177,6 +112,7 @@ class TestQuadrature(unittest.TestCase):
         [
             # nlat, nlon, batch, channels, grid
             [64, 128, 2, 3, "equiangular"],
+            [64, 128, 2, 3, "fejer1"],
             [65, 128, 1, 1, "legendre-gauss"],
         ]
     )
@@ -259,6 +195,7 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
     @parameterized.expand(
         [
             ["equiangular", False],
+            ["fejer1", True],
             ["legendre-gauss", True],
             ["healpix", False],
             ["healpix", True],
@@ -383,6 +320,7 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
     @parameterized.expand(
         [
             ["equiangular"],
+            ["fejer1"],
             ["legendre-gauss"],
             ["lobatto"],
             ["trapezoidal"],
@@ -422,6 +360,86 @@ class TestQuadratureWeightPrecision(unittest.TestCase):
 
         self.assertEqual(w.dtype, x.dtype)
         self.assertTrue(compare_tensors(f"trapezoidal weights (periodic={periodic})", w, expected, atol=1e-15, rtol=1e-15, verbose=verbose))
+
+
+def _legendre_moments(x: torch.Tensor, w: torch.Tensor, degree: int) -> torch.Tensor:
+    """sum_k w_k P_n(x_k) for n = 0..degree, by the three-term recurrence.
+
+    Legendre polynomials rather than monomials: x**n at n ~ 130 is so ill-conditioned
+    that an exact rule and an inexact one are indistinguishable in float64.
+    """
+    p_prev, p = torch.ones_like(x), x
+    moments = [(w * p_prev).sum(), (w * p).sum()]
+    for n in range(1, degree):
+        p_prev, p = p, ((2 * n + 1) * x * p - n * p_prev) / (n + 1)
+        moments.append((w * p).sum())
+    return torch.stack(moments[: degree + 1])
+
+
+# highest polynomial degree in cos(theta) each latitude rule integrates exactly, for n nodes
+_EXACT_POLYNOMIAL_DEGREE = {
+    "legendre-gauss": lambda n: 2 * n - 1,
+    "lobatto": lambda n: 2 * n - 3,
+    # Clenshaw--Curtis and Fejer-1 gain one degree at odd n from the symmetry of their nodes
+    "equiangular": lambda n: n if n % 2 else n - 1,
+    "fejer1": lambda n: n if n % 2 else n - 1,
+    "trapezoidal": lambda n: 1,
+}
+
+_EXACTNESS_CASES = [[grid, nlat] for grid in _EXACT_POLYNOMIAL_DEGREE for nlat in (2, 3, 8, 9, 64, 65)]
+
+
+class TestQuadratureExactness(unittest.TestCase):
+    """
+    Each latitude rule integrates polynomials in cos(theta) exactly up to its documented
+    degree, and no further. The SHT defaults rest on these degrees: an associated Legendre
+    product P_l^m P_l'^m is a polynomial of degree l + l', so the analysis is exact for
+    every degree below the grid's ``max_exact_degree`` exactly when 2 (max_exact_degree - 1)
+    does not exceed the rule's degree.
+    """
+
+    @parameterized.expand(_EXACTNESS_CASES)
+    def test_exact_through_documented_degree(self, grid, nlat, verbose=False):
+        colats, weights = precompute_latitudes(nlat, grid=grid)
+        degree = _EXACT_POLYNOMIAL_DEGREE[grid](nlat)
+        moments = _legendre_moments(colats.cos(), weights, degree)
+        # the integral of P_n over [-1, 1] is 2 for n = 0 and 0 otherwise
+        expected = torch.zeros_like(moments)
+        expected[0] = 2.0
+        self.assertTrue(compare_tensors(f"{grid} moments through degree {degree}", moments, expected, atol=1e-13, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand(_EXACTNESS_CASES)
+    def test_not_exact_beyond_documented_degree(self, grid, nlat):
+        """The documented degree is sharp: the first even degree above it is integrated wrongly.
+
+        Odd degrees integrate to zero on any pole-symmetric rule, so they cannot show it.
+        """
+        colats, weights = precompute_latitudes(nlat, grid=grid)
+        degree = _EXACT_POLYNOMIAL_DEGREE[grid](nlat)
+        first_even = degree + 1 if degree % 2 else degree + 2
+        error = _legendre_moments(colats.cos(), weights, first_even)[-1].abs().item()
+        self.assertGreater(error, 1e-9, f"{grid} at nlat={nlat} is exact beyond degree {degree}")
+
+    @parameterized.expand(_EXACTNESS_CASES)
+    def test_weights_are_positive_and_sum_to_two(self, grid, nlat, verbose=False):
+        _, weights = precompute_latitudes(nlat, grid=grid)
+        self.assertGreater(weights.min().item(), 0.0)
+        total = weights.sum()
+        self.assertTrue(compare_tensors(f"{grid} weight sum", total, torch.full_like(total, 2.0), atol=1e-14, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand(_EXACTNESS_CASES)
+    def test_default_sht_band_follows_from_exactness(self, grid, nlat):
+        """On a spectrally accurate grid, max_exact_degree is the largest L with 2 (L - 1) <= degree.
+
+        The trapezoidal grid keeps the equiangular default although its rule cannot support
+        it from nlat = 3 on, which is why it is flagged as not spectrally accurate.
+        """
+        descriptor = th.as_grid(grid, nlat=nlat, nlon=2 * nlat)
+        supported = _EXACT_POLYNOMIAL_DEGREE[grid](nlat) // 2 + 1
+        if descriptor.is_spectrally_accurate:
+            self.assertEqual(descriptor.max_exact_degree, supported)
+        elif nlat > 2:
+            self.assertGreater(descriptor.max_exact_degree, supported)
 
 
 if __name__ == "__main__":

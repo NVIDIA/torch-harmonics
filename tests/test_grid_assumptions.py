@@ -65,6 +65,7 @@ from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import (
     _GRID_REGISTRY,
     EquiangularGrid,
+    Fejer1Grid,
     GridS2,
     GridShardS2,
     LegendreGaussGrid,
@@ -85,7 +86,7 @@ from torch_harmonics.partition import compute_split_shapes
 from torch_harmonics.quadrature import compute_latitude_spacing, compute_theta_cutoff, precompute_latitudes, precompute_longitudes
 from torch_harmonics.truncation import truncate_support
 
-_ALL_GRIDS = ["equiangular", "legendre-gauss", "lobatto", "trapezoidal"]
+_ALL_GRIDS = ["equiangular", "fejer1", "legendre-gauss", "lobatto", "trapezoidal"]
 
 # grids on which the superseded pi / (nlat - 1) heuristic was too narrow near the poles
 _IRREGULAR_THETA_GRIDS = ["lobatto", "trapezoidal"]
@@ -97,6 +98,7 @@ _POLE_INCLUSIVE_GRIDS = ["equiangular", "lobatto", "trapezoidal"]
 # the class a caller would instantiate directly, against the name as_grid resolves
 _DIRECT_CLASSES = {
     "equiangular": EquiangularGrid,
+    "fejer1": Fejer1Grid,
     "legendre-gauss": LegendreGaussGrid,
     "lobatto": LobattoGrid,
     "trapezoidal": TrapezoidalGrid,
@@ -273,12 +275,12 @@ class TestThetaCutoffContract(unittest.TestCase):
         with self.assertWarns(UserWarning):
             compute_theta_cutoff(nlat, grid=grid)
 
-    @parameterized.expand([[nlat] for nlat in _NLATS])
-    def test_unchanged_default_does_not_warn(self, nlat):
-        """The equiangular default is unchanged, so warning there would be noise."""
+    @parameterized.expand([[nlat, grid] for nlat in _NLATS for grid in ("equiangular", "fejer1")])
+    def test_unchanged_or_new_default_does_not_warn(self, nlat, grid):
+        """Existing equiangular and new Fejer-1 grids have no moved cutoff to announce."""
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            compute_theta_cutoff(nlat, grid="equiangular")
+            compute_theta_cutoff(nlat, grid=grid)
 
 
 class TestThetaCutoffPsiRegression(unittest.TestCase):
@@ -327,6 +329,13 @@ class TestGridNodeDistribution(unittest.TestCase):
         lats, _ = precompute_latitudes(nlat, grid="equiangular")
         dlat = lats[1:] - lats[:-1]
         self.assertTrue(compare_tensors(f"equiangular dtheta (nlat={nlat})", dlat, dlat.mean().expand_as(dlat), atol=1e-12, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand([[nlat] for nlat in _NLATS])
+    def test_fejer1_nodes_are_midpoints(self, nlat, verbose=False):
+        """Fejer-1 nodes sit at the midpoints of nlat equal intervals in theta, so neither pole is a node."""
+        lats, _ = precompute_latitudes(nlat, grid="fejer1")
+        expected = math.pi * (torch.arange(nlat, dtype=torch.float64) + 0.5) / nlat
+        self.assertTrue(compare_tensors(f"fejer1 nodes (nlat={nlat})", lats, expected, atol=1e-14, rtol=0.0, verbose=verbose))
 
     @parameterized.expand([[nlat] for nlat in _NLATS])
     def test_equiangular_trapezoidal_nodes_are_equispaced_in_cos_theta(self, nlat, verbose=False):
