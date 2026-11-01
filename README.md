@@ -132,7 +132,7 @@ If CUDA devices are not detected automatically (e.g. inside a container), set th
 
 ```bash
 export TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
-export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0a 10.0a 10.3a"
+export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0a 10.0a 10.3a 12.0+PTX"
 pip install --no-build-isolation -e .
 ```
 
