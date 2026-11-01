@@ -43,12 +43,19 @@
 #define BUILD_CUDA 0
 #endif
 
+// BUILD_KPACKED_SM<XY>: a compute capability X.Y device can run the kpacked kernels
+// with this build, i.e. the arch-specific target X.Ya was compiled (see setup.py).
+// Named after the device, not the target: a plain sm_100 image only carries stubs.
 #ifndef BUILD_KPACKED_SM90
 #define BUILD_KPACKED_SM90 0
 #endif
 
 #ifndef BUILD_KPACKED_SM100
 #define BUILD_KPACKED_SM100 0
+#endif
+
+#ifndef BUILD_KPACKED_SM103
+#define BUILD_KPACKED_SM103 0
 #endif
 
 bool cpp_kernels_is_available() { return static_cast<bool>(BUILD_CPP); }
@@ -61,6 +68,8 @@ bool kpacked_sm90_kernels_is_available() { return static_cast<bool>(BUILD_KPACKE
 
 bool kpacked_sm100_kernels_is_available() { return static_cast<bool>(BUILD_KPACKED_SM100); }
 
+bool kpacked_sm103_kernels_is_available() { return static_cast<bool>(BUILD_KPACKED_SM103); }
+
 PYBIND11_MODULE(disco_helpers, m)
 {
     m.def("cuda_kernels_is_available", &cuda_kernels_is_available, "Check if CUDA kernels are available.");
@@ -70,4 +79,6 @@ PYBIND11_MODULE(disco_helpers, m)
           "Check if Hopper SM_90a kpacked kernels were requested at build time.");
     m.def("kpacked_sm100_kernels_is_available", &kpacked_sm100_kernels_is_available,
           "Check if Blackwell SM_100a kpacked kernels were requested at build time.");
+    m.def("kpacked_sm103_kernels_is_available", &kpacked_sm103_kernels_is_available,
+          "Check if Blackwell Ultra SM_103a kpacked kernels were requested at build time.");
 }

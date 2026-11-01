@@ -1187,7 +1187,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
 
 # A supported device is not sufficient: the kpacked buffers are only built when
-# this build actually contains the matching kernel (BUILD_KPACKED_SM90 / SM100,
+# this build actually contains the matching kernel (BUILD_KPACKED_SM90 / SM100 / SM103,
 # set from TORCH_CUDA_ARCH_LIST). A build targeting an architecture newer than
 # the ones with kpacked kernels reports e.g. major == 10 while carrying no
 # sm_100a cubin, so a device-only guard runs these tests against buffers that
@@ -1198,7 +1198,7 @@ def _kpacked_built_for_sm90():
 
 
 def _kpacked_built_for_sm100():
-    """Blackwell device AND an sm_100a kpacked kernel this device can load."""
+    """Blackwell device AND an sm_100a / sm_103a kpacked kernel this device can load."""
     return _is_sm100() and _kpacked_runnable_here()
 
 
@@ -1267,7 +1267,7 @@ class TestKpackedPath(unittest.TestCase):
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
 
-    @unittest.skipUnless(_kpacked_built_for_sm100(), "kpacked forward on Blackwell requires SM_100a (GB200/B200) and an sm_100a build")
+    @unittest.skipUnless(_kpacked_built_for_sm100(), "kpacked forward on Blackwell requires a 10.0 or 10.3 device and the matching 10.0a / 10.3a build")
     def test_kpacked_forward_activates_on_sm100(self):
         """tcgen05 kpacked path is chosen for bf16/fp16 on Blackwell."""
         conv = self._make_conv(1, 8, (16, 32))
@@ -1277,7 +1277,7 @@ class TestKpackedPath(unittest.TestCase):
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_matches_optimized(self, verbose=True):
         """The kpacked tensor-core forward matches the arc kernels numerically."""
         set_seed(123)
@@ -1304,7 +1304,7 @@ class TestKpackedPath(unittest.TestCase):
         self.assertTrue(compare_tensors("inp grad", inp.grad.float(), inp_ref.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
         self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_opt.weight.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_contraction_double_backward(self):
         """The kpacked contraction's backward is the transpose op, so it is differentiable: its derivative is the arc contraction."""
         from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_kpacked, _disco_s2_contraction_regular_optimized
@@ -1326,7 +1326,7 @@ class TestKpackedPath(unittest.TestCase):
         ref = _disco_s2_contraction_regular_optimized(u, *arcs, conv.kernel_size, conv.nlat_out, conv.nlon_out)
         self.assertTrue(compare_tensors("double backward", ggrad.float(), ref.float(), atol=1e-2, rtol=1e-2))
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_fused_matches_unfused(self):
         """fused=True kpacked path gives the same result as fused=False."""
         set_seed(42)
@@ -1347,7 +1347,7 @@ class TestKpackedPath(unittest.TestCase):
         out_f.backward(grad.clone())
         self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-2, rtol=1e-2))
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_bwd_bc_tile_boundaries(self):
         """BC_TILE selection: exercises BC_TILE=1 (BC=3), BC_TILE=4 (BC=5), BC_TILE=8 (BC=16).
 
@@ -1418,7 +1418,7 @@ class TestKpackedPath(unittest.TestCase):
         out_f.backward(grad.clone())
         self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-3, rtol=1e-3))
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_opcheck(self):
         """forward_kpacked op satisfies the PT2 opcheck contract."""
         conv = self._make_conv(1, 8, (16, 32))

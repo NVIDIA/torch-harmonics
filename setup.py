@@ -87,25 +87,34 @@ def _torch_cuda_arch_list_has(arch: str) -> bool:
     return any(alias in normalized for alias in aliases[arch])
 
 
+# Arch-specific targets the kpacked kernels are built for, and the device each one
+# enables. These cubins are arch-CONDITIONAL: an sm_100a image will not load on a
+# 10.3 device. A build that lists 10.0a next to plain 10.0 (or 10.0+PTX) therefore
+# hands a 10.3 GPU the plain sm_100 image, in which the tcgen05 kernel is an empty
+# stub that returns zeros. So each target gets its own flag, named after the device
+# it enables, and the runtime dispatch accepts exactly the devices built here.
+#
+# sm_120 / sm_121 (consumer Blackwell, and GB10 in DGX Spark) are deliberately
+# absent: they carry no TMEM and no tcgen05, so neither kpacked kernel can run
+# there and those devices take the CSR path.
+_KPACKED_TARGETS = {
+    "9.0a": "BUILD_KPACKED_SM90",
+    "10.0a": "BUILD_KPACKED_SM100",
+    "10.3a": "BUILD_KPACKED_SM103",
+}
+
+
 def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
-    build_kpacked_sm90 = BUILD_CUDA and _torch_cuda_arch_list_has("9.0a")
-    # One flag for both datacenter Blackwell targets. The runtime dispatch accepts
-    # capability 10.0 and 10.3 (see _kpacked_supported_on_device); it checks the
-    # minor version because these cubins are arch-conditional, so 10.7 (Rubin)
-    # must not be treated as sm_100. Note this single flag cannot distinguish a
-    # 10.0a-only build from a 10.3a-only one.
-    #
-    # sm_120 / sm_121 (consumer Blackwell, and GB10 in DGX Spark) are deliberately
-    # absent: they carry no TMEM and no tcgen05, so neither kpacked kernel can run
-    # there and those devices take the CSR path.
-    build_kpacked_sm100 = BUILD_CUDA and (_torch_cuda_arch_list_has("10.0a") or _torch_cuda_arch_list_has("10.3a"))
+    # BUILD_KPACKED_SM<XY> means "a compute capability X.Y device can run kpacked with
+    # this build", i.e. the arch-specific target X.Ya was compiled. Plain X.Y targets
+    # only produce stubs and never set it.
+    kpacked_flags = [f"-D{flag}={1 if BUILD_CUDA and _torch_cuda_arch_list_has(arch) else 0}" for arch, flag in _KPACKED_TARGETS.items()]
     return {
         "cxx": [
             f"-DBUILD_CPP={1 if BUILD_CPP else 0}",
             f"-DBUILD_CUDA={1 if BUILD_CUDA else 0}",
-            f"-DBUILD_KPACKED_SM90={1 if build_kpacked_sm90 else 0}",
-            f"-DBUILD_KPACKED_SM100={1 if build_kpacked_sm100 else 0}",
-        ],
+        ]
+        + kpacked_flags,
     }
 
 
