@@ -39,7 +39,7 @@ from unittest import mock
 import testutils
 import torch
 from parameterized import parameterized
-from testutils import compare_tensors, param_grad_ulps, range_atol
+from testutils import amp_ulps, compare_tensors, param_grad_ulps, range_atol
 
 
 def _cancelled_reference(dtype, scale=100.0):
@@ -113,6 +113,26 @@ class TestParamGradUlps(unittest.TestCase):
         for n in (1, 10**4, 10**8):
             with self.subTest(n=n):
                 self.assertEqual(param_grad_ulps(n, dtype), 2.0)
+
+
+class TestAmpUlps(unittest.TestCase):
+    """amp_ulps: 2 ULPs of the autocast dtype, no floor for full-precision dtypes."""
+
+    @parameterized.expand([[torch.float16], [torch.bfloat16]])
+    def test_autocast_dtypes_get_two_ulps(self, dtype):
+        self.assertEqual(amp_ulps(dtype), 2.0)
+
+    @parameterized.expand([[torch.float32], [torch.float64]])
+    def test_full_precision_gets_no_floor(self, dtype):
+        self.assertEqual(amp_ulps(dtype), 0.0)
+
+    def test_the_budget_is_in_the_autocast_dtype(self):
+        # an fp32 result 1.5 bf16 ULPs off its max passes; 2.5 does not
+        ref = torch.tensor([1.0, 0.0])
+        for off, ok in ((1.5, True), (2.5, False)):
+            with self.subTest(off=off):
+                got = ref + torch.tensor([0.0, off * torch.finfo(torch.bfloat16).eps])
+                self.assertEqual(compare_tensors("amp", got, ref, atol=0.0, rtol=0.0, ulps=amp_ulps(torch.bfloat16), eps_dtype=torch.bfloat16), ok)
 
 
 class TestCompareTensors(unittest.TestCase):

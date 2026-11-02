@@ -384,6 +384,20 @@ def range_atol(ref, atol, ulps, eps_dtype=None):
     return max(atol, ulps * _eps(ref, eps_dtype) * ref.abs().max().item())
 
 
+def amp_ulps(dtype):
+    """
+    ULP budget (for ``compare_tensors(atol=0, rtol=0, ulps=..., eps_dtype=dtype)``) of a result
+    computed under autocast in ``dtype``, 0 for any other dtype.
+
+    Autocast rounds the operands, and usually the result, to fp16/bf16 and accumulates in
+    fp32, so two implementations of the same contraction (serial and distributed, or two
+    kernels) differ by about one rounding in the autocast dtype, at most ~1 ULP of the
+    largest entry, independent of the size of the reduction. Measured on GB200 and CPU across
+    distributed DISCO and attention, outputs and input and parameter gradients: up to 0.83.
+    """
+    return 2.0 if dtype in (torch.float16, torch.bfloat16) else 0.0
+
+
 def param_grad_ulps(n_reduce, dtype):
     """
     ULP budget (for ``compare_tensors(ulps=..., eps_dtype=dtype)``) of a parameter gradient
@@ -398,7 +412,7 @@ def param_grad_ulps(n_reduce, dtype):
       autocast dtype.
     """
     if dtype in (torch.float16, torch.bfloat16):
-        return 2.0
+        return amp_ulps(dtype)
     return max(64.0, math.sqrt(n_reduce))
 
 
