@@ -125,12 +125,12 @@ class TestDistributedQuadrature(unittest.TestCase):
         verbose = verbose and self.world_rank == 0
 
         # evaluate FWD pass
-        ok = compare_tensors("output", out_full, out_local, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("output", out_local, out_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper(igrad_local, quad_dist)
-        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
 

@@ -182,7 +182,7 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             conv_dist.isht.lat_shapes,
             conv_dist.isht.lon_shapes,
         )
-        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("output", out_gather_full, out_full, atol=atol, rtol=rtol, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         igrad_gather_full = self._gather_helper(
@@ -190,7 +190,7 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
             conv_dist.sht.lat_shapes,
             conv_dist.sht.lon_shapes,
         )
-        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
 

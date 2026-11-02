@@ -297,10 +297,14 @@ _LAYERS = [
 ]
 
 
+# float32 ULPs of the expected tensor's range, see testutils.range_atol
+_ULPS = 64
+
+
 def _close(msg, actual, expected):
     # the batched and the per-shell contractions sum in different orders, so an entry that
     # cancels to well below the field's scale differs by roundoff of that scale, not of its own
-    return compare_tensors(msg, actual, expected, atol=1e-5 * expected.abs().max().item(), rtol=1e-5)
+    return compare_tensors(msg, actual, expected, atol=0.0, rtol=1e-5, ulps=_ULPS)
 
 
 def _loss(y):

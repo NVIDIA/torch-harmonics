@@ -61,12 +61,16 @@ _GRID = as_grid("legendre-gauss", nlat=33, nlon=66)
 _GRID_OUT = as_grid("equiangular", nlat=35, nlon=66)
 
 
+# float32 ULPs of the expected tensor's range, see testutils.range_atol
+_ULPS = 64
+
+
 def _close(msg, actual, expected):
     # the batched and the per-shell contractions sum in different orders, so an entry that
     # cancels to well below the field's scale differs by roundoff of that scale, not of its own.
     # Diagnostics from rank 0 only, as in test_distributed_convolution
     verbose = not dist.is_initialized() or dist.get_rank() == 0
-    return compare_tensors(msg, actual, expected, atol=1e-5 * expected.abs().max().item(), rtol=1e-5, verbose=verbose)
+    return compare_tensors(msg, actual, expected, atol=0.0, rtol=1e-5, verbose=verbose, ulps=_ULPS)
 
 
 def _loss(y):
