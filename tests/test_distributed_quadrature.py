@@ -33,13 +33,18 @@ import unittest
 
 import torch
 from parameterized import parameterized
-from testutils import compare_tensors, gather_tensor_hw, reduce_success, set_seed, setup_class_from_context, setup_module, split_tensor_hw, teardown_module
+from testutils import compare_tensors, gather_tensor_hw, range_atol, reduce_success, set_seed, setup_class_from_context, setup_module, split_tensor_hw, teardown_module
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 
 # shared state
 _DIST_CTX = {}
+
+# Error budget in ULPs of the integral of |f| (see testutils.range_atol): the distributed
+# integral reassociates the float32 grid sum across ranks.
+# Measured: 0.06 ULPs of int |f|.
+_QUAD_ULPS = 8
 
 
 def setUpModule():
@@ -80,13 +85,13 @@ class TestDistributedQuadrature(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [64, 128, 4, 3, "equiangular", False, 1e-7, 1e-5],
-            [65, 128, 2, 2, "equiangular", True, 1e-7, 1e-5],
-            [64, 128, 4, 3, "legendre-gauss", False, 1e-7, 1e-5],
-            [65, 128, 2, 2, "lobatto", False, 1e-7, 1e-5],
+            [64, 128, 4, 3, "equiangular", False],
+            [65, 128, 2, 2, "equiangular", True],
+            [64, 128, 4, 3, "legendre-gauss", False],
+            [65, 128, 2, 2, "lobatto", False],
         ]
     )
-    def test_distributed_quadrature(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
+    def test_distributed_quadrature(self, nlat, nlon, batch_size, num_chan, grid, normalize, verbose=False):
 
         set_seed(333)
 
@@ -125,12 +130,16 @@ class TestDistributedQuadrature(unittest.TestCase):
         verbose = verbose and self.world_rank == 0
 
         # evaluate FWD pass
-        ok = compare_tensors("output", out_local, out_full, atol=atol, rtol=rtol, verbose=verbose)
+        # the integral of random data cancels, so the floor comes from the summed terms, int |f|
+        with torch.no_grad():
+            atol = range_atol(quad_local(inp_full.detach().abs()), 0.0, _QUAD_ULPS)
+        ok = compare_tensors("output", out_local, out_full, atol=atol, rtol=0.0, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper(igrad_local, quad_dist)
-        ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose)
+        # the gradient is the upstream gradient times the weights, elementwise: exact
+        ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=0.0, rtol=0.0, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
 

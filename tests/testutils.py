@@ -379,6 +379,8 @@ def range_atol(ref, atol, ulps, eps_dtype=None):
     ``eps_dtype`` is the precision the reduction ran in, which under autocast is not the dtype
     of the tensor being compared (fp32 parameter gradients accumulated from bf16 products).
     """
+    if ref.numel() == 0:
+        return atol
     return max(atol, ulps * _eps(ref, eps_dtype) * ref.abs().max().item())
 
 

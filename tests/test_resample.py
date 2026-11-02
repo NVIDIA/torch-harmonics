@@ -184,8 +184,8 @@ class TestResampleS2(unittest.TestCase):
         actual.backward(cotangent)
         expected.backward(cotangent)
 
-        self.assertTrue(compare_tensors("single-longitude field", expected, actual, atol=1e-6, rtol=1e-5, verbose=verbose))
-        self.assertTrue(compare_tensors("single-longitude gradient", reference_data.grad, data.grad, atol=1e-6, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("single-longitude field", actual, expected, atol=1e-6, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("single-longitude gradient", data.grad, reference_data.grad, atol=1e-6, rtol=1e-5, verbose=verbose))
         self.assertTrue(torch.isfinite(data.grad).all())
         self.assertTrue(torch.isfinite(resample.lon_weights).all())
 
@@ -202,7 +202,7 @@ class TestResampleS2(unittest.TestCase):
         expected = expected_longitudes.expand(1, 1, 4, 8)
         actual = resample(data)
 
-        self.assertTrue(compare_tensors("multi-longitude field", expected, actual, atol=1e-6, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("multi-longitude field", actual, expected, atol=1e-6, rtol=1e-5, verbose=verbose))
 
     # The pre-existing coverage of "bilinear-spherical" only used constant fields. For a
     # constant field every neighbouring difference is zero, so the shortest-arc branch was

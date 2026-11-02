@@ -44,6 +44,7 @@ from unittest import mock
 
 import torch
 from parameterized import parameterized
+from testutils import compare_tensors
 
 from torch_harmonics import as_grid
 from torch_harmonics.examples import ShallowWaterDataset, ShallowWaterSolver, SphereSolver
@@ -145,8 +146,8 @@ class TestExampleSolvers(unittest.TestCase):
         out64 = solver.timestep(u64, 2)
 
         self.assertEqual(out32.dtype, torch.complex64)
-        error = ((out32.to(torch.complex128) - out64).abs().max() / out64.abs().max()).item()
-        self.assertLess(error, 1e-5, f"relative error {error:.3e} of a float32 step")
+        # within float32 rounding of the largest spectral coefficient (measured: 0.3 ULPs)
+        self.assertTrue(compare_tensors("float32 step", out32.to(torch.complex128), out64, atol=0.0, rtol=0.0, ulps=16, eps_dtype=torch.float32))
 
     def test_shallow_water_dataset_keeps_float64_solver_buffers(self):
         """The dataset generates float32 samples by casting at use, not by casting its solver."""

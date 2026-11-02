@@ -55,6 +55,10 @@ if not optimized_kernels_is_available():
     print("Warning: Couldn't import optimized disco convolution kernels")
 
 
+# The layer's psi and the dense reference agree up to the float64 rounding of the basis
+# normalization, a sum over each kernel's support (measured: up to 17 ULPs of max|psi|).
+_PSI_ULPS = 64
+
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
@@ -607,7 +611,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 psi = torch.sparse_coo_tensor(torch.stack([ker_idx, row_idx, col_idx]), vals, size=(conv.kernel_size, conv.nlat_in, conv.nlat_out * conv.nlon_out)).to_dense()
             psi = psi.to(self.device)
 
-            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out)))
+            self.assertTrue(compare_tensors("psi", psi, psi_dense[:, :, 0].reshape(-1, nlat_in, nlat_out * nlon_out), atol=0.0, rtol=0.0, ulps=_PSI_ULPS))
         else:
             psi_dense = _precompute_convolution_tensor_dense(
                 in_shape,
@@ -626,7 +630,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
                 psi = torch.sparse_coo_tensor(torch.stack([ker_idx, row_idx, col_idx]), vals, size=(conv.kernel_size, conv.nlat_out, conv.nlat_in * conv.nlon_in)).to_dense()
             psi = psi.to(self.device)
 
-            self.assertTrue(torch.allclose(psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in)))
+            self.assertTrue(compare_tensors("psi", psi, psi_dense[:, :, 0].reshape(-1, nlat_out, nlat_in * nlon_in), atol=0.0, rtol=0.0, ulps=_PSI_ULPS))
 
         # cast module to the target dtype for forward/backward
         if module_dtype != torch.float32:

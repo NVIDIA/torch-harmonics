@@ -87,6 +87,10 @@ class TestRangeAtol(unittest.TestCase):
         expected = 8 * torch.finfo(torch.float32).eps * 5.0
         self.assertAlmostEqual(range_atol(ref, 0.0, 8), expected, delta=1e-6 * expected)
 
+    def test_an_empty_reference_leaves_atol(self):
+        self.assertEqual(range_atol(torch.zeros(0), 1e-3, 64), 1e-3)
+        self.assertTrue(compare_tensors("empty", torch.zeros(0), torch.zeros(0), atol=0.0, rtol=0.0, ulps=64))
+
 
 class TestParamGradUlps(unittest.TestCase):
     """param_grad_ulps: sqrt(N) for fp32/fp64, floored at 64; a constant 2 under autocast."""

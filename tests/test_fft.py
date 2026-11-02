@@ -33,8 +33,13 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
+from testutils import compare_tensors
 
 from torch_harmonics.fft import irfft, rfft
+
+# Error budget in ULPs of the largest reference entry (see testutils.range_atol): an FFT of
+# length n carries ~log2(n) roundings per mode (measured: 1.5).
+_FFT_ULPS = 16
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -59,10 +64,7 @@ class TestFFTWrappers(unittest.TestCase):
         x = torch.randn(batch, nlon, device=self.device, dtype=torch.float64)
         coeffs = rfft(x, nmodes=nmodes, dim=-1, norm="forward")
         x_rec = irfft(coeffs, n=nlon, dim=-1, norm="forward")
-        self.assertTrue(
-            torch.allclose(x, x_rec, atol=1e-10),
-            f"Roundtrip failed: max error {(x - x_rec).abs().max().item():.2e}",
-        )
+        self.assertTrue(compare_tensors("roundtrip", x_rec, x, atol=0.0, rtol=0.0, ulps=_FFT_ULPS))
 
     @parameterized.expand(
         [
@@ -87,10 +89,7 @@ class TestFFTWrappers(unittest.TestCase):
         x_rt = irfft(coeffs_rt, n=nlon_out, dim=-1, norm="forward")
         coeffs_rt2 = rfft(x_rt, nmodes=nmodes, dim=-1, norm="forward")
 
-        self.assertTrue(
-            torch.allclose(coeffs_rt, coeffs_rt2, atol=1e-10),
-            f"Band-limited roundtrip failed: max error {(coeffs_rt - coeffs_rt2).abs().max().item():.2e}",
-        )
+        self.assertTrue(compare_tensors("band-limited roundtrip", coeffs_rt2, coeffs_rt, atol=0.0, rtol=0.0, ulps=_FFT_ULPS))
 
     @parameterized.expand(
         [
@@ -148,10 +147,7 @@ class TestFFTWrappers(unittest.TestCase):
             x_dirty[:, nlon // 2] = x_dirty[:, nlon // 2] + 1j
         out_dirty = irfft(x_dirty, n=nlon, dim=-1, norm="forward")
 
-        self.assertTrue(
-            torch.allclose(out_clean, out_dirty, atol=1e-6),
-            f"Hermitian fix failed: max diff {(out_clean - out_dirty).abs().max().item():.2e}",
-        )
+        self.assertTrue(compare_tensors("hermitian fix", out_dirty, out_clean, atol=0.0, rtol=0.0))
 
     @parameterized.expand(
         [

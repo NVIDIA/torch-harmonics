@@ -62,6 +62,11 @@ from torch_harmonics.distributed import (
 
 _DIST_CTX = {}
 
+# Error budget in ULPs of the largest reference entry (see testutils.range_atol): a reduce
+# sums one contribution per rank, at most 8, reassociated against the gather-and-sum
+# reference (measured: 0.6).
+_REDUCE_ULPS = 8
+
 
 def setUpModule():
     setup_module(_DIST_CTX)
@@ -291,14 +296,14 @@ class TestDistributedReduce(unittest.TestCase):
         # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
         # rank so a failure on any rank fails the test consistently (see reduce_success).
         verbose = self.world_rank == 0
-        ok = compare_tensors("reduce_from_polar_region fwd", out, ref, atol=1e-5, rtol=1e-4, verbose=verbose)
+        ok = compare_tensors("reduce_from_polar_region fwd", out, ref, atol=0.0, rtol=0.0, ulps=_REDUCE_ULPS, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output does not match the reference global sum")
 
         # --- Backward: the gradient must pass through unchanged ---
         dy = torch.randn_like(out)
         out.backward(dy)
 
-        ok = compare_tensors("reduce_from_polar_region bwd", x.grad, dy, atol=1e-5, rtol=1e-4, verbose=verbose)
+        ok = compare_tensors("reduce_from_polar_region bwd", x.grad, dy, atol=0.0, rtol=0.0, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "input gradient does not match the upstream gradient (expected pass-through)")
 
     @parameterized.expand(
@@ -325,14 +330,14 @@ class TestDistributedReduce(unittest.TestCase):
         # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
         # rank so a failure on any rank fails the test consistently (see reduce_success).
         verbose = self.world_rank == 0
-        ok = compare_tensors("reduce_from_azimuth_region fwd", out, ref, atol=1e-5, rtol=1e-4, verbose=verbose)
+        ok = compare_tensors("reduce_from_azimuth_region fwd", out, ref, atol=0.0, rtol=0.0, ulps=_REDUCE_ULPS, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output does not match the reference global sum")
 
         # --- Backward: pass-through ---
         dy = torch.randn_like(out)
         out.backward(dy)
 
-        ok = compare_tensors("reduce_from_azimuth_region bwd", x.grad, dy, atol=1e-5, rtol=1e-4, verbose=verbose)
+        ok = compare_tensors("reduce_from_azimuth_region bwd", x.grad, dy, atol=0.0, rtol=0.0, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "input gradient does not match the upstream gradient (expected pass-through)")
 
 
@@ -434,7 +439,7 @@ class TestReduceScatter(unittest.TestCase):
         # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
         # rank so a failure on any rank fails the test consistently (see reduce_success).
         verbose = self.world_rank == 0
-        ok = compare_tensors("reduce_from_scatter_to_polar fwd", out, ref, atol=1e-5, rtol=1e-4, verbose=verbose)
+        ok = compare_tensors("reduce_from_scatter_to_polar fwd", out, ref, atol=0.0, rtol=0.0, ulps=_REDUCE_ULPS, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output does not match the gather-then-slice reference")
 
         # Backward: adjoint = all_gather along ``dim``.
@@ -451,7 +456,7 @@ class TestReduceScatter(unittest.TestCase):
             tuple(x_local.shape),
             "backward gradient shape must equal the forward input shape",
         )
-        ok = compare_tensors("reduce_from_scatter_to_polar bwd", x.grad, grad_ref, atol=1e-5, rtol=1e-4, verbose=verbose)
+        ok = compare_tensors("reduce_from_scatter_to_polar bwd", x.grad, grad_ref, atol=0.0, rtol=0.0, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "input gradient does not match the all-gathered upstream gradient")
 
     @parameterized.expand(
@@ -509,7 +514,7 @@ class TestReduceScatter(unittest.TestCase):
         # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
         # rank so a failure on any rank fails the test consistently (see reduce_success).
         verbose = self.world_rank == 0
-        ok = compare_tensors("reduce_from_scatter_to_azimuth fwd", out, ref, atol=1e-5, rtol=1e-4, verbose=verbose)
+        ok = compare_tensors("reduce_from_scatter_to_azimuth fwd", out, ref, atol=0.0, rtol=0.0, ulps=_REDUCE_ULPS, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output does not match the gather-then-slice reference")
 
         dy = torch.randn_like(out)
@@ -525,7 +530,7 @@ class TestReduceScatter(unittest.TestCase):
             tuple(x_local.shape),
             "backward gradient shape must equal the forward input shape",
         )
-        ok = compare_tensors("reduce_from_scatter_to_azimuth bwd", x.grad, grad_ref, atol=1e-5, rtol=1e-4, verbose=verbose)
+        ok = compare_tensors("reduce_from_scatter_to_azimuth bwd", x.grad, grad_ref, atol=0.0, rtol=0.0, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "input gradient does not match the all-gathered upstream gradient")
 
 
