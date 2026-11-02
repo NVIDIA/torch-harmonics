@@ -128,7 +128,7 @@ cd torch-harmonics
 pip install --no-build-isolation -e .
 ```
 
-If CUDA devices are not detected automatically (e.g. inside a container), set the `TORCH_HARMONICS_BUILD_CUDA_EXTENSION` flag. Set `TORCH_CUDA_ARCH_LIST` to only the architectures you need to reduce compilation time:
+If CUDA devices are not detected automatically (e.g. inside a container), set the `TORCH_HARMONICS_BUILD_CUDA_EXTENSION` flag. Set `TORCH_CUDA_ARCH_LIST` to only the architectures you need to reduce compilation time. The example below needs CUDA 12.9 or newer; with CUDA 12.8 drop `10.3a`, and before 12.8 also drop `10.0a` and `12.0+PTX`, which those compilers do not support:
 
 ```bash
 export TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
