@@ -44,6 +44,11 @@ from torch_harmonics import as_grid
 from torch_harmonics.spectral_convolution import SpectralConvS2
 from torch_harmonics.utils import compile_if_supported, torch_compile_supported
 
+# Error budget in ULPs of the largest reference entry (see testutils.range_atol): the layer
+# contracts over channels and spectral modes in float32, and the checks below only
+# reassociate that contraction (measured: up to 2).
+_CONTRACTION_ULPS = 16
+
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
@@ -107,8 +112,9 @@ class TestSpectralConvS2(unittest.TestCase):
                 "zonal rotation equivariance",
                 y_of_shifted,
                 shift_of_y,
-                atol=1e-5,
-                rtol=1e-4,
+                atol=0.0,
+                rtol=0.0,
+                ulps=_CONTRACTION_ULPS,
                 verbose=verbose,
             )
         )
@@ -176,8 +182,9 @@ class TestSpectralConvS2(unittest.TestCase):
                 "grouped convolution consistency",
                 y_grouped,
                 y_manual,
-                atol=1e-5,
-                rtol=1e-4,
+                atol=0.0,
+                rtol=0.0,
+                ulps=_CONTRACTION_ULPS,
                 verbose=verbose,
             )
         )
@@ -227,19 +234,19 @@ class TestSpectralConvS2(unittest.TestCase):
     # non-determinism from @torch.compile.  The compiled _contract_lwise einsum
     # parallelises the reduction over threads; different batch positions can be
     # assigned to different threads, so partial sums accumulate in a different
-    # order.  Differences are O(1e-7) — not a bug, just float32 non-associativity.
-    # The tolerance is set to 1e-6 to stay safely above this noise floor while
+    # order.  Differences are about one ULP — not a bug, just float32
+    # non-associativity. _CONTRACTION_ULPS stays safely above this noise floor while
     # still catching any real cross-sample mixing.
     # -----------------------------------------------------------------------
     @parameterized.expand(
         [
             # nlat, nlon, in_channels, out_channels, num_groups
-            [32, 64, 4, 4, 1, 1e-6, 1e-5],
-            [32, 64, 4, 4, 2, 1e-6, 1e-5],
+            [32, 64, 4, 4, 1],
+            [32, 64, 4, 4, 2],
         ],
         skip_on_empty=True,
     )
-    def test_batch_independence(self, nlat, nlon, in_channels, out_channels, num_groups, atol, rtol, verbose=True):
+    def test_batch_independence(self, nlat, nlon, in_channels, out_channels, num_groups, verbose=True):
         """Two identical samples in a batch must produce bitwise-identical outputs."""
 
         # set seed
@@ -263,9 +270,9 @@ class TestSpectralConvS2(unittest.TestCase):
             y_batch = conv(x_batch)
 
         # the two batched outputs must be identical to each other …
-        self.assertTrue(compare_tensors("batch independence [0 vs 1]", y_batch[0], y_batch[1], atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("batch independence [0 vs 1]", y_batch[0], y_batch[1], atol=0.0, rtol=0.0, ulps=_CONTRACTION_ULPS, verbose=verbose))
         # … and identical to running the single sample alone
-        self.assertTrue(compare_tensors("batch independence [single vs batched]", y_single[0], y_batch[0], atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("batch independence [single vs batched]", y_single[0], y_batch[0], atol=0.0, rtol=0.0, ulps=_CONTRACTION_ULPS, verbose=verbose))
 
     # -----------------------------------------------------------------------
     # Test 8: Zero weights → zero output
@@ -368,7 +375,7 @@ class TestSpectralConvS2(unittest.TestCase):
             y_no_bias = conv_no_bias(x)
             y_bias = conv_bias(x)
 
-        self.assertTrue(compare_tensors("zero bias equals no bias", y_bias, y_no_bias, atol=1e-6, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("zero bias equals no bias", y_bias, y_no_bias, atol=0.0, rtol=0.0, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -534,8 +541,8 @@ class TestSpectralConvS2(unittest.TestCase):
         actual = compiled(x)
         (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
 
-        self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=1e-5, rtol=1e-5, verbose=verbose))
-        self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=1e-5, rtol=1e-5, verbose=verbose))
+        self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=0.0, rtol=0.0, ulps=_CONTRACTION_ULPS, verbose=verbose))
+        self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=0.0, rtol=0.0, ulps=_CONTRACTION_ULPS, verbose=verbose))
 
 
 class TestCompileIfSupported(unittest.TestCase):

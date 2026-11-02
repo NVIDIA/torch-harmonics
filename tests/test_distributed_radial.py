@@ -36,7 +36,7 @@ import unittest
 import torch
 import torch.distributed as dist
 from parameterized import parameterized
-from testutils import compare_tensors, disable_tf32, set_seed, setup_class_from_context, setup_module, teardown_module
+from testutils import compare_tensors, disable_tf32, range_atol, reduce_success, set_seed, setup_class_from_context, setup_module, teardown_module
 
 import torch_harmonics.distributed as thd
 from torch_harmonics import LegendreGaussRadialGrid, SphericalProductGrid, as_grid
@@ -61,12 +61,44 @@ _GRID = as_grid("legendre-gauss", nlat=33, nlon=66)
 _GRID_OUT = as_grid("equiangular", nlat=35, nlon=66)
 
 
+# float32 ULPs of the expected field's range, see testutils.range_atol
+_ULPS = 64
+
+
 def _close(msg, actual, expected):
-    # the batched and the per-shell contractions sum in different orders, so an entry that
-    # cancels to well below the field's scale differs by roundoff of that scale, not of its own.
-    # Diagnostics from rank 0 only, as in test_distributed_convolution
+    """
+    The verdict of every rank on its block, the same on all of them.
+
+    The batched and the per-shell contractions sum in different orders, so an entry that
+    cancels to well below the field's scale differs by roundoff of that scale, not of its own.
+    That scale is the global one: a rank can hold a block that is zero by construction (the
+    m > l corner of the coefficients), where both sides are roundoff of the field and its own
+    max|expected| says nothing. The verdict is all-reduced, because a rank that failed alone
+    would leave the shell loop early and desynchronize the next collective, aborting the job
+    instead of failing the test. Diagnostics from rank 0 only, as in test_distributed_convolution.
+    """
+    scale = expected.detach().abs().max().reshape(1).to(torch.float64)
+    if dist.is_initialized():
+        dist.all_reduce(scale, op=dist.ReduceOp.MAX)
+    eps_dtype = expected.real.dtype if expected.is_complex() else expected.dtype
+    atol = range_atol(scale, 0.0, _ULPS, eps_dtype=eps_dtype)
     verbose = not dist.is_initialized() or dist.get_rank() == 0
-    return compare_tensors(msg, actual, expected, atol=1e-5 * expected.abs().max().item(), rtol=1e-5, verbose=verbose)
+    ok = compare_tensors(msg, actual, expected, atol=atol, rtol=1e-5, verbose=verbose)
+    return reduce_success(ok, actual.device)
+
+
+def _local_randn(shape, device, dtype=torch.float32):
+    """
+    This rank's block of a random field, drawn from a seed of its own.
+
+    With the seed every rank shares, each rank would draw the same block, and the global field
+    would repeat itself around the sphere: periodic in longitude with the azimuth group size, so
+    every m that is not a multiple of it would vanish, and the blocks holding only those modes
+    would compare roundoff against roundoff.
+    """
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    generator = torch.Generator().manual_seed(1000 + rank)
+    return torch.randn(shape, generator=generator, dtype=dtype).to(device).requires_grad_(True)
 
 
 def _loss(y):
@@ -151,7 +183,7 @@ class TestDistributedLayersOnProductGrids(unittest.TestCase):
         # this rank's block; every rank runs the same sequence of calls, so the collectives match
         shape = list(input_shape(reference))
         shape.insert(rdim_in, _RADIAL.nr)
-        x = torch.randn(shape, device=self.device, dtype=dtype, requires_grad=True)
+        x = _local_randn(shape, self.device, dtype)
 
         out = layer(x)
         _loss(out).backward()
@@ -177,7 +209,7 @@ class TestDistributedLayersOnProductGrids(unittest.TestCase):
                 reference = transform(angular, lmax=10, mmax=10).to(self.device)
                 self.assertTrue(layer._extended_folded)
                 shape = (_C, _RADIAL.nr, *layer.shard.shape) if radial_dim == 1 else (_C, 2, _RADIAL.nr, *layer.shard.shape)
-                x = torch.randn(shape, device=self.device, dtype=torch.float32, requires_grad=True)
+                x = _local_randn(shape, self.device)
 
                 out = layer(x)
                 _loss(out).backward()
@@ -192,7 +224,7 @@ class TestDistributedLayersOnProductGrids(unittest.TestCase):
         grid = SphericalProductGrid(_GRID, _RADIAL)
         quad = thd.DistributedQuadratureVolume(grid).to(self.device)
         shells = thd.DistributedQuadratureS2(grid).to(self.device)
-        x = torch.randn(2, _RADIAL.nr, *quad.shard.shape, device=self.device)
+        x = _local_randn((2, _RADIAL.nr, *quad.shard.shape), self.device).detach()
         expected = (shells(x) * _RADIAL.volume_weights.to(device=self.device, dtype=torch.float32)).sum(-1)
         self.assertTrue(_close("volume integral", quad(x), expected))
 

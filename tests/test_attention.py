@@ -41,7 +41,17 @@ from parameterized import parameterized, parameterized_class
 
 # from torch.autograd import gradcheck
 from test_neighborhood import _brute_force_neighborhood
-from testutils import _ProductGridAsRagged, build_psi_segments, compare_tensors, disable_tf32, expand_psi_segments, maybe_autocast, requires_torch_compile, set_seed
+from testutils import (
+    _ProductGridAsRagged,
+    build_psi_segments,
+    compare_tensors,
+    disable_tf32,
+    expand_psi_segments,
+    maybe_autocast,
+    param_grad_ulps,
+    requires_torch_compile,
+    set_seed,
+)
 from torch.library import opcheck
 
 from torch_harmonics import AttentionS2, HealpixGrid, NeighborhoodAttentionS2, as_grid
@@ -276,7 +286,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         # Synchronize parameters of model
         model_opt.load_state_dict(model_ref.state_dict())
         for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
-            self.assertTrue(torch.allclose(p_ref.cpu(), p_opt.cpu()))
+            self.assertTrue(torch.equal(p_ref.cpu(), p_opt.cpu()))
 
         # Forward passes — modules + inputs stay fp32; maybe_autocast wraps
         # fwd in autocast(dtype) for fp16/bf16 and is a no-op for fp32, so
@@ -286,7 +296,9 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             out_opt = model_opt(inputs_opt["q"], inputs_opt["k"], inputs_opt["v"])
 
         # Check forward equivalence
-        self.assertTrue(torch.allclose(out_opt, out_ref, atol=atol, rtol=rtol), "Forward outputs differ between torch reference and custom implementation")
+        self.assertTrue(
+            compare_tensors("output", out_opt, out_ref, atol=atol, rtol=rtol, verbose=verbose), "Forward outputs differ between torch reference and custom implementation"
+        )
 
         # Backward passes
         grad = torch.randn_like(out_ref)
@@ -299,19 +311,14 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
             grad_opt = inputs_opt[inp].grad.cpu()
             self.assertTrue(compare_tensors(f"input grad {inp}", grad_opt, grad_ref, atol=atol, rtol=rtol, verbose=verbose))
 
-        # Check parameter gradient equivalence. A bias gradient is a sum over the whole batch and
-        # every grid point, the largest reduction in the layer, so its absolute rounding error
-        # grows with the size of the terms it sums rather than with its own value, and varies
-        # with the CPU the reference's matmuls dispatch to. Bias gradients therefore get an
-        # absolute tolerance of a few float32 ulps of the largest parameter gradient; weight
-        # gradients keep atol.
-        pgrad_scale = max(p_ref.grad.abs().max().item() for _, p_ref in model_ref.named_parameters())
-        bias_atol = max(atol, 8 * torch.finfo(torch.float32).eps * pgrad_scale)
+        # Check parameter gradient equivalence. A parameter gradient is a sum over the whole batch
+        # and every grid point, so its absolute rounding error grows with the size of the terms it
+        # sums rather than with its own value; see param_grad_ulps.
+        pg_ulps = param_grad_ulps(batch_size * max(nlat_in * nlon_in, nlat_out * nlon_out), dtype)
         for (name_ref, p_ref), (name_opt, p_opt) in zip(model_ref.named_parameters(), model_opt.named_parameters()):
             pgrad_opt = p_opt.grad.cpu()
             pgrad_ref = p_ref.grad.cpu()
-            patol = bias_atol if name_ref.endswith("bias") else atol
-            self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=patol, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"parameter grad {name_ref}", pgrad_opt, pgrad_ref, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps, eps_dtype=dtype))
 
     @parameterized.expand(
         [
@@ -489,7 +496,10 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         # forward
         out_ref = model_ref(inputs_ref["q"], inputs_ref["k"], inputs_ref["v"])
         out_opt = model_opt(inputs_opt["q"], inputs_opt["k"], inputs_opt["v"])
-        self.assertTrue(torch.allclose(out_opt, out_ref, atol=atol, rtol=rtol), f"Forward outputs differ between torch ref and optimized (frozen={frozen})")
+        self.assertTrue(
+            compare_tensors(f"output (frozen={frozen})", out_opt, out_ref, atol=atol, rtol=rtol, verbose=verbose),
+            f"Forward outputs differ between torch ref and optimized (frozen={frozen})",
+        )
 
         # backward
         grad = torch.randn_like(out_ref)
@@ -533,6 +543,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
                         atol=atol,
                         rtol=rtol,
                         verbose=verbose,
+                        ulps=param_grad_ulps(batch_size * max(nlat_in * nlon_in, nlat_out * nlon_out), torch.float32),
                     )
                 )
 
@@ -873,23 +884,23 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol]
+            # Format: [batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out]
             # one row per dispatcher code path (gather / scatter); pscale=2 covers
             # the wip = (wi + pscale*wo) % nlon_in shift, which the trivial self-attention
             # case (pscale=1) would not.
-            [4, 4, 1, (12, 24), (6, 12), "equiangular", "equiangular", 1e-2, 0],  # downsample, pscale=2
-            [4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular", 1e-2, 0],  # upsample, pscale_out=2
+            [4, 4, 1, (12, 24), (6, 12), "equiangular", "equiangular"],  # downsample, pscale=2
+            [4, 4, 1, (6, 12), (12, 24), "equiangular", "equiangular"],  # upsample, pscale_out=2
             # Same two paths with heads packed along the channel dimension. The op
             # contract differs between these and the heads=1 rows above: the registered
             # fake derives the output extent from vw.shape[3], which is num_heads*C
             # rather than C, so a packing mistake there is invisible until num_heads>1.
             # test_faketensor and test_aot_dispatch_dynamic are what catch it.
-            [4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular", 1e-2, 0],  # downsample, packed heads
-            [4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular", 1e-2, 0],  # upsample, packed heads
+            [4, 8, 4, (12, 24), (6, 12), "equiangular", "equiangular"],  # downsample, packed heads
+            [4, 8, 4, (6, 12), (12, 24), "equiangular", "equiangular"],  # upsample, packed heads
         ],
         skip_on_empty=True,
     )
-    def test_optimized_pt2_compatibility(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, atol, rtol, verbose=False):
+    def test_optimized_pt2_compatibility(self, batch_size, channels, heads, in_shape, out_shape, grid_in, grid_out, verbose=False):
         """Tests whether the optimized kernels are PyTorch 2 compatible"""
 
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
@@ -1456,8 +1467,10 @@ class TestScale(unittest.TestCase):
         trained = [model.scale] if kind == "parameter" else []
         grads = torch.autograd.grad(out, list(flat.values()) + trained, grad_outputs=grad)
         grads_ref = torch.autograd.grad(out_ref, list(flat_ref.values()) + trained, grad_outputs=grad)
+        # the scale's gradient is a sum over everything, see param_grad_ulps
+        pg_ulps = param_grad_ulps(2 * max(grid_in.npoints, grid_out.npoints), torch.float32)
         for key, got, expected in zip(list(flat) + ["scale"], grads, grads_ref):
-            self.assertTrue(compare_tensors(f"{name} grad {key}", got, expected, atol=atol, rtol=rtol))
+            self.assertTrue(compare_tensors(f"{name} grad {key}", got, expected, atol=atol, rtol=rtol, ulps=pg_ulps if key == "scale" else 0))
         if trained:
             self.assertGreater(float(grads[-1].abs()), 0.0, f"{name}: the scale received no gradient")
 
@@ -1554,10 +1567,12 @@ class TestEmptyNeighborhood(unittest.TestCase):
         grads = torch.autograd.grad(out, list(inputs.values()) + list(model.parameters()), grad_outputs=grad)
         grads_ref = torch.autograd.grad(out_ref, list(inputs_ref.values()) + list(ref.parameters()), grad_outputs=grad)
         names = list(inputs.keys()) + [key for key, _ in model.named_parameters()]
+        # parameter gradients are sums over batch and points, see param_grad_ulps
+        pg_ulps = param_grad_ulps(2 * max(grid_in.npoints, grid_out.npoints), torch.float32)
         for key, got, expected in zip(names, grads, grads_ref):
             self.assertTrue(torch.isfinite(expected).all(), f"reference grad {key}")
             self.assertTrue(torch.isfinite(got).all(), f"grad {key}")
-            self.assertTrue(compare_tensors(f"{name} grad {key}", got, expected, atol=atol, rtol=rtol))
+            self.assertTrue(compare_tensors(f"{name} grad {key}", got, expected, atol=atol, rtol=rtol, ulps=0 if key in inputs else pg_ulps))
 
 
 @parameterized_class(("device"), _devices)
@@ -2089,8 +2104,10 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
         grads = torch.autograd.grad(out, list(inputs.values()) + list(model.parameters()), grad_outputs=grad)
 
         names = list(inputs.keys()) + [name for name, _ in model.named_parameters()]
+        # parameter gradients are sums over batch and points, see param_grad_ulps
+        pg_ulps = param_grad_ulps(batch * max(grid_in.npoints, grid_out.npoints), torch.float32)
         for name, got, expected in zip(names, grads, grads_ref):
-            self.assertTrue(compare_tensors(f"grad {name}", got, expected, atol=atol, rtol=rtol))
+            self.assertTrue(compare_tensors(f"grad {name}", got, expected, atol=atol, rtol=rtol, ulps=0 if name in inputs else pg_ulps))
 
     @parameterized.expand([[2], [4]], skip_on_empty=True)
     def test_a_global_cutoff_attends_to_the_whole_sphere(self, nside, atol=1e-5, rtol=1e-3):
@@ -2361,9 +2378,11 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
         for name, got, expected in (("query", q_flat.grad, q.grad), ("key/value", x_flat.grad, x.grad)):
             with self.subTest(gradient=name):
                 self.assertTrue(compare_tensors(f"{name} grad", got.float(), expected.flatten(-2, -1).float(), atol=atol, rtol=rtol))
+        # parameter gradients are sums over batch and points, see param_grad_ulps
+        pg_ulps = param_grad_ulps(batch * max(nlat_in * nlon_in, nlat_out * nlon_out), dtype)
         for (name, p_reg), (_, p_rag) in zip(regular.named_parameters(), ragged.named_parameters()):
             with self.subTest(parameter=name):
-                self.assertTrue(compare_tensors(f"grad {name}", p_rag.grad.float(), p_reg.grad.float(), atol=atol, rtol=rtol))
+                self.assertTrue(compare_tensors(f"grad {name}", p_rag.grad, p_reg.grad, atol=atol, rtol=rtol, ulps=pg_ulps, eps_dtype=dtype))
 
     @parameterized.expand(
         [
@@ -2479,11 +2498,10 @@ class TestAttentionS2RingGrids(unittest.TestCase):
         for n, t in (("q", q), ("k", k), ("v", v)):
             self.assertTrue(compare_tensors(f"{name} input grad {n}", t.grad.flatten(2), dense[n].grad, atol=atol, rtol=rtol, verbose=verbose))
         # A parameter gradient is a sum over batch and points, so channels that nearly cancel
-        # carry an absolute error set by the large terms they were summed from; the absolute
-        # tolerance scales with the tensor's range accordingly
+        # carry an absolute error set by the large terms they were summed from; see param_grad_ulps
+        pg_ulps = param_grad_ulps(batch * max(grid_in.npoints, grid_out.npoints), torch.float32)
         for n, p in model.named_parameters():
-            atol_n = atol * max(1.0, float(p.grad.abs().max()))
-            self.assertTrue(compare_tensors(f"{name} parameter grad {n}", param_grads[n], p.grad, atol=atol_n, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"{name} parameter grad {n}", param_grads[n], p.grad, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps))
 
     @parameterized.expand(
         [
@@ -2544,10 +2562,10 @@ class TestAttentionS2RingGrids(unittest.TestCase):
 
         for n in ("q", "k", "v"):
             self.assertTrue(compare_tensors(f"{name} input grad {n}", inputs[n].grad, inputs_ref[n].grad, atol=atol, rtol=rtol, verbose=verbose))
-        # scaled absolute tolerance for the parameter gradients; see test_matches_the_dense_reference
+        # range-scaled absolute tolerance for the parameter gradients, see param_grad_ulps
+        pg_ulps = param_grad_ulps(batch * max(grid_in.npoints, grid_out.npoints), torch.float32)
         for (n, p_ref), (_, p) in zip(model_ref.named_parameters(), model.named_parameters()):
-            atol_n = atol * max(1.0, float(p_ref.grad.abs().max()))
-            self.assertTrue(compare_tensors(f"{name} parameter grad {n}", p.grad, p_ref.grad, atol=atol_n, rtol=rtol, verbose=verbose))
+            self.assertTrue(compare_tensors(f"{name} parameter grad {n}", p.grad, p_ref.grad, atol=atol, rtol=rtol, verbose=verbose, ulps=pg_ulps))
 
         # both layers against the dense reference, on flat fields (flatten(2) is a no-op on a
         # ragged side); last, since its backward is not compared and would accumulate into
@@ -2695,14 +2713,13 @@ class TestMixedGridNeighborhoodAttentionS2(unittest.TestCase):
         grads = torch.autograd.grad(out_flat, list(flat.values()) + list(model.parameters()), grad_outputs=grad)
 
         names = list(flat.keys()) + [pname for pname, _ in model.named_parameters()]
+        # A parameter gradient is a sum over every point and batch entry, and can nearly
+        # cancel: a small absolute error on a tensor whose entries reach O(10) then fails a
+        # fixed atol, and whether it does varies with the CPU kernel's OpenMP summation
+        # order. The input gradients keep the fixed tolerance; see param_grad_ulps.
+        pg_ulps = param_grad_ulps(batch * max(grid_in.npoints, grid_out.npoints), torch.float32)
         for pname, got, expected in zip(names, grads, grads_ref):
-            # A parameter gradient is a sum over every point and batch entry, and can nearly
-            # cancel: a small absolute error on a tensor whose entries reach O(10) then fails a
-            # fixed atol, and whether it does varies with the CPU kernel's OpenMP summation
-            # order. Scale atol with the tensor, as the other dense-reference tests do.
-            # the input gradients keep the fixed tolerance
-            atol_n = atol if pname in flat else atol * max(1.0, float(expected.abs().max()))
-            self.assertTrue(compare_tensors(f"grad {pname}", got, expected, atol=atol_n, rtol=rtol))
+            self.assertTrue(compare_tensors(f"grad {pname}", got, expected, atol=atol, rtol=rtol, ulps=0 if pname in flat else pg_ulps))
 
     def test_the_flattening_is_ring_major(self):
         """
@@ -2812,7 +2829,7 @@ class TestRaggedForwardCudaKernel(unittest.TestCase):
         self.assertEqual(y_hi.dtype, torch.float32, "y_hi")
         if dtype == torch.bfloat16:
             self.assertEqual(y_hi.shape, got.shape, "y_hi")
-            self.assertTrue(torch.allclose(y_hi.to(dtype), got, atol=0, rtol=0), "y_hi must equal y once narrowed")
+            self.assertTrue(torch.equal(y_hi.to(dtype), got), "y_hi must equal y once narrowed")
         else:
             self.assertEqual(y_hi.numel(), 0, "y_hi should be empty except in bf16")
 

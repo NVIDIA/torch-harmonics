@@ -140,11 +140,11 @@ class TestDistributedResampling(unittest.TestCase):
 
         verbose = verbose and self.world_rank == 0
         out_gather_full = self._gather_helper_fwd(out_local, res_dist)
-        ok = compare_tensors("single-longitude output", out_full, out_gather_full, atol=1e-6, rtol=1e-5, verbose=verbose)
+        ok = compare_tensors("single-longitude output", out_gather_full, out_full, atol=1e-6, rtol=1e-5, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "single-longitude output")
 
         igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
-        ok = compare_tensors("single-longitude gradients", igrad_full, igrad_gather_full, atol=1e-6, rtol=1e-5, verbose=verbose)
+        ok = compare_tensors("single-longitude gradients", igrad_gather_full, igrad_full, atol=1e-6, rtol=1e-5, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "single-longitude gradients")
         self.assertTrue(reduce_success(bool(torch.isfinite(igrad_local).all()), self.device), "finite gradients")
         self.assertTrue(
@@ -216,12 +216,12 @@ class TestDistributedResampling(unittest.TestCase):
 
         # evaluate FWD pass
         out_gather_full = self._gather_helper_fwd(out_local, res_dist)
-        ok = compare_tensors("output", out_full, out_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("output", out_gather_full, out_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
         igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
-        ok = compare_tensors("gradients", igrad_full, igrad_gather_full, atol=atol, rtol=rtol, verbose=verbose)
+        ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
 

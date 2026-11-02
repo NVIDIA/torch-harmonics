@@ -104,7 +104,9 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         self.assertEqual(actual.dtype, dtype)
         self.assertTrue(bool(torch.isfinite(actual).all()))
         self.assertGreater(float(actual.abs().max()), 0.0)
-        torch.testing.assert_close(actual, reference, rtol=tolerance, atol=float(reference.abs().max()) * tolerance)
+        # the inverse SHT sums over every mode, so an entry that cancels carries an error set by
+        # the field's range rather than its own value
+        self.assertTrue(compare_tensors("field", actual, reference, atol=0.0, rtol=tolerance, ulps=64))
 
     def test_float32_spectrum_preserves_representable_amplitudes_after_wide_intermediates(self):
         field = GaussianRandomFieldS2(as_grid("equiangular", nlat=8, nlon=16), dtype=torch.float32, alpha=1.1, tau=1e20, sigma=1.0).to(self.device)

@@ -37,7 +37,7 @@ import numpy as np
 import torch
 from parameterized import parameterized, parameterized_class
 from scipy.special import gammaln, lpmv
-from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
+from testutils import compare_tensors, disable_tf32, range_atol, requires_torch_compile, set_seed
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
@@ -101,6 +101,23 @@ def _band(grid, nlat, extended):
     return descriptor, _EXTENDED_DEGREE[grid](nlat) if extended else descriptor.max_exact_degree
 
 
+# Error budgets in ULPs of the largest reference entry (see testutils.range_atol): every
+# check below is a quadrature or Legendre contraction, whose rounding error scales with
+# the size of the summed terms rather than with the entry it lands on.
+# Round trip, measured 3 / 13 ULPs (float32 scalar / vector) and 954 / 3856 (float64). In
+# float64 the precomputed nodes, weights and Legendre recursions, accurate to ~1e-13, dominate
+# rather than the transform's own rounding, so the budget is still under 4e-12 relative.
+_ROUNDTRIP_ULPS = {(torch.float32, False): 16, (torch.float32, True): 64, (torch.float64, False): 4096, (torch.float64, True): 16384}
+# Gram: float64 inner products over the nlat * nlon grid, ~sqrt(N) growth (measured: 36).
+_GRAM_ULPS = 128
+# compile vs eager: the same contraction, possibly reassociated by inductor (measured: 0).
+_COMPILE_ULPS = 64
+# oversized analysis vs an einsum over the latitudes (measured: 1.5).
+_QUADRATURE_ULPS = 16
+# four-pi and schmidt weights are separate float64 recursions from ortho (measured: 13).
+_NORM_ULPS = 64
+
+
 def _check_coefficient_recovery(test, nlat, grid, extended, mmax, lmmax, norm, dtype, vector, verbose=False):
     """Assert sht(isht(c)) == c for band-limited c, relative to the largest coefficient."""
     set_seed(333)
@@ -119,12 +136,8 @@ def _check_coefficient_recovery(test, nlat, grid, extended, mmax, lmmax, norm, d
 
     recovered = forward(inverse(coeffs))
 
-    if dtype == torch.float64:
-        tol = 1e-11 if vector else 1e-12
-    else:
-        tol = 1e-4 if vector else 1e-5
-    atol = tol * coeffs.abs().max().item()
-    test.assertTrue(compare_tensors("recovered coefficients", recovered, coeffs, atol=atol, rtol=0.0, verbose=verbose))
+    ulps = _ROUNDTRIP_ULPS[(dtype, vector)]
+    test.assertTrue(compare_tensors(f"recovered coefficients [{dtype}, vector={vector}]", recovered, coeffs, atol=0.0, rtol=0.0, ulps=ulps, verbose=verbose))
 
 
 # nlat, grid, extended
@@ -199,9 +212,8 @@ def _check_compile(test, nlat, nlon, grid, lmax, dtype, vector, verbose=False):
     actual = compiled(x)
     (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
 
-    tol = 1e-5 if dtype == torch.float32 else 1e-12
-    test.assertTrue(compare_tensors("compiled forward", actual, expected, atol=tol, rtol=tol, verbose=verbose))
-    test.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=tol, rtol=tol, verbose=verbose))
+    test.assertTrue(compare_tensors("compiled forward", actual, expected, atol=0.0, rtol=0.0, ulps=_COMPILE_ULPS, verbose=verbose))
+    test.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=0.0, rtol=0.0, ulps=_COMPILE_ULPS, verbose=verbose))
 
 
 def _scipy_mode_field(grid, l, m, coefficient, vector=False, component=0):
@@ -301,8 +313,7 @@ def _check_gram(test, nlat, grid, norm, vector, verbose=False):
     gram = torch.einsum("ivkn,k,jvkn->ij", fields, measure, fields)
 
     expected = torch.diag(torch.tensor(diagonal, dtype=torch.float64, device=test.device))
-    atol = 1e-12 * max(diagonal)
-    test.assertTrue(compare_tensors("Gram matrix", gram, expected, atol=atol, rtol=0.0, verbose=verbose))
+    test.assertTrue(compare_tensors("Gram matrix", gram, expected, atol=0.0, rtol=0.0, ulps=_GRAM_ULPS, eps_dtype=gram.dtype, verbose=verbose))
 
 
 @parameterized_class(("device"), _devices)
@@ -409,14 +420,14 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [32, 64, 16, "equiangular", 1e-9, 1e-9],
-            [32, 64, 16, "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "lobatto", 1e-9, 1e-9],
-            [32, 64, 16, "fejer1", 1e-9, 1e-9],
+            [32, 64, 16, "equiangular"],
+            [32, 64, 16, "legendre-gauss"],
+            [32, 64, 16, "lobatto"],
+            [32, 64, 16, "fejer1"],
         ],
         skip_on_empty=True,
     )
-    def test_cross_norm_consistency(self, nlat, nlon, batch_size, grid, atol, rtol, verbose=False):
+    def test_cross_norm_consistency(self, nlat, nlon, batch_size, grid, verbose=False):
         """The three normalizations applied to the same band-limited signal must satisfy
         known per-coefficient scaling relations:
           c_four_pi[l,m] = c_ortho[l,m] * sqrt(4*pi)
@@ -445,32 +456,32 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
 
         # four-pi: each coefficient is sqrt(4*pi) larger than ortho
         c_four_pi_ref = c_ortho * math.sqrt(4.0 * math.pi)
-        self.assertTrue(compare_tensors("four-pi vs ortho scaling", c_four_pi, c_four_pi_ref, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("four-pi vs ortho scaling", c_four_pi, c_four_pi_ref, atol=0.0, rtol=0.0, ulps=_NORM_ULPS, verbose=verbose))
 
         # schmidt: coefficient at degree l is sqrt(4*pi/(2*l+1)) * c_ortho[l,m]
         l_vals = torch.arange(lmax, dtype=torch.float64, device=self.device)
         schmidt_scale = torch.sqrt(4.0 * math.pi / (2.0 * l_vals + 1.0))  # (lmax,)
         c_schmidt_ref = c_ortho * schmidt_scale[:, None]  # broadcast over mmax
-        self.assertTrue(compare_tensors("schmidt vs ortho scaling", c_schmidt, c_schmidt_ref, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("schmidt vs ortho scaling", c_schmidt, c_schmidt_ref, atol=0.0, rtol=0.0, ulps=_NORM_ULPS, verbose=verbose))
 
     @parameterized.expand(
         [
-            [32, 64, 16, "ortho", "equiangular", 1e-9, 1e-9],
-            [32, 64, 16, "ortho", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "ortho", "lobatto", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "equiangular", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "lobatto", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "equiangular", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "legendre-gauss", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "lobatto", 1e-9, 1e-9],
-            [32, 64, 16, "ortho", "fejer1", 1e-9, 1e-9],
-            [32, 64, 16, "four-pi", "fejer1", 1e-9, 1e-9],
-            [32, 64, 16, "schmidt", "fejer1", 1e-9, 1e-9],
+            [32, 64, 16, "ortho", "equiangular"],
+            [32, 64, 16, "ortho", "legendre-gauss"],
+            [32, 64, 16, "ortho", "lobatto"],
+            [32, 64, 16, "four-pi", "equiangular"],
+            [32, 64, 16, "four-pi", "legendre-gauss"],
+            [32, 64, 16, "four-pi", "lobatto"],
+            [32, 64, 16, "schmidt", "equiangular"],
+            [32, 64, 16, "schmidt", "legendre-gauss"],
+            [32, 64, 16, "schmidt", "lobatto"],
+            [32, 64, 16, "ortho", "fejer1"],
+            [32, 64, 16, "four-pi", "fejer1"],
+            [32, 64, 16, "schmidt", "fejer1"],
         ],
         skip_on_empty=True,
     )
-    def test_csphase(self, nlat, nlon, batch_size, norm, grid, atol, rtol, verbose=False):
+    def test_csphase(self, nlat, nlon, batch_size, norm, grid, verbose=False):
         """Toggling csphase only flips the sign of odd-m spectral columns.
 
         csphase=True (default) multiplies the Legendre weight rows at odd m by -1.
@@ -506,8 +517,8 @@ class TestSphericalHarmonicTransform(unittest.TestCase):
                 "csphase sign flip",
                 c_cs,
                 c_no_cs * sign,
-                atol=atol,
-                rtol=rtol,
+                atol=0.0,
+                rtol=0.0,
                 verbose=verbose,
             )
         )
@@ -789,12 +800,11 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
             expected = torch.einsum("mk,mlk->lm", modes, w)
         actual = analysis(x)
         self.assertEqual(actual.shape, ((2,) if vector else ()) + analysis.grid_out.shape)
-        tol = 1e-5 if dtype == torch.float32 else 1e-12
-        self.assertTrue(compare_tensors("oversized direct quadrature", expected, actual, atol=tol, rtol=tol, verbose=verbose))
+        self.assertTrue(compare_tensors("oversized direct quadrature", actual, expected, atol=0.0, rtol=0.0, ulps=_QUADRATURE_ULPS, verbose=verbose))
         gradient = torch.randn_like(actual)
         actual_grad = torch.autograd.grad(actual, x, gradient)[0]
         expected_grad = torch.autograd.grad(expected, x, gradient)[0]
-        self.assertTrue(compare_tensors("oversized input gradient", expected_grad, actual_grad, atol=tol, rtol=tol, verbose=verbose))
+        self.assertTrue(compare_tensors("oversized input gradient", actual_grad, expected_grad, atol=0.0, rtol=0.0, ulps=_QUADRATURE_ULPS, verbose=verbose))
         l = torch.arange(analysis.lmax, device=self.device)[:, None]
         m = torch.arange(analysis.mmax, device=self.device)[None, :]
         mask = m <= l
@@ -839,8 +849,9 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
                 latitude = (1 - 2 * torch.arange(nlat, device=self.device).remainder(2)).to(dtype)
             x = latitude[..., None].expand(leading + grid.shape).contiguous()
         actual = analysis(x)
-        tol = 64 * torch.finfo(dtype).eps * max(1.0, actual.abs().max().item())
-        self.assertTrue(compare_tensors("arbitrary-input zero-order reality", actual[..., 0].imag, torch.zeros_like(actual[..., 0].imag), atol=tol, rtol=0, verbose=verbose))
+        # the reference is zero, so the floor comes from the transform's own output range
+        atol = range_atol(actual, 64 * torch.finfo(dtype).eps, 64)
+        self.assertTrue(compare_tensors("arbitrary-input zero-order reality", actual[..., 0].imag, torch.zeros_like(actual[..., 0].imag), atol=atol, rtol=0, verbose=verbose))
 
     @parameterized.expand(
         [(geometry, vector, lmax) for geometry in ("equiangular", "fejer1") for vector in (False, True) for lmax in (0, 8)],

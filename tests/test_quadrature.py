@@ -35,7 +35,7 @@ from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, set_seed
+from testutils import compare_tensors, range_atol, set_seed
 
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, trapezoidal_weights
@@ -46,25 +46,32 @@ if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
 
 
+# Error budget in ULPs of the integral of |f| (see testutils.range_atol): a float32
+# quadrature sums the whole grid, so its rounding error scales with the summed terms. Where
+# the integrand has one sign (the constant fields) that is the reference itself.
+# Measured: 1.3 ULPs of the reference for constant fields, 0.05 of int |f| for random ones.
+_QUAD_ULPS = 8
+
+
 @parameterized_class(("device"), _devices)
 class TestQuadrature(unittest.TestCase):
     """Serial QuadratureS2 integration tests."""
 
     @parameterized.expand(
         [
-            [64, 128, 2, 3, "equiangular", False, 1e-6, 1e-6],
-            [64, 128, 2, 3, "equiangular", True, 1e-6, 1e-6],
-            [64, 128, 2, 3, "fejer1", False, 1e-6, 1e-6],
-            [65, 128, 2, 3, "fejer1", True, 1e-6, 1e-6],
-            [65, 128, 1, 1, "legendre-gauss", False, 1e-6, 1e-6],
-            [65, 128, 1, 1, "legendre-gauss", True, 1e-6, 1e-6],
-            [65, 128, 2, 2, "lobatto", False, 1e-6, 1e-6],
-            [65, 128, 2, 2, "lobatto", True, 1e-6, 1e-6],
-            [64, 128, 2, 3, "trapezoidal", False, 1e-6, 1e-6],
-            [64, 128, 2, 3, "trapezoidal", True, 1e-6, 1e-6],
+            [64, 128, 2, 3, "equiangular", False],
+            [64, 128, 2, 3, "equiangular", True],
+            [64, 128, 2, 3, "fejer1", False],
+            [65, 128, 2, 3, "fejer1", True],
+            [65, 128, 1, 1, "legendre-gauss", False],
+            [65, 128, 1, 1, "legendre-gauss", True],
+            [65, 128, 2, 2, "lobatto", False],
+            [65, 128, 2, 2, "lobatto", True],
+            [64, 128, 2, 3, "trapezoidal", False],
+            [64, 128, 2, 3, "trapezoidal", True],
         ]
     )
-    def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, atol, rtol, verbose=False):
+    def test_constant_integral(self, nlat, nlon, batch_size, num_chan, grid, normalize, verbose=False):
 
         set_seed(333)
 
@@ -76,7 +83,7 @@ class TestQuadrature(unittest.TestCase):
         expected_value = 1.0 if normalize else 4.0 * torch.pi
         expected = torch.full((batch_size, num_chan), expected_value, dtype=torch.float32, device=self.device)
 
-        self.assertTrue(compare_tensors("output", out, expected, atol=atol, rtol=rtol, verbose=verbose))
+        self.assertTrue(compare_tensors("output", out, expected, atol=0.0, rtol=0.0, ulps=_QUAD_ULPS, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -106,7 +113,9 @@ class TestQuadrature(unittest.TestCase):
         out = quad(f)
         expected = torch.zeros(1, 1, device=self.device)
 
-        self.assertTrue(compare_tensors("zero longitude mean", out, expected, atol=1e-5, rtol=0.0, verbose=verbose))
+        # the reference is zero, so the floor comes from the size of the summed terms
+        atol = range_atol(quad(f.abs()), 0.0, _QUAD_ULPS)
+        self.assertTrue(compare_tensors("zero longitude mean", out, expected, atol=atol, rtol=0.0, verbose=verbose))
 
     @parameterized.expand(
         [
@@ -136,8 +145,8 @@ class TestQuadrature(unittest.TestCase):
                 "normalization consistency",
                 out_norm,
                 out_raw / (4.0 * math.pi),
-                atol=1e-6,
-                rtol=1e-5,
+                atol=range_atol(quad_norm(data.abs()), 0.0, _QUAD_ULPS),
+                rtol=0.0,
                 verbose=verbose,
             )
         )
@@ -211,7 +220,7 @@ class TestQuadratureLeadingDimensions(unittest.TestCase):
                 field = amplitudes.reshape(*leading, *([1] * len(grid.shape))) * torch.ones(grid.shape, device=self.device)
                 out = quad(field)
                 self.assertEqual(out.shape, torch.Size(leading))
-                self.assertTrue(compare_tensors(f"integral {leading}", out, amplitudes * expected_integral, atol=1e-5, rtol=1e-5))
+                self.assertTrue(compare_tensors(f"integral {leading}", out, amplitudes * expected_integral, atol=0.0, rtol=0.0, ulps=_QUAD_ULPS))
 
 
 @parameterized_class(("device",), _devices)
