@@ -448,6 +448,11 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             # spatial shards. Keep output/dgrad tolerances tight, but allow
             # small absolute drift near zero-valued weight-gradient entries.
             pg_atol = max(pg_atol, 3.0)
+        if not is_amp and conv_local.weight.grad is not None:
+            # fp32 parameter gradients reach the hundreds, and entries near zero are differences
+            # of such terms, so their reduction noise scales with the largest entry rather than
+            # with their own value (AMD runners: 2e-3 off on an entry of 0.07, with max ~900).
+            pg_atol = max(pg_atol, 1e-5 * conv_local.weight.grad.abs().max().item())
         if conv_dist.weight.grad is not None:
             wgrad = self._allreduce_param_grad(conv_dist.weight.grad)
             self.assertTrue(compare_tensors("weight grad", conv_local.weight.grad, wgrad, atol=pg_atol, rtol=pg_rtol, verbose=verbose))
