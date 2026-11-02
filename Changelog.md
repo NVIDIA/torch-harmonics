@@ -2,7 +2,7 @@
 
 ## Versioning
 
-### v0.9.4rc1
+### v0.9.4
 
 * Fixed `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and their distributed counterparts merging consecutive filter basis functions into one when one ends on the output row the next starts on: all of them were then applied as the first, and the others contributed nothing. This always happens when there is a single output latitude, so in particular for a distributed DISCO convolution whose polar decomposition leaves a rank one output latitude (e.g. a 4 x 9 output on 4 polar ranks), which returned wrong results.
 * Fixed the latitude halo exchange of `DistributedDiscreteContinuousConvS2` with a halo radius of 0, i.e. when the filter support stays within a rank's own input rows. It sent the rank's whole input band against a zero-row receive, a mismatched point-to-point transfer that NCCL is free to deliver into the next halo exchange on the polar group, corrupting a later layer. The exchange is now skipped when there is nothing to exchange.
