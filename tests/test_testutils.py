@@ -32,6 +32,7 @@
 import contextlib
 import io
 import math
+import os
 import unittest
 from unittest import mock
 
@@ -202,7 +203,7 @@ class TestCompareTensorsReport(unittest.TestCase):
 
     def test_a_passing_check_is_silent_by_default(self):
         ref = _cancelled_reference(torch.float32)
-        with mock.patch.object(testutils, "_REPORT_MARGINS", False):
+        with mock.patch.dict(os.environ, {"TORCH_HARMONICS_TESTS_VERBOSE": "0"}):
             ok, out = self._output("quiet", ref.clone(), ref, atol=0.0, rtol=0.0)
         self.assertTrue(ok)
         self.assertEqual(out, "")
@@ -210,17 +211,45 @@ class TestCompareTensorsReport(unittest.TestCase):
     def test_report_prints_the_error_in_ulps_of_the_reference(self):
         ref = _cancelled_reference(torch.float32)
         got = _perturbed(ref, 10 * torch.finfo(torch.float32).eps * 100.0)
-        ok, out = self._output("reported", got, ref, atol=1.0, rtol=0.0, report=True)
+        with mock.patch.dict(os.environ, {"TORCH_HARMONICS_TESTS_VERBOSE": "0"}):
+            ok, out = self._output("reported", got, ref, atol=1.0, rtol=0.0, report=True)
         self.assertTrue(ok)
         self.assertIn("Margin on reported", out)
         self.assertIn("10.0 ULPs of max|ref|", out)
 
-    def test_the_environment_switch_reports_every_check(self):
+    @parameterized.expand(
+        [
+            # Format: [level, prints failure diagnostics, prints passing margins]
+            ["0", False, False],
+            ["1", True, False],
+            ["2", True, True],
+        ]
+    )
+    def test_the_environment_overrides_the_tests_verbosity(self, level, diagnostics, margins):
         ref = _cancelled_reference(torch.float32)
-        with mock.patch.object(testutils, "_REPORT_MARGINS", True):
-            ok, out = self._output("env", ref.clone(), ref, atol=0.0, rtol=0.0)
-        self.assertTrue(ok)
-        self.assertIn("Margin on env", out)
+        failing = _perturbed(ref, 1.0)
+        with mock.patch.dict(os.environ, {"TORCH_HARMONICS_TESTS_VERBOSE": level}):
+            # the tests pass verbose=False; the variable decides
+            with self.subTest("failing check"):
+                ok, out = self._output("failing", failing, ref, atol=0.0, rtol=0.0, verbose=False)
+                self.assertFalse(ok)
+                self.assertEqual("Worst allclose condition violation" in out, diagnostics, out)
+            with self.subTest("passing check"):
+                ok, out = self._output("passing", ref.clone(), ref, atol=0.0, rtol=0.0, verbose=False)
+                self.assertTrue(ok)
+                self.assertEqual("Margin on passing" in out, margins, out)
+
+    def test_an_unset_variable_is_level_zero(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TORCH_HARMONICS_TESTS_VERBOSE", None)
+            self.assertEqual(testutils.tests_verbosity(), 0)
+
+    def test_only_rank_zero_prints(self):
+        with mock.patch.dict(os.environ, {"TORCH_HARMONICS_TESTS_VERBOSE": "2"}):
+            with mock.patch.object(testutils.dist, "is_initialized", return_value=True), mock.patch.object(testutils.dist, "get_rank", return_value=1):
+                self.assertEqual(testutils.tests_verbosity(), 0)
+            with mock.patch.object(testutils.dist, "is_initialized", return_value=True), mock.patch.object(testutils.dist, "get_rank", return_value=0):
+                self.assertEqual(testutils.tests_verbosity(), 2)
 
     def test_a_verbose_failure_reports_the_enforced_atol(self):
         ref = _cancelled_reference(torch.float32)

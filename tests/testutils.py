@@ -341,9 +341,22 @@ def reduce_success(success, device, group=None):
     return bool(flag.item())
 
 
-# Print the margin of every floating-point compare_tensors check, passing or not, so the
-# tolerances can be calibrated from a run on a given machine (see compare_tensors' ``report``).
-_REPORT_MARGINS = os.getenv("TORCH_HARMONICS_REPORT_TOL_MARGINS", "0") == "1"
+def tests_verbosity():
+    """
+    The level set by TORCH_HARMONICS_TESTS_VERBOSE, which overrides the tests' own ``verbose``:
+
+    - 0 (default): each test decides.
+    - 1: every compare_tensors check prints its diagnostics when it fails.
+    - 2: every floating-point check also prints its margin when it passes, in ULPs of
+      max|ref|, so the tolerances can be calibrated from a run on a given machine.
+
+    Read on each call, so it can be set per test. Under torch.distributed only rank 0 prints,
+    as the tests' own diagnostics do; the verdict is all-reduced separately (reduce_success).
+    """
+    level = int(os.getenv("TORCH_HARMONICS_TESTS_VERBOSE", "0"))
+    if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+        return 0
+    return level
 
 
 def _eps(tensor, eps_dtype=None):
@@ -392,9 +405,14 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False, 
     ``torch.allclose(tensor1, tensor2, atol, rtol)`` with diagnostics. ``tensor2`` is the reference.
 
     ``ulps > 0`` floors atol at ``ulps`` ULPs (of ``eps_dtype``, default the reference's) of
-    ``max|tensor2|``, see range_atol. ``report`` (or TORCH_HARMONICS_REPORT_TOL_MARGINS=1) prints
-    the error in those units even when the check passes, to calibrate a budget against.
+    ``max|tensor2|``, see range_atol. ``report`` prints the error in those units even when the
+    check passes, to calibrate a budget against. TORCH_HARMONICS_TESTS_VERBOSE=1 forces
+    ``verbose`` and =2 also ``report``, see tests_verbosity.
     """
+
+    level = tests_verbosity()
+    verbose = verbose or level >= 1
+    report = report or level >= 2
 
     # some None checks
     if tensor1 is None and tensor2 is None:
@@ -434,7 +452,7 @@ def compare_tensors(msg, tensor1, tensor2, atol=1e-8, rtol=1e-5, verbose=False, 
             diff_bad = diff.flatten()[worst_diff].item()
             tensor2_abs_bad = torch.abs(tensor2).flatten()[worst_diff].item()
             print(f"Worst allclose condition violation: {diff_bad} <= {atol} + {rtol} * {tensor2_abs_bad} = {atol + rtol * tensor2_abs_bad}")
-        if (not allclose and verbose) or report or _REPORT_MARGINS:
+        if (not allclose and verbose) or report:
             # in the units range_atol calibrates in, so a ulps budget can be set from the output
             scale = torch.abs(tensor2).max().item() if tensor2.numel() > 0 else 0.0
             max_diff = diff.max().item() if diff.numel() > 0 else 0.0
