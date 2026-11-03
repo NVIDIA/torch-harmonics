@@ -147,8 +147,10 @@ pip install -e . --no-build-isolation
 
 Custom CUDA extensions require compute capability **≥ 8.0**. The tensor-core DISCO forward
 kernels are only compiled when `TORCH_CUDA_ARCH_LIST` names the arch-specific targets: `9.0a`
-for Hopper, `10.0a` / `10.3a` for datacenter Blackwell. With plain `9.0` or `10.0` they compile
-to stubs and those GPUs fall back to the generic path.
+for Hopper, `10.0a` for GB200/B200, `10.3a` for GB300/B300. Each target enables only its own
+device: the kpacked path is selected on a GPU only if its exact `X.Ya` target was built, and
+otherwise that GPU falls back to the generic path. Plain `9.0` or `10.0` targets compile the
+tensor-core kernels to stubs and never enable them.
 
 ### Build environment variables
 

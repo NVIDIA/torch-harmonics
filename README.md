@@ -128,15 +128,15 @@ cd torch-harmonics
 pip install --no-build-isolation -e .
 ```
 
-If CUDA devices are not detected automatically (e.g. inside a container), set the `TORCH_HARMONICS_BUILD_CUDA_EXTENSION` flag. Set `TORCH_CUDA_ARCH_LIST` to only the architectures you need to reduce compilation time:
+If CUDA devices are not detected automatically (e.g. inside a container), set the `TORCH_HARMONICS_BUILD_CUDA_EXTENSION` flag. Set `TORCH_CUDA_ARCH_LIST` to only the architectures you need to reduce compilation time. The example below needs CUDA 12.9 or newer; with CUDA 12.8 drop `10.3a`, and before 12.8 also drop `10.0a` and `12.0+PTX`, which those compilers do not support:
 
 ```bash
 export TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1
-export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0a 10.0a+PTX"
+export TORCH_CUDA_ARCH_LIST="8.0 8.6 9.0a 10.0a 10.3a 12.0+PTX"
 pip install --no-build-isolation -e .
 ```
 
-> **Tip:** Use the `a` suffix (e.g. `9.0a`, `10.0a`) instead of plain `9.0` or `10.0` to enable architecture-specific tensor core instructions (e.g. `wgmma` on Hopper). Some layers such as DISCO benefit significantly from this. The trade-off is that the resulting binary is only compatible with the exact GPU generation it was compiled for.
+> **Tip:** Use the `a` suffix (e.g. `9.0a`, `10.0a`) instead of plain `9.0` or `10.0` to enable architecture-specific tensor core instructions (e.g. `wgmma` on Hopper). Some layers such as DISCO benefit significantly from this. The trade-off is that the resulting binary is only compatible with the exact GPU it was compiled for, and this includes `+PTX` on an `a` target: `10.0a` runs on GB200/B200 (10.0) but not on GB300/B300 (10.3), which needs `10.3a`.
 
 :warning: Custom CUDA extensions require architectures >= 7.0.
 

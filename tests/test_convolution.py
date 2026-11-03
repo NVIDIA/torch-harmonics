@@ -46,6 +46,7 @@ from torch_harmonics.disco.backends import RaggedOptimizedBackend, RaggedReferen
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
+from torch_harmonics.disco.optimized import disco_optimized
 from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad, _kpacked_supported_on_device
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import RegularGridS2
@@ -1187,7 +1188,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
 
 # A supported device is not sufficient: the kpacked buffers are only built when
-# this build actually contains the matching kernel (BUILD_KPACKED_SM90 / SM100,
+# this build actually contains the matching kernel (BUILD_KPACKED_SM90 / SM100 / SM103,
 # set from TORCH_CUDA_ARCH_LIST). A build targeting an architecture newer than
 # the ones with kpacked kernels reports e.g. major == 10 while carrying no
 # sm_100a cubin, so a device-only guard runs these tests against buffers that
@@ -1198,7 +1199,7 @@ def _kpacked_built_for_sm90():
 
 
 def _kpacked_built_for_sm100():
-    """Blackwell device AND an sm_100a kpacked kernel this device can load."""
+    """Blackwell device AND an sm_100a / sm_103a kpacked kernel this device can load."""
     return _is_sm100() and _kpacked_runnable_here()
 
 
@@ -1212,6 +1213,65 @@ def _kpacked_runnable_here():
 def _is_kpacked_supported():
     """Return True when the kpacked forward can actually run here (device AND build)."""
     return _kpacked_built_for_sm90() or _kpacked_built_for_sm100()
+
+
+class TestKpackedDeviceGate(unittest.TestCase):
+    """
+    The kpacked cubins are arch-conditional, not forward compatible: each device needs its
+    own build target, and a 10.0a-only build must not select kpacked on a 10.3 device, where
+    the forward silently returns zeros (#337). The build flags and the device capability are
+    mocked, so this runs without the hardware, and on every CI runner.
+    """
+
+    _TARGETS = {"9.0a": (9, 0), "10.0a": (10, 0), "10.3a": (10, 3)}
+    # the build flag behind each target, as the extension reports it
+    _FLAG_TARGET = {
+        disco_optimized.kpacked_sm90_kernels_is_available: "9.0a",
+        disco_optimized.kpacked_sm100_kernels_is_available: "10.0a",
+        disco_optimized.kpacked_sm103_kernels_is_available: "10.3a",
+    }
+
+    def _flags(self, built):
+        # mock the flags, not the table: each entry keeps the flag the library assigns it, so a
+        # device keyed on the wrong target (10.3 on the 10.0a flag, #337) is caught
+        table = disco_optimized._KPACKED_BUILT_FOR
+        return {capability: (lambda on=(self._FLAG_TARGET[flag] in built): on) for capability, flag in table.items()}
+
+    def _supported(self, built, capability):
+        with mock.patch.dict(disco_optimized._KPACKED_BUILT_FOR, self._flags(built)), mock.patch("torch.cuda.get_device_capability", return_value=capability):
+            return _kpacked_supported_on_device(0)
+
+    @parameterized.expand(
+        [
+            # build targets, device capability, kpacked selected
+            [("10.0a",), (10, 0), True],
+            [("10.0a",), (10, 3), False],
+            [("10.3a",), (10, 3), True],
+            [("10.3a",), (10, 0), False],
+            [("10.0a", "10.3a"), (10, 0), True],
+            [("10.0a", "10.3a"), (10, 3), True],
+            [("10.0a", "10.3a"), (9, 0), False],
+            [("9.0a",), (9, 0), True],
+            [("9.0a",), (10, 0), False],
+            # devices without a kpacked kernel: Rubin (10.7) is not a 10.0, nor are Ampere and RTX Blackwell
+            [("9.0a", "10.0a", "10.3a"), (10, 7), False],
+            [("9.0a", "10.0a", "10.3a"), (8, 0), False],
+            [("9.0a", "10.0a", "10.3a"), (12, 0), False],
+            [(), (10, 0), False],
+        ]
+    )
+    def test_each_device_needs_its_own_target(self, built, capability, expected):
+        self.assertEqual(self._supported(built, capability), expected)
+
+    def test_the_table_covers_every_kpacked_target(self):
+        self.assertEqual(set(disco_optimized._KPACKED_BUILT_FOR), set(self._TARGETS.values()))
+
+    def test_any_target_builds_the_kpacked_buffers(self):
+        # construction cannot know the device yet, so any built target is enough there
+        build_available = disco_optimized._kpacked_build_available.__wrapped__
+        for built in ((), ("9.0a",), ("10.0a",), ("10.3a",), ("9.0a", "10.0a", "10.3a")):
+            with self.subTest(built=built), mock.patch.dict(disco_optimized._KPACKED_BUILT_FOR, self._flags(built)):
+                self.assertEqual(build_available(), bool(built))
 
 
 def _arc_state(conv):
@@ -1267,7 +1327,7 @@ class TestKpackedPath(unittest.TestCase):
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
 
-    @unittest.skipUnless(_kpacked_built_for_sm100(), "kpacked forward on Blackwell requires SM_100a (GB200/B200) and an sm_100a build")
+    @unittest.skipUnless(_kpacked_built_for_sm100(), "kpacked forward on Blackwell requires a 10.0 or 10.3 device and the matching 10.0a / 10.3a build")
     def test_kpacked_forward_activates_on_sm100(self):
         """tcgen05 kpacked path is chosen for bf16/fp16 on Blackwell."""
         conv = self._make_conv(1, 8, (16, 32))
@@ -1277,7 +1337,7 @@ class TestKpackedPath(unittest.TestCase):
         out = conv(inp)
         self.assertEqual(out.dtype, torch.bfloat16)
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_matches_optimized(self, verbose=True):
         """The kpacked tensor-core forward matches the arc kernels numerically."""
         set_seed(123)
@@ -1304,7 +1364,7 @@ class TestKpackedPath(unittest.TestCase):
         self.assertTrue(compare_tensors("inp grad", inp.grad.float(), inp_ref.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
         self.assertTrue(compare_tensors("weight grad", conv_kpacked.weight.grad.float(), conv_opt.weight.grad.float(), atol=5e-2, rtol=5e-2, verbose=verbose))
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_contraction_double_backward(self):
         """The kpacked contraction's backward is the transpose op, so it is differentiable: its derivative is the arc contraction."""
         from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_kpacked, _disco_s2_contraction_regular_optimized
@@ -1326,7 +1386,7 @@ class TestKpackedPath(unittest.TestCase):
         ref = _disco_s2_contraction_regular_optimized(u, *arcs, conv.kernel_size, conv.nlat_out, conv.nlon_out)
         self.assertTrue(compare_tensors("double backward", ggrad.float(), ref.float(), atol=1e-2, rtol=1e-2))
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_fused_matches_unfused(self):
         """fused=True kpacked path gives the same result as fused=False."""
         set_seed(42)
@@ -1347,7 +1407,7 @@ class TestKpackedPath(unittest.TestCase):
         out_f.backward(grad.clone())
         self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-2, rtol=1e-2))
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_bwd_bc_tile_boundaries(self):
         """BC_TILE selection: exercises BC_TILE=1 (BC=3), BC_TILE=4 (BC=5), BC_TILE=8 (BC=16).
 
@@ -1418,7 +1478,7 @@ class TestKpackedPath(unittest.TestCase):
         out_f.backward(grad.clone())
         self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-3, rtol=1e-3))
 
-    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a or SM_100a")
+    @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_opcheck(self):
         """forward_kpacked op satisfies the PT2 opcheck contract."""
         conv = self._make_conv(1, 8, (16, 32))

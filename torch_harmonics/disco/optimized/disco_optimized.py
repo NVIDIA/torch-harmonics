@@ -42,6 +42,7 @@ import torch
 from disco_helpers import (
     kpacked_sm90_kernels_is_available,
     kpacked_sm100_kernels_is_available,
+    kpacked_sm103_kernels_is_available,
     optimized_kernels_is_available,
 )
 
@@ -55,8 +56,8 @@ from .._disco_utils import _compute_dtype
 def _kpacked_build_available() -> bool:
     """Return True if this build contains any kpacked kernel at all.
 
-    Purely a build-time question: BUILD_KPACKED_SM90 / SM100 come from whether
-    TORCH_CUDA_ARCH_LIST asked for 9.0a / 10.0a. If neither is present no device
+    Purely a build-time question: BUILD_KPACKED_SM90 / SM100 / SM103 come from whether
+    TORCH_CUDA_ARCH_LIST asked for 9.0a / 10.0a / 10.3a. If none is present no device
     can ever run the kpacked path, so the (padded, and at high resolution large)
     kpacked buffers need not be constructed.
 
@@ -65,35 +66,35 @@ def _kpacked_build_available() -> bool:
     unknown; keying on it would disable kpacked for the ordinary flow. The device is
     checked when a backend is selected for it, see RegularKpackedBackend.available.
     """
-    return kpacked_sm90_kernels_is_available() or kpacked_sm100_kernels_is_available()
+    return any(available() for available in _KPACKED_BUILT_FOR.values())
 
 
-# Minor versions the kpacked kernels are actually compiled for, mirroring the
-# arch targets in setup.py (9.0a, and 10.0a / 10.3a). These cubins are
-# arch-CONDITIONAL, not forward compatible: an sm_100a cubin will not load on
-# sm_103 or sm_107. So the major version alone is not a sufficient test --
-# Rubin reports 10.7 and would pass a `major == 10` check while no cubin in the
-# build can run on it.
-_KPACKED_SM90_MINORS = (0,)
-_KPACKED_SM100_MINORS = (0, 3)
+# The device each kpacked build flag enables, mirroring the arch targets in setup.py
+# (9.0a, 10.0a, 10.3a). These cubins are arch-CONDITIONAL, not forward compatible:
+# an sm_100a cubin will not load on sm_103 or sm_107. So each device needs its own
+# target -- one flag shared by 10.0 and 10.3 let a 10.0a-only build select kpacked
+# on a 10.3 GPU, where the driver falls back to a plain sm_100 image whose tcgen05
+# kernel is an empty stub and the forward silently returns zeros (#337). Likewise
+# Rubin reports 10.7 and must not be taken for a 10.0 device.
+_KPACKED_BUILT_FOR = {
+    (9, 0): kpacked_sm90_kernels_is_available,
+    (10, 0): kpacked_sm100_kernels_is_available,
+    (10, 3): kpacked_sm103_kernels_is_available,
+}
 
 
 def _kpacked_supported_on_device(device_index: int) -> bool:
     """Return True if the kpacked kernel is supported on this CUDA device.
 
     SM_90a (Hopper)  — WGMMA path in disco_cuda_fwd_dense_kpacked_sm90.cu.
-    SM_100a (Blackwell) — tcgen05 path in disco_cuda_fwd_dense_kpacked_sm100.cu.
+    SM_100a / SM_103a (Blackwell) — tcgen05 path in disco_cuda_fwd_dense_kpacked_sm100.cu.
 
-    Checks the minor version too; see the note on the tables above. A device
-    outside those targets falls back to the arc kernels, which are correct
-    everywhere.
+    Requires the exact (major, minor) to have been built; see the note on the table
+    above. A device outside those targets falls back to the arc kernels, which are
+    correct everywhere.
     """
-    major, minor = torch.cuda.get_device_capability(device_index)
-    if major == 9 and minor in _KPACKED_SM90_MINORS:
-        return kpacked_sm90_kernels_is_available()
-    if major == 10 and minor in _KPACKED_SM100_MINORS:
-        return kpacked_sm100_kernels_is_available()
-    return False
+    available = _KPACKED_BUILT_FOR.get(torch.cuda.get_device_capability(device_index))
+    return available is not None and available()
 
 
 def _kpacked_k_pad(kernel_size: int, n_align: int = 8) -> Optional[int]:
