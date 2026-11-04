@@ -112,9 +112,10 @@ def disable_tf32():
     """
     Compute float32 matmuls and convolutions in IEEE float32 rather than TF32.
 
-    conftest.py calls this once per session, before any test runs, so every test runs
-    without TF32 whatever its order or the container's default. Individual tests do not
-    need to call it.
+    Called when this module is imported, so every test runs without TF32 whatever its
+    order, the container's default, or how it is launched: by pytest, where conftest.py
+    calls it again before any test runs, or directly through a test file's
+    ``unittest.main()``, where no conftest hook runs. Individual tests do not need to call it.
     """
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.fp32_precision = "ieee"
@@ -122,6 +123,11 @@ def disable_tf32():
         torch.backends.cudnn.conv.fp32_precision = "ieee"
         torch.backends.cudnn.rnn.fp32_precision = "ieee"
     return
+
+
+# NVIDIA's PyTorch containers enable TF32 by default; every test module imports this one,
+# so switching it off here covers direct `python tests/test_x.py` runs as well as pytest
+disable_tf32()
 
 
 @contextlib.contextmanager

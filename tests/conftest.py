@@ -52,7 +52,8 @@ output. The per-test suffix additionally filters on filenames starting with
 `test_distributed_`.
 
 It runs the whole session in IEEE float32:
-  * `pytest_configure`: switches TF32 off for matmuls and cuDNN before any test runs.
+  * `pytest_configure`: switches TF32 off for matmuls and cuDNN before any test runs
+    (testutils also does so on import, which covers files run directly with unittest).
     NVIDIA's PyTorch containers enable it by default (TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1),
     and the float32 references of many tests are matmuls or einsums, which TF32 rounds to
     about 1e-4. Per-class calls left it to whichever class happened to run first in a
@@ -79,7 +80,8 @@ def _grid():
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config):
     # IEEE float32 for the whole session, on every rank and in every xdist worker, before
-    # any test runs; see the module docstring
+    # any test runs; see the module docstring. Importing testutils has done so already;
+    # repeated here so the session does not depend on that import
     disable_tf32()
 
     # Silence pytest's own console output on every rank except rank 0.
