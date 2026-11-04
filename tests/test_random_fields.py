@@ -305,7 +305,3 @@ class TestGaussianRandomFieldS2Probabilistic(unittest.TestCase):
             u_rough.var().item(),
             "Larger alpha should produce a smoother (lower-variance) field",
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

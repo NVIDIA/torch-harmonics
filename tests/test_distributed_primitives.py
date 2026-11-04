@@ -779,7 +779,3 @@ class TestPolarHalo(unittest.TestCase):
         self.assertTrue(reduce_success(ok, self.device), "halo top rows after a zero-width exchange")
         ok = compare_tensors("halo bottom after zero halo", got[:, :, -r_lat_next:, :], expected_bot, atol=0.0, rtol=0.0, verbose=False)
         self.assertTrue(reduce_success(ok, self.device), "halo bottom rows after a zero-width exchange")
-
-
-if __name__ == "__main__":
-    unittest.main()

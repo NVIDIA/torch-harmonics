@@ -38,7 +38,7 @@ import unittest.mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, requires_torch_compile, set_seed
+from testutils import compare_tensors, requires_torch_compile, set_seed
 
 from torch_harmonics import as_grid
 from torch_harmonics.spectral_convolution import SpectralConvS2
@@ -56,9 +56,6 @@ if torch.cuda.is_available():
 
 @parameterized_class(("device",), _devices)
 class TestSpectralConvS2(unittest.TestCase):
-
-    def setUp(self):
-        disable_tf32()
 
     # -----------------------------------------------------------------------
     # Test 1: Zonal rotation equivariance
@@ -607,7 +604,3 @@ class TestCompileIfSupported(unittest.TestCase):
         sentinel = object()
         with unittest.mock.patch.object(torch, "compile", lambda f, *a, **k: sentinel):
             self.assertIs(compile_if_supported(fn), sentinel)
-
-
-if __name__ == "__main__":
-    unittest.main()

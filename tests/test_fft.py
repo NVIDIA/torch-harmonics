@@ -167,7 +167,3 @@ class TestFFTWrappers(unittest.TestCase):
         loss.backward()
         self.assertIsNotNone(x.grad)
         self.assertFalse(torch.isnan(x.grad).any())
-
-
-if __name__ == "__main__":
-    unittest.main()

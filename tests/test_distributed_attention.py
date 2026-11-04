@@ -38,7 +38,6 @@ from parameterized import parameterized
 from testutils import (
     amp_ulps,
     compare_tensors,
-    disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
     param_grad_ulps,
@@ -101,7 +100,6 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
-        disable_tf32()
 
     def _refuses_device(self, attn_dist):
         """
@@ -701,7 +699,3 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
         with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local, k_local, q_local)
-
-
-if __name__ == "__main__":
-    unittest.main()

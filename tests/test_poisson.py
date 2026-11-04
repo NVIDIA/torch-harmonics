@@ -394,7 +394,3 @@ class TestRadialPoissonSolver(unittest.TestCase):
         """The angular grid alone has no radial nodes to solve on."""
         with self.assertRaisesRegex(TypeError, "SphericalProductGrid"):
             RadialPoissonSolver(as_grid("legendre-gauss", nlat=16, nlon=32))
-
-
-if __name__ == "__main__":
-    unittest.main()

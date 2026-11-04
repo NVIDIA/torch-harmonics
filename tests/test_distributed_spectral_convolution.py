@@ -35,7 +35,6 @@ import torch
 from parameterized import parameterized
 from testutils import (
     compare_tensors,
-    disable_tf32,
     gather_tensor_hw,
     reduce_success,
     set_seed,
@@ -67,7 +66,6 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
-        disable_tf32()
 
     def _split_helper(self, tensor):
         return split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
@@ -192,7 +190,3 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         )
         ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -38,7 +38,6 @@ from parameterized import parameterized
 from testutils import (
     amp_ulps,
     compare_tensors,
-    disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
     param_grad_ulps,
@@ -96,7 +95,6 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
-        disable_tf32()
 
     def setUp(self):
         # Sync at test entry too — belt and braces. If a preceding test
@@ -748,7 +746,3 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 th.as_grid("equiangular", nlat=32, nlon=64), th.as_grid("equiangular", nlat=32, nlon=64), 1, 1, kernel_shape=(3, 3), polar_mode="halo"
             )
         self.assertIn("halo-exchange", str(ctx.exception))
-
-
-if __name__ == "__main__":
-    unittest.main()

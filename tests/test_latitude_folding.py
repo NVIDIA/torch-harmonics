@@ -41,7 +41,7 @@ import unittest
 import numpy as np
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32, set_seed
+from testutils import compare_tensors, set_seed
 
 import torch_harmonics as th
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
@@ -81,10 +81,6 @@ _OPERATOR_CASES = [[grid, nlat, vector] for grid, nlats in (("equiangular", (8, 
 
 @parameterized_class(("device",), _devices)
 class TestLatitudeFolding(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        disable_tf32()
-
     @parameterized.expand(_OPERATOR_CASES, skip_on_empty=True)
     def test_extension_and_shift(self, grid, nlat, vector, verbose=False):
         """The periodic extension and the half-sample Fourier shift, and their adjoints."""
@@ -209,7 +205,3 @@ class TestLatitudeFolding(unittest.TestCase):
         another.weights.zero_()
         self.assertGreater(analysis.weights.abs().max().item(), 0)
         self.assertEqual(_precompute_folded_projection.cache_parameters()["maxsize"], 2)
-
-
-if __name__ == "__main__":
-    unittest.main()

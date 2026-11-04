@@ -282,7 +282,3 @@ class TestCompareTensorsReport(unittest.TestCase):
         self.assertFalse(ok)
         # the floored atol, not the atol=0 that was passed in
         self.assertIn(f"atol {64 * torch.finfo(torch.float32).eps * 100.0:.1e}", out)
-
-
-if __name__ == "__main__":
-    unittest.main()

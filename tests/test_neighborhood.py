@@ -560,7 +560,3 @@ class TestGenericRaggedGrid(unittest.TestCase):
                 arcs = precompute_neighborhood_arcs_s2(self.grid, grid_out, theta_cutoff)
                 expected = _brute_force_neighborhood(self.grid, grid_out, theta_cutoff)
                 self.assertTrue(torch.equal(_arcs_to_mask(arcs, self.grid.npoints), expected))
-
-
-if __name__ == "__main__":
-    unittest.main()
