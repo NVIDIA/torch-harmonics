@@ -38,7 +38,6 @@ from parameterized import parameterized
 from testutils import (
     amp_ulps,
     compare_tensors,
-    disable_tf32,
     gather_tensor_hw,
     maybe_autocast,
     param_grad_ulps,
@@ -101,7 +100,6 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
-        disable_tf32()
 
     def _refuses_device(self, attn_dist):
         """

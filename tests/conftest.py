@@ -51,6 +51,13 @@ on non-zero ranks, so plain non-distributed pytest invocations see zero change i
 output. The per-test suffix additionally filters on filenames starting with
 `test_distributed_`.
 
+It runs the whole session in IEEE float32:
+  * `pytest_configure`: switches TF32 off for matmuls and cuDNN before any test runs.
+    NVIDIA's PyTorch containers enable it by default (TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1),
+    and the float32 references of many tests are matmuls or einsums, which TF32 rounds to
+    about 1e-4. Per-class calls left it to whichever class happened to run first in a
+    worker, so a test without one passed or failed depending on test order.
+
 Finally, it isolates each test's torch.compile state:
   * `reset_dynamo`: an autouse fixture clearing dynamo's compilation cache before
     every test, so compiled artifacts never leak between test cases.
@@ -60,7 +67,7 @@ import os
 
 import pytest
 import torch
-from testutils import world_rank
+from testutils import disable_tf32, world_rank
 
 from torch_harmonics.utils import torch_compile_supported
 
@@ -71,6 +78,10 @@ def _grid():
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config):
+    # IEEE float32 for the whole session, on every rank and in every xdist worker, before
+    # any test runs; see the module docstring
+    disable_tf32()
+
     # Silence pytest's own console output on every rank except rank 0.
     #
     # trylast=True is required: conftest hooks run before the builtin terminal

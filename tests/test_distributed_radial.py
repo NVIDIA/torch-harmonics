@@ -36,7 +36,7 @@ import unittest
 import torch
 import torch.distributed as dist
 from parameterized import parameterized
-from testutils import compare_tensors, disable_tf32, range_atol, reduce_success, set_seed, setup_class_from_context, setup_module, teardown_module
+from testutils import compare_tensors, range_atol, reduce_success, set_seed, setup_class_from_context, setup_module, teardown_module
 
 import torch_harmonics.distributed as thd
 from torch_harmonics import LegendreGaussRadialGrid, SphericalProductGrid, as_grid
@@ -148,9 +148,6 @@ class TestDistributedLayersOnProductGrids(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
-        # the distributed DISCO weight contraction is a cuBLAS einsum; with TF32 the batched
-        # and the per-shell call can land on different kernels, see test_distributed_convolution
-        disable_tf32()
 
     def setUp(self):
         # start from a drained device and matched ranks, as test_distributed_convolution does:

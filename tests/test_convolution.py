@@ -35,7 +35,7 @@ from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors, disable_tf32, maybe_autocast, param_grad_ulps, requires_torch_compile, set_seed
+from testutils import _is_sm90, _is_sm100, _ProductGridAsRagged, compare_tensors, maybe_autocast, param_grad_ulps, requires_torch_compile, set_seed
 from torch.library import opcheck
 
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, HealpixGrid, as_grid
@@ -262,9 +262,6 @@ def _precompute_convolution_tensor_dense(
 @parameterized_class(("device"), _devices)
 class TestDiscreteContinuousConvolution(unittest.TestCase):
     """Test the discrete-continuous convolution module (CPU/CUDA if available)."""
-
-    def setUp(self):
-        disable_tf32()
 
     @parameterized.expand(
         [
@@ -1295,10 +1292,6 @@ class TestKpackedPath(unittest.TestCase):
 
     device = torch.device("cuda")
 
-    def setUp(self):
-        # the fp32 references below must not run on TF32 tensor cores
-        disable_tf32()
-
     def _make_conv(self, batch, channels, in_shape, out_shape=None, theta_cutoff=0.05, grid_in="legendre-gauss", grid_out="legendre-gauss", fused=False):
         if out_shape is None:
             out_shape = in_shape
@@ -1521,7 +1514,6 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
     """DISCO on ragged grids: the per-point psi, the ragged backends and their agreement."""
 
     def setUp(self):
-        disable_tf32()
         set_seed(333)
 
     def _make(

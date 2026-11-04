@@ -109,6 +109,13 @@ def set_seed(seed=333):
 
 
 def disable_tf32():
+    """
+    Compute float32 matmuls and convolutions in IEEE float32 rather than TF32.
+
+    conftest.py calls this once per session, before any test runs, so every test runs
+    without TF32 whatever its order or the container's default. Individual tests do not
+    need to call it.
+    """
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.fp32_precision = "ieee"
         torch.backends.cudnn.fp32_precision = "ieee"
