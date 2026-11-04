@@ -269,7 +269,8 @@ class HealpixGrid(GridS2):
 
     Notes
     -----
-    :class:`~torch_harmonics.RealSHT` and :class:`~torch_harmonics.InverseRealSHT`
+    :class:`~torch_harmonics.RealSHT`, :class:`~torch_harmonics.InverseRealSHT`,
+    :class:`~torch_harmonics.RealVectorSHT` and :class:`~torch_harmonics.InverseRealVectorSHT`
     accept this grid. Synthesis is exact; analysis is approximate, since no quadrature on
     HEALPix makes the spherical harmonics discretely orthogonal. It uses
     :func:`healpix_ring_weights` and can be refined by Jacobi iteration, see

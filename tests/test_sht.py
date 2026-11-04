@@ -43,7 +43,7 @@ from torch.autograd import gradcheck
 import torch_harmonics as th
 from torch_harmonics._ring_fft import RingFFT
 from torch_harmonics.healpix import healpix_ring_weights
-from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly, legpoly
+from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
 from torch_harmonics.quadrature import precompute_latitudes
 from torch_harmonics.radial import LegendreGaussRadialGrid, SphericalProductGrid
 
@@ -940,6 +940,66 @@ def _direct_analysis(grid, field, lmax, mmax):
     return torch.einsum("...p,mlp->...lm", (field * v).to(torch.complex128), y)
 
 
+def _random_vector_coeffs(batch, lmax, mmax, device, lmmax=None):
+    """Spheroidal and toroidal coefficients, ``(batch, 2, lmax, mmax)``, without the l = 0 row a tangent field lacks."""
+    return torch.stack([random_sht_coeffs(batch, lmax, mmax, device, zero_l0=True, lmmax=lmmax) for _ in range(2)], dim=-3)
+
+
+def _pixel_vector_tables(grid, lmax, mmax, inverse):
+    r"""
+    :math:`\partial_\theta P_l^m` and :math:`m P_l^m / \sin\theta` at every pixel, each
+    ``(mmax, lmax, npix)``, times the azimuthal phase :math:`e^{\pm i m \lambda_p}` as in
+    :func:`_pixel_harmonics`.
+    """
+    d = dlegpoly(mmax, lmax, grid.all_colats(), inverse=inverse)
+    sign = 1.0 if inverse else -1.0
+    phase = torch.exp(sign * 1j * torch.arange(mmax, dtype=torch.float64)[:, None] * grid.all_lons()[None, :])
+    return d[0] * phase[:, None, :], d[1] * phase[:, None, :]
+
+
+def _direct_vector_synthesis(grid, coeffs):
+    r"""
+    The tangent field of spheroidal coefficients :math:`s` and toroidal :math:`t`:
+    :math:`u = s \nabla Y - t\, \hat r \times \nabla Y`, i.e. per order
+    :math:`u_\theta = s\, \partial_\theta Y + i t\, m Y / \sin\theta` and
+    :math:`u_\lambda = i s\, m Y / \sin\theta - t\, \partial_\theta Y`, summed like
+    :func:`_direct_synthesis` over the real field's orders.
+    """
+    lmax, mmax = coeffs.shape[-2:]
+    dtheta, dlambda = _pixel_vector_tables(grid, lmax, mmax, inverse=True)
+    s, t = coeffs[..., 0, :, :], coeffs[..., 1, :, :]
+
+    def contract(c, table):
+        return torch.einsum("...lm,mlp->...mp", c, table)
+
+    u_theta = contract(s, dtheta) + 1j * contract(t, dlambda)
+    u_lambda = 1j * contract(s, dlambda) - contract(t, dtheta)
+    scale = torch.full((mmax, 1), 2.0, dtype=torch.float64)
+    scale[0] = 1.0
+    return torch.stack([(u_theta.real * scale).sum(-2), (u_lambda.real * scale).sum(-2)], dim=-2)
+
+
+def _direct_vector_analysis(grid, field, lmax, mmax):
+    r"""
+    The projection of a tangent field onto the vector harmonics with the ring weights,
+    normalized by :math:`1 / (l (l + 1))` (1 at :math:`l = 0`, where both are zero).
+    """
+    v = 2.0 * torch.pi * healpix_ring_weights(grid.nside) / grid.nlon_per_lat.to(torch.float64)
+    v = torch.repeat_interleave(v, grid.nlon_per_lat)
+    dtheta, dlambda = _pixel_vector_tables(grid, lmax, mmax, inverse=False)
+    u_theta = (field[..., 0, :] * v).to(torch.complex128)
+    u_lambda = (field[..., 1, :] * v).to(torch.complex128)
+
+    def contract(u, table):
+        return torch.einsum("...p,mlp->...lm", u, table)
+
+    s = contract(u_theta, dtheta) - 1j * contract(u_lambda, dlambda)
+    t = -1j * contract(u_theta, dlambda) - contract(u_lambda, dtheta)
+    l = torch.arange(lmax, dtype=torch.float64)
+    norm = 1.0 / torch.where(l > 0, l * (l + 1), torch.ones_like(l))
+    return torch.stack([s, t], dim=-3) * norm[:, None]
+
+
 class TestHealpixRingWeights(unittest.TestCase):
     """The ring weights are a quadrature rule in their own right; check it as one."""
 
@@ -1158,6 +1218,104 @@ class TestHealpixSHT(unittest.TestCase):
         self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=0.0, rtol=0.0, ulps=64))
 
 
+@parameterized_class(("device"), _devices)
+class TestHealpixVectorSHT(unittest.TestCase):
+    """The vector SHT on HEALPix, against the same kind of direct per-pixel reference."""
+
+    def setUp(self):
+        set_seed(333)
+
+    @parameterized.expand(_HEALPIX_BANDS)
+    def test_synthesis_is_exact(self, nside, factor):
+        g = th.HealpixGrid(nside=nside)
+        lmax = factor * nside
+        isht = th.InverseRealVectorSHT(g, lmax, lmax).to(self.device)
+        c = _random_vector_coeffs(2, lmax, lmax, "cpu")
+        ours = isht(c.to(self.device)).cpu()
+        self.assertEqual(ours.shape, (2, 2, g.npoints))
+        self.assertTrue(compare_tensors(f"vector synthesis nside={nside} lmax={lmax}", ours, _direct_vector_synthesis(g, c), atol=1e-12, rtol=0.0, ulps=64))
+
+    @parameterized.expand(_HEALPIX_BANDS)
+    def test_analysis_is_the_ring_weight_projection(self, nside, factor):
+        g = th.HealpixGrid(nside=nside)
+        lmax = factor * nside
+        sht = th.RealVectorSHT(g, lmax, lmax).to(self.device)
+        x = torch.randn(2, 2, g.npoints, dtype=torch.float64)
+        ours = sht(x.to(self.device)).cpu()
+        self.assertTrue(compare_tensors(f"vector analysis nside={nside} lmax={lmax}", ours, _direct_vector_analysis(g, x, lmax, lmax), atol=1e-12, rtol=0.0, ulps=64))
+
+    @parameterized.expand([[n] for n in (4, 8, 16)])
+    def test_iteration_recovers_band_limited_fields(self, nside):
+        g = th.HealpixGrid(nside=nside)
+        isht = th.InverseRealVectorSHT(g).to(self.device)
+        c = _random_vector_coeffs(4, isht.lmax, isht.mmax, self.device)
+        x = isht(c)
+        errors = []
+        for niter in (0, 1, 3):
+            sht = th.RealVectorSHT(g, iter=niter).to(self.device)
+            errors.append(float((sht(x) - c).abs().max() / c.abs().max()))
+        self.assertLess(errors[0], 5e-2)
+        self.assertLess(errors[2], 1e-4)
+        self.assertLess(errors[1], errors[0])
+        self.assertLess(errors[2], errors[1])
+
+    @parameterized.expand([[name, *shape] for name, shape in _TRUNCATION_SHAPES.items() if shape[0] <= 3 * _HEALPIX_TRUNCATION_NSIDE])
+    def test_spectral_truncations(self, name, lmax, mmax, lmmax):
+        g = th.HealpixGrid(nside=_HEALPIX_TRUNCATION_NSIDE)
+        sht = th.RealVectorSHT(g, lmax, mmax, lmmax).to(self.device)
+        isht = th.InverseRealVectorSHT(g, lmax, mmax, lmmax).to(self.device)
+        c = _random_vector_coeffs(2, lmax, mmax, "cpu", lmmax=lmmax)
+        ours = isht(c.to(self.device)).cpu()
+        self.assertTrue(compare_tensors(f"{name} vector synthesis", ours, _direct_vector_synthesis(g, c), atol=1e-12, rtol=0.0, ulps=64))
+
+        l = torch.arange(lmax)[:, None]
+        m = torch.arange(mmax)[None, :]
+        support = (m <= l) & (l - m < (lmmax if lmmax is not None else lmax))
+        x = torch.randn(2, 2, g.npoints, dtype=torch.float64)
+        coeffs = sht(x.to(self.device)).cpu()
+        ref = _direct_vector_analysis(g, x, lmax, mmax) * support
+        self.assertTrue(compare_tensors(f"{name} vector analysis", coeffs, ref, atol=1e-12, rtol=0.0, ulps=64))
+        self.assertTrue(torch.equal(coeffs[..., ~support], torch.zeros_like(coeffs[..., ~support])))
+
+    def test_a_radial_axis_is_carried_along_through_the_iteration(self):
+        """The component axis sits in front of the radial one, which the Jacobi synthesis must respect."""
+        g = SphericalProductGrid(th.HealpixGrid(nside=4), LegendreGaussRadialGrid(nr=3, r_inner=1.0, r_outer=2.0))
+        sht = th.RealVectorSHT(g, iter=3).to(self.device).double()
+        isht = th.InverseRealVectorSHT(g).to(self.device).double()
+        c = torch.stack([_random_vector_coeffs(2, 8, 8, self.device) for _ in range(3)], dim=-3)
+        x = isht(c)
+        self.assertEqual(x.shape, (2, 2, 3, 192))
+        self.assertLess(float((sht(x) - c).abs().max() / c.abs().max()), 1e-4)
+
+    def test_gradients(self):
+        g = th.HealpixGrid(nside=2)
+        sht = th.RealVectorSHT(g, iter=2).to(self.device)
+        isht = th.InverseRealVectorSHT(g).to(self.device)
+        x = torch.randn(2, 2, g.npoints, dtype=torch.float64, device=self.device, requires_grad=True)
+        self.assertTrue(gradcheck(lambda t: torch.view_as_real(sht(t)), (x,)))
+        c = _random_vector_coeffs(2, isht.lmax, isht.mmax, self.device).requires_grad_(True)
+        self.assertTrue(gradcheck(isht, (c,)))
+
+    @requires_torch_compile
+    def test_compile(self):
+        g = th.HealpixGrid(nside=4)
+        sht = th.RealVectorSHT(g, iter=1).to(self.device)
+        isht = th.InverseRealVectorSHT(g).to(self.device)
+
+        def fn(t):
+            return isht(sht(t))
+
+        x = torch.randn(2, 2, g.npoints, device=self.device, requires_grad=True)
+        gradient = torch.randn_like(x)
+        expected = fn(x)
+        (expected_grad,) = torch.autograd.grad(expected, x, grad_outputs=gradient)
+        compiled = torch.compile(fn, fullgraph=True, dynamic=False)
+        actual = compiled(x)
+        (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
+        self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=0.0, rtol=0.0, ulps=64))
+        self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=0.0, rtol=0.0, ulps=64))
+
+
 class TestJacobiIteration(unittest.TestCase):
 
     def test_it_is_a_no_op_on_an_exact_grid(self):
@@ -1215,6 +1373,48 @@ class TestAgainstHealpy(unittest.TestCase):
         err_ours = float((ours - c).abs().max())
         err_theirs = float((theirs - c).abs().max())
         self.assertLess(err_ours, 2.0 * err_theirs)
+
+    @staticmethod
+    def _to_healpy(coeffs, factor):
+        """Our (lmax, mmax) layout as healpy's m-major alm array, each degree scaled by factor[l]."""
+        lmax, mmax = coeffs.shape
+        return torch.cat([coeffs[m:, m] * factor[m:] for m in range(mmax)]).numpy()
+
+    @parameterized.expand(_HEALPIX_BANDS[2:])
+    def test_vector_synthesis_matches_alm2map_spin(self, nside, factor):
+        """
+        healpy's spin-1 gradient and curl coefficients are ours scaled by sqrt(l (l + 1)),
+        with the opposite sign on the curl; the two map components agree as they are.
+        """
+        g = th.HealpixGrid(nside=nside)
+        lmax = factor * nside
+        c = _random_vector_coeffs(1, lmax, lmax, "cpu")[0]
+        l = torch.arange(lmax, dtype=torch.float64)
+        scale = torch.sqrt(l * (l + 1))
+        maps = healpy.alm2map_spin([self._to_healpy(c[0], scale), self._to_healpy(c[1], -scale)], nside, 1, lmax - 1)
+        ref = torch.from_numpy(np.stack(maps))
+        ours = th.InverseRealVectorSHT(g, lmax, lmax).double()(c)
+        self.assertTrue(compare_tensors(f"vector vs healpy nside={nside} lmax={lmax}", ours, ref, atol=1e-12, rtol=0.0, ulps=64))
+
+    @parameterized.expand([[8], [16]])
+    def test_vector_analysis_is_as_accurate_as_map2alm_spin(self, nside):
+        """map2alm_spin has no iteration; ours without one is as accurate, with three far more."""
+        g = th.HealpixGrid(nside=nside)
+        lmax = 2 * nside
+        c = _random_vector_coeffs(1, lmax, lmax, "cpu")[0]
+        x = th.InverseRealVectorSHT(g).double()(c)
+        grad, curl = healpy.map2alm_spin([x[0].numpy(), x[1].numpy()], 1, lmax - 1)
+        l = torch.arange(lmax, dtype=torch.float64)
+        scale = torch.where(l > 0, torch.sqrt(l * (l + 1)), torch.ones_like(l))
+        theirs = torch.zeros_like(c)
+        start = 0
+        for m in range(lmax):
+            theirs[0, m:, m] = torch.from_numpy(grad[start : start + lmax - m]) / scale[m:]
+            theirs[1, m:, m] = -torch.from_numpy(curl[start : start + lmax - m]) / scale[m:]
+            start += lmax - m
+        err_theirs = float((theirs - c).abs().max())
+        self.assertLess(float((th.RealVectorSHT(g).double()(x) - c).abs().max()), 1.5 * err_theirs)
+        self.assertLess(float((th.RealVectorSHT(g, iter=3).double()(x) - c).abs().max()), 1e-2 * err_theirs)
 
 
 if __name__ == "__main__":

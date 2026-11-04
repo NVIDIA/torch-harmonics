@@ -56,6 +56,7 @@ coefficient support of an SHT.
    :nosignatures:
 
    HealpixGrid
+   healpix_ring_weights
 ```
 
 ### Radial and volumetric grids

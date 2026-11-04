@@ -37,7 +37,7 @@ equiangular grid raises instead of being ignored.
 | `"legendre-gauss"` | `LegendreGaussGrid` | `nlat`,`nlon` | Gauss-Legendre nodes                                       | no    | yes                          |
 | `"lobatto"`        | `LobattoGrid`       | `nlat`,`nlon` | Gauss-Lobatto nodes                                        | yes   | yes                          |
 | `"trapezoidal"`    | `TrapezoidalGrid`   | `nlat`,`nlon` | equispaced in `cos(colatitude)`                            | yes   | only at low truncation       |
-| `"healpix"`        | `HealpixGrid`       | `nside`       | `12 * nside**2` equal-area pixels on `4 * nside - 1` rings | no    | no                           |
+| `"healpix"`        | `HealpixGrid`       | `nside`       | `12 * nside**2` equal-area pixels on `4 * nside - 1` rings | no    | yes; analysis approximate    |
 
 The first five are latitude-longitude grids: `nlat` latitude rings with `nlon`
 equispaced longitudes each. They differ only in where the rings sit and in the
@@ -76,11 +76,13 @@ before v1.0.0.
 
 **HEALPix.** The HEALPix pixelization in RING order: equal-area pixels on rings
 whose length grows from 4 at the poles to `4 * nside` at the equator. Its
-quadrature integrates only constants exactly, so it does not support an SHT.
-It is accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
+quadrature integrates only constants exactly, so no SHT on it is exact in
+analysis. The scalar and vector SHTs accept it all the same: synthesis is exact,
+and analysis is approximate, refined by Jacobi iteration (see "SHT on HEALPix"
+below). It is also accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
 `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and `QuadratureS2`;
-the SHTs, spectral convolutions, resampling, random fields and the
-distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
+spectral convolutions, resampling, random fields and the distributed layers
+require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
 ## Spherical harmonic truncation
@@ -140,8 +142,9 @@ th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGr
 
 ## SHT on HEALPix
 
-`RealSHT` and `InverseRealSHT` accept a `HealpixGrid`. Fields are flat, `(..., npix)`
-in RING order, and coefficients have the usual `(..., lmax, mmax)` layout:
+`RealSHT`, `InverseRealSHT`, `RealVectorSHT` and `InverseRealVectorSHT` accept a
+`HealpixGrid`. Fields are flat, `(..., npix)` in RING order (`(..., 2, npix)` for a
+vector field), and coefficients have the usual `(..., lmax, mmax)` layout:
 
 ```python
 grid = th.HealpixGrid(nside=64)
@@ -170,9 +173,13 @@ coefficients is:
 | 1      | ~1e-3          |
 | 3      | ~1e-6          |
 
-These match healpy's `map2alm(..., iter=k, use_weights=True)`. `iter=3` is recommended
-when precision matters. Up to `lmax = 3 * nside` the transform is accepted, but analysis
-degrades quickly above `2 * nside`.
+These match healpy's `map2alm(..., iter=k, use_weights=True)`, and the vector SHT
+behaves alike. `iter=3` is recommended when precision matters. Up to `lmax = 3 * nside`
+the transform is accepted, but analysis degrades quickly above `2 * nside`.
+
+The vector coefficients relate to healpy's spin-1 gradient and curl coefficients
+(`map2alm_spin` / `alm2map_spin` with `spin=1`) by `a_E = sqrt(l (l + 1)) * s` and
+`a_B = -sqrt(l (l + 1)) * t`, with the field components `(u_theta, u_phi)` as they are.
 
 ## Folded high-bandwidth SHT analysis
 
