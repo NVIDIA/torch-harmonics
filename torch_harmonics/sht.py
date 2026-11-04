@@ -29,19 +29,30 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Optional
+import warnings
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 
 from torch_harmonics._field_contract import check_coeffs, check_field
+from torch_harmonics._ring_fft import RingFFT
 from torch_harmonics.cache import lru_cache
 from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import EquiangularGrid, Fejer1Grid, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import EquiangularGrid, Fejer1Grid, GridS2, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_grid, require_regular_grid
+from torch_harmonics.healpix import HealpixGrid, healpix_ring_weights
 from torch_harmonics.legendre import _mask_spectral_block, _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
 from torch_harmonics.radial import split_radial
 from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_not_spectrally_accurate, truncate_sht
 from torch_harmonics.utils import recast_buffers_for
+
+
+def _require_scalar_sht_grid(grid) -> GridS2:
+    """Validate the grid of a scalar SHT: a :class:`RegularGridS2` or a :class:`HealpixGrid`."""
+    grid = require_grid(grid)
+    if not isinstance(grid, (RegularGridS2, HealpixGrid)):
+        raise TypeError(f"grid must be a RegularGridS2 or a HealpixGrid; the SHT is not implemented for {type(grid).__name__}. Got {grid!r}.")
+    return grid
 
 
 def _extended_folded_analysis(grid: RegularGridS2, spectral_grid: SpectralGrid) -> bool:
@@ -258,6 +269,17 @@ class RealSHT(nn.Module):
     float64; its latitude FFT has length ``2 * (nlat - 1)`` for equiangular
     and ``2 * nlat`` for Fejér-1 grids.
 
+    On a :class:`~torch_harmonics.healpix.HealpixGrid` the field is flat, ``(...,
+    npix)`` in RING order, and the coefficients have the same ``(..., lmax, mmax)``
+    layout as on every other grid. Each ring is Fourier transformed at its own length
+    and phase, and orders beyond a ring's Nyquist limit are aliased, not dropped, as
+    the short polar rings require. No quadrature on HEALPix is exact, so the analysis
+    is approximate: it uses the ring weights of
+    :func:`~torch_harmonics.healpix.healpix_ring_weights`, which recover a field
+    band-limited to the default ``lmax = 2 * nside`` to a relative error of about
+    :math:`10^{-2}`. Pass ``iter=3`` for about :math:`10^{-6}`, as with healpy's
+    ``map2alm(..., iter=3)``.
+
     .. seealso::
         :doc:`/guide/spherical_harmonic_transforms`
             User guide with the full mathematical derivation, normalization
@@ -265,7 +287,7 @@ class RealSHT(nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
+    grid : RegularGridS2 or HealpixGrid
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
@@ -284,6 +306,13 @@ class RealSHT(nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    iter : int
+        Number of Jacobi iterations refining the analysis, by default 0. Each one
+        computes :math:`a \leftarrow a + A(f - S a)` with the analysis :math:`A` and
+        the synthesis :math:`S` on the same support, and costs one more synthesis and
+        analysis. Meant for grids without an exact quadrature such as HEALPix, where
+        ``iter=3`` is recommended when precision matters. On a grid with exact
+        quadrature the corrections are round-off.
 
     Examples
     --------
@@ -295,6 +324,13 @@ class RealSHT(nn.Module):
     >>> coeffs = sht(signal)   # shape (1, lmax, mmax), complex
     >>> coeffs.shape
     torch.Size([1, 64, 64])
+
+    On HEALPix, with three Jacobi iterations:
+
+    >>> grid = th.HealpixGrid(nside=16)
+    >>> sht = th.RealSHT(grid, iter=3)
+    >>> sht(torch.randn(1, grid.npoints)).shape   # lmax = mmax = 2 * nside
+    torch.Size([1, 32, 32])
 
     .. note::
         This module uses **cuFFT** (via :func:`torch.fft.rfft`) to compute the
@@ -327,6 +363,7 @@ class RealSHT(nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        iter: int = 0,
     ):
 
         super().__init__()
@@ -334,23 +371,36 @@ class RealSHT(nn.Module):
         # on a SphericalProductGrid every shell is transformed alike; the radial grid only
         # adds its axis to the field shape
         grid, self.radial = split_radial(grid)
-        self.grid = require_regular_grid(grid)
-        self.nlat, self.nlon = self.grid.shape
-        _warn_if_not_spectrally_accurate(self.grid)
+        self.grid = _require_scalar_sht_grid(grid)
         self.norm = norm
         self.csphase = csphase
+        if isinstance(iter, bool) or not isinstance(iter, int) or iter < 0:
+            raise ValueError(f"iter must be a non-negative integer, got {iter!r}")
+        self.iter = iter
 
-        # TODO: include assertions regarding the dimensions
-
-        # quadrature weights come from the grid descriptor, which supports every grid
-        # precompute_latitudes does -- the switch this replaced silently rejected
-        # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
-        # descriptor and reads them itself, which is also what keys its cache.
-        weights = self.grid.colat_weights
+        if isinstance(self.grid, RegularGridS2):
+            _warn_if_not_spectrally_accurate(self.grid)
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
         _validate_forward_sht_degree(self.grid, self.lmax)
-        self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
+
+        if isinstance(self.grid, RegularGridS2):
+            self.nlat, self.nlon = self.grid.shape
+            self.ring_fft = None
+            # quadrature weights come from the grid descriptor, which supports every grid
+            # precompute_latitudes does -- the switch this replaced silently rejected
+            # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
+            # descriptor and reads them itself, which is also what keys its cache.
+            weights = self.grid.colat_weights
+            self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
+        else:
+            # HEALPix: ragged rings, an exact ring FFT with aliasing, and approximate
+            # analysis with the ring weights
+            self.nlat, self.nlon = self.grid.nrings, None
+            self.ring_fft = RingFFT(self.grid, self.mmax)
+            weights = healpix_ring_weights(self.grid.nside)
+            self._extended_folded = False
+
         if self._extended_folded:
             weights = _precompute_folded_projection(self.grid, self._trunc, self.norm, self.csphase)
         else:
@@ -360,6 +410,15 @@ class RealSHT(nn.Module):
 
         # remember quadrature weights
         self.register_buffer("weights", weights, persistent=False)
+
+        # Jacobi iteration a <- a + A (f - S a) needs the synthesis S on the same support.
+        # Its bounds are already resolved, so the inverse cannot warn about a changed
+        # default; a non-accurate grid has warned once above already.
+        self._synthesis = None
+        if self.iter > 0:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                self._synthesis = InverseRealSHT(self.grid, self.lmax, self.mmax, self.lmmax, norm=self.norm, csphase=self.csphase)
 
     @property
     def lmax(self) -> int:
@@ -385,7 +444,7 @@ class RealSHT(nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}" + (f", iter={self.iter}" if self.iter else "")
 
     def _apply(self, fn, recurse=True):
         # float64 buffers cannot move to MPS; see recast_buffers_for
@@ -399,7 +458,8 @@ class RealSHT(nn.Module):
         Parameters
         ----------
         x : torch.Tensor
-            Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
+            Real-valued signal on the sphere of shape ``(..., *grid.shape)``: ``(..., nlat,
+            nlon)`` on a regular grid and ``(..., npix)`` on HEALPix.
 
         Returns
         -------
@@ -409,9 +469,28 @@ class RealSHT(nn.Module):
 
         check_field(x, self.grid, radial=self.radial)
 
-        # apply real fft in the longitudinal direction. The 2*pi scale factor is folded into
-        # the quadrature weights, so no scaling of the complex output is needed here.
-        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+        # Jacobi iteration a <- a + A (f - S a). The coefficients are carried as their real
+        # and imaginary parts, (..., lmax, mmax) each: they are used twice per step, and
+        # autograd then sums two complex gradients, one of them transposed, which inductor
+        # cannot lower (view.dtype needs a unit inner stride). Real gradients sum fine.
+        re, im = self._analyze(x)
+        for _ in range(self.iter):
+            residual = x - self._synthesis._synthesize_parts(re.transpose(-1, -2).contiguous(), im.transpose(-1, -2).contiguous())
+            dre, dim = self._analyze(residual)
+            re, im = re + dre, im + dim
+
+        # the ...lm einsum output is non-contiguous (l ends up stride-1, m slow); torch.complex
+        # preserves those strides, but inductor's meta kernel for aten.complex predicts a contiguous
+        # layout, tripping assert_size_stride under torch.compile(dynamic=False). Force contiguous.
+        return torch.complex(re.contiguous(), im.contiguous())
+
+    def _analyze(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Fourier transform in longitude. The 2*pi scale factor is folded into the
+        # quadrature weights, so no scaling of the complex output is needed here.
+        if self.ring_fft is None:
+            x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+        else:
+            x = self.ring_fft(x)
 
         # transpose to put the contraction dim (nlat) on the fast axis
         x = x.transpose(-1, -2)
@@ -422,11 +501,7 @@ class RealSHT(nn.Module):
         w = self.weights.to(x_re.dtype)
         out_re = torch.einsum("...mk,mlk->...lm", x_re, w)
         out_im = torch.einsum("...mk,mlk->...lm", x_im, w)
-
-        # the ...lm einsum output is non-contiguous (l ends up stride-1, m slow); torch.complex
-        # preserves those strides, but inductor's meta kernel for aten.complex predicts a contiguous
-        # layout, tripping assert_size_stride under torch.compile(dynamic=False). Force contiguous.
-        return torch.complex(out_re.contiguous(), out_im.contiguous())
+        return out_re, out_im
 
 
 class InverseRealSHT(nn.Module):
@@ -450,7 +525,7 @@ class InverseRealSHT(nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
+    grid : RegularGridS2 or HealpixGrid
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`. A
@@ -495,6 +570,10 @@ class InverseRealSHT(nn.Module):
                 with torch.autocast(device_type="cuda", enabled=False):
                     signal = isht(coeffs.to(torch.cfloat))
 
+    On a :class:`~torch_harmonics.healpix.HealpixGrid` the output is flat, ``(...,
+    npix)`` in RING order, and the synthesis is exact: every order is folded into the
+    Fourier bins it aliases to on each ring before that ring's inverse FFT.
+
     .. note::
         The inverse real FFT (C2R transform) expects the DC component (:math:`m = 0`)
         and, when ``nlon`` is even, the Nyquist component (:math:`m = N_\lambda / 2`)
@@ -504,7 +583,8 @@ class InverseRealSHT(nn.Module):
     Raises
     ------
     TypeError
-        If ``grid`` is not a :class:`~torch_harmonics.grid.RegularGridS2`.
+        If ``grid`` is neither a :class:`~torch_harmonics.grid.RegularGridS2` nor a
+        :class:`~torch_harmonics.healpix.HealpixGrid`.
 
     References
     ----------
@@ -531,13 +611,22 @@ class InverseRealSHT(nn.Module):
         # on a SphericalProductGrid every shell is transformed alike; the radial grid only
         # adds its axis to the field shape
         grid, self.radial = split_radial(grid)
-        self.grid = require_regular_grid(grid)
-        self.nlat, self.nlon = self.grid.shape
-        _warn_if_not_spectrally_accurate(self.grid)
+        self.grid = _require_scalar_sht_grid(grid)
         self.norm = norm
         self.csphase = csphase
 
+        if isinstance(self.grid, RegularGridS2):
+            _warn_if_not_spectrally_accurate(self.grid)
+
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
+
+        if isinstance(self.grid, RegularGridS2):
+            self.nlat, self.nlon = self.grid.shape
+            self.ring_fft = None
+        else:
+            # synthesis on HEALPix is exact: it only evaluates the expansion at the pixels
+            self.nlat, self.nlon = self.grid.nrings, None
+            self.ring_fft = RingFFT(self.grid, self.mmax)
 
         # precompute associated Legendre polynomials
         # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
@@ -590,15 +679,20 @@ class InverseRealSHT(nn.Module):
         Returns
         -------
         torch.Tensor
-            Real-valued signal on the sphere of shape ``(..., nlat, nlon)``.
+            Real-valued signal on the sphere of shape ``(..., *grid.shape)``: ``(..., nlat,
+            nlon)`` on a regular grid and ``(..., npix)`` on HEALPix.
         """
 
         check_coeffs(x, self.lmax, self.mmax, radial=self.radial)
+        return self._synthesize(x)
 
+    def _synthesize(self, x: torch.Tensor) -> torch.Tensor:
         # transpose to put the contraction dim (lmax) on the fast axis
         x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        return self._synthesize_parts(x.real.contiguous(), x.imag.contiguous())
+
+    def _synthesize_parts(self, x_re: torch.Tensor, x_im: torch.Tensor) -> torch.Tensor:
+        # the real and imaginary parts of the coefficients, (..., mmax, lmax) each
 
         # legendre transformation: contract over l=lmax (stride-1 in both operands)
         # pct layout: (mmax, nlat, lmax)
@@ -610,9 +704,9 @@ class InverseRealSHT(nn.Module):
         x = torch.complex(out_re.contiguous(), out_im.contiguous())
 
         # apply the inverse (real) FFT
-        x = irfft(x, n=self.nlon, dim=-1, norm="forward")
-
-        return x
+        if self.ring_fft is None:
+            return irfft(x, n=self.nlon, dim=-1, norm="forward")
+        return self.ring_fft.inverse(x)
 
 
 class RealVectorSHT(nn.Module):

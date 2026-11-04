@@ -539,16 +539,32 @@ class TestTruncationOnHealpix(unittest.TestCase):
         with self.assertRaises(ValueError):
             truncate_support(g, theta_cutoff=-0.1)
 
-    def test_a_transform_is_refused_rather_than_silently_wrong(self):
+    def test_the_sht_default_is_twice_nside(self):
         """
-        The equal-area rule integrates a constant and nothing else, so there is no
-        honest default truncation to hand back.
+        HEALPix has no exact quadrature degree, so the default comes from where its
+        approximate analysis is well conditioned rather than from max_exact_degree.
         """
-        # a TypeError, from require_regular_grid: that guard is how every regular-only
-        # routine in the library refuses a grid it cannot serve, and naming the family in
-        # the message matters more than the exception class
-        with self.assertRaises(TypeError):
-            truncate_sht(HealpixGrid(nside=8))
+        for nside in (1, 4, 8):
+            with self.subTest(nside=nside):
+                g = HealpixGrid(nside=nside)
+                trunc = truncate_sht(g)
+                self.assertEqual((trunc.lmax, trunc.mmax, trunc.lmmax), (2 * nside, 2 * nside, None))
+                with self.assertRaises(NotImplementedError):
+                    g.max_exact_degree
+
+    def test_the_bounds_may_be_raised_to_three_nside(self):
+        g = HealpixGrid(nside=8)
+        trunc = truncate_sht(g, lmax=24)
+        self.assertEqual((trunc.lmax, trunc.mmax), (24, 24))
+        # lmax alone above max_azimuthal_order needs an explicit mmax, as on a regular grid
+        with self.assertRaises(ValueError):
+            truncate_sht(g, lmax=25)
+        self.assertEqual(truncate_sht(g, lmax=25, mmax=24).lmax, 25)
+
+    def test_a_forward_transform_beyond_three_nside_warns(self):
+        g = HealpixGrid(nside=4)
+        with self.assertWarnsRegex(UserWarning, "max_recoverable_degree=12"):
+            th.RealSHT(g, lmax=13, mmax=12)
 
 
 if __name__ == "__main__":

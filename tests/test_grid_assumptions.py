@@ -1881,10 +1881,14 @@ class TestHealpixGrid(unittest.TestCase):
         self.assertFalse(g.is_spectrally_accurate)
         with self.assertRaises(NotImplementedError):
             g.max_exact_degree
-        # no max_azimuthal_order assertion: that is a RegularGridS2 concept. Every
-        # HEALPix ring has its own azimuthal bandwidth, so a single value would have
-        # to be the widest ring's, which is not what any caller of it means.
-        self.assertFalse(hasattr(type(g), "max_azimuthal_order"))
+        # Every HEALPix ring has its own azimuthal bandwidth, so max_azimuthal_order is
+        # not the widest ring's: it is the order bound of the SHT, which recovers orders
+        # above a ring's Nyquist limit from the rings jointly, up to the same 3 * nside
+        # as the degree. The SHT defaults stay at 2 * nside, where the analysis is well
+        # conditioned.
+        self.assertEqual(g.max_azimuthal_order, 3 * g.nside)
+        self.assertEqual(g.max_recoverable_degree, 3 * g.nside)
+        self.assertEqual(g.default_sht_degree, 2 * g.nside)
 
     # -- support radius ------------------------------------------------------
 

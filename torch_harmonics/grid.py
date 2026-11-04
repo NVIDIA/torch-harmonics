@@ -411,6 +411,16 @@ class PointSetS2:
         raise NotImplementedError(f"{type(self).__name__} does not define max_exact_degree")
 
     @property
+    def default_sht_degree(self) -> int:
+        r"""
+        Default ``lmax`` of an SHT on this grid, non-inclusive.
+
+        :attr:`max_exact_degree` wherever the quadrature has one. A grid without an exact
+        degree but with an approximate SHT, such as HEALPix, declares its own.
+        """
+        return self.max_exact_degree
+
+    @property
     def is_spectrally_accurate(self) -> bool:
         r"""
         Whether the quadrature rule converges spectrally.

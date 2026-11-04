@@ -96,7 +96,7 @@ how far each bound can go:
 | `"legendre-gauss"` | `nlat`                              | `nlat`                   | `(nlon + 1) // 2`     | raises `ValueError`                        |
 | `"lobatto"`        | `nlat - 1`                          | `nlat - 1`               | `(nlon + 1) // 2`     | raises `ValueError`                        |
 | `"trapezoidal"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns (any SHT on this grid warns)         |
-| `"healpix"`        | SHT not supported yet               | SHT not supported yet    | SHT not supported yet | SHT not supported yet                      |
+| `"healpix"`        | none; default `lmax` is `2 * nside` | `3 * nside`              | `3 * nside`           | warns                                      |
 
 - `max_exact_degree` is the degree up to which the latitude quadrature keeps
   the associated Legendre functions discretely orthogonal.
@@ -106,13 +106,19 @@ how far each bound can go:
 - `max_azimuthal_order` depends only on the longitude sampling. For even
   `nlon` it excludes the Nyquist order `nlon / 2`: its sine component is zero at
   every longitude, so the complex coefficient cannot be recovered.
+- HEALPix has no exact quadrature, so its default comes from `default_sht_degree`
+  instead, `2 * nside`, where its approximate analysis is well conditioned (see
+  "SHT on HEALPix" below). Its rings differ in length, so its order bound is
+  not a ring's Nyquist limit: orders beyond a ring's limit are aliased on that
+  ring and recovered from the rings jointly, up to the same `3 * nside` as the
+  degree.
 
 `th.truncate_sht(grid, lmax, mmax, lmmax)` resolves the bounds, and the SHTs use
 it:
 
 | arguments             | resolved bounds                                                                        |
 | --------------------- | -------------------------------------------------------------------------------------- |
-| none, or only `lmmax` | triangular: `lmax = mmax = min(max_exact_degree, max_azimuthal_order)`                 |
+| none, or only `lmmax` | triangular: `lmax = mmax = min(default_sht_degree, max_azimuthal_order)`               |
 | only `mmax`           | `lmax = mmax`                                                                          |
 | only `lmax`           | `mmax = lmax`; raises if that exceeds `max_azimuthal_order`, so pass `mmax` explicitly |
 | `lmax` and `mmax`     | kept as given, also beyond the grid limits; `mmax > lmax` raises                       |
@@ -131,6 +137,42 @@ th.truncate_sht(th.as_grid("legendre-gauss", nlat=128, nlon=256))   # SpectralGr
 th.truncate_sht(th.as_grid("equiangular", nlat=721, nlon=1440))    # SpectralGrid(lmax=361, mmax=361, lmmax=None, onesided=True)
 th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGrid(lmax=32, mmax=32, lmmax=None, onesided=True): longitude binds
 ```
+
+## SHT on HEALPix
+
+`RealSHT` and `InverseRealSHT` accept a `HealpixGrid`. Fields are flat, `(..., npix)`
+in RING order, and coefficients have the usual `(..., lmax, mmax)` layout:
+
+```python
+grid = th.HealpixGrid(nside=64)
+sht = th.RealSHT(grid, iter=3)    # lmax = mmax = 128
+isht = th.InverseRealSHT(grid)
+coeffs = sht(x)                   # x: (..., 49152)
+```
+
+Each ring is Fourier transformed at its own length and phase offset. Orders beyond a
+ring's Nyquist limit are aliased, not dropped: the polar rings carry as few as 4
+pixels, far fewer than the transform has orders.
+
+Synthesis is exact. Analysis is approximate, because no quadrature on HEALPix makes the
+spherical harmonics discretely orthogonal. It uses ring weights
+(`th.healpix.healpix_ring_weights`): the smallest correction to the equal-area weights
+that integrates every zonal harmonic below degree `3 * nside` exactly, computed at
+construction rather than shipped as data. Most of the remaining error is in the orders
+`m > 0`, which no choice of weights corrects. Jacobi iteration does: `iter=k` repeats
+`a <- a + A(f - S a)`, at the cost of one more synthesis and analysis each. For a field
+band-limited to the default `lmax = 2 * nside`, the relative error of the recovered
+coefficients is:
+
+| `iter` | relative error |
+| ------ | -------------- |
+| 0      | ~1e-2          |
+| 1      | ~1e-3          |
+| 3      | ~1e-6          |
+
+These match healpy's `map2alm(..., iter=k, use_weights=True)`. `iter=3` is recommended
+when precision matters. Up to `lmax = 3 * nside` the transform is accepted, but analysis
+degrades quickly above `2 * nside`.
 
 ## Folded high-bandwidth SHT analysis
 
