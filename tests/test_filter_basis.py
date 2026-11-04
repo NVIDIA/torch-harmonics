@@ -349,7 +349,3 @@ class TestFilterBasis(unittest.TestCase):
         """isotropic_mask should have exactly kernel_size entries."""
         basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
         self.assertEqual(len(basis.isotropic_mask), basis.kernel_size)
-
-
-if __name__ == "__main__":
-    unittest.main()

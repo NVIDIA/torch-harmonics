@@ -864,7 +864,3 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         self.assertTrue(compare_tensors("empty spectrum", expected, result, atol=0, rtol=0, verbose=verbose))
         result.real.sum().backward()
         self.assertTrue(compare_tensors("empty gradient", torch.zeros_like(x), x.grad, atol=0, rtol=0, verbose=verbose))
-
-
-if __name__ == "__main__":
-    unittest.main()

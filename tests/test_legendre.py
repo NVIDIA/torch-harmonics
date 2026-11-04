@@ -331,7 +331,3 @@ class TestSpectralLegendreMask(unittest.TestCase):
         self.assertTrue(torch.equal(masked[0, 2], torch.zeros_like(masked[0, 2])))  # (41, 84): l-m=43
         self.assertTrue(torch.equal(masked[1, 2], unmasked[1, 2]))  # (42, 84): l-m=42
         self.assertTrue((unmasked[0, 2].abs() > 0).any())
-
-
-if __name__ == "__main__":
-    unittest.main()

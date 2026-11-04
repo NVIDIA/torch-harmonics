@@ -699,7 +699,3 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
         with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local, k_local, q_local)
-
-
-if __name__ == "__main__":
-    unittest.main()

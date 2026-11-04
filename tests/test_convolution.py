@@ -1860,7 +1860,3 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
         key_arc, vals_arc = canon(*arcs_to_coo(arcs, ring_base=ring_base, ring_size=ring_size))
         self.assertTrue(torch.equal(key_ref, key_arc))
         self.assertTrue(torch.equal(vals_ref, vals_arc))
-
-
-if __name__ == "__main__":
-    unittest.main()

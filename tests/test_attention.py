@@ -3091,7 +3091,3 @@ class TestRaggedBackwardCudaKernel(unittest.TestCase):
                 self.assertTrue(torch.isfinite(g).all())
                 touched = (g.abs().sum(dim=-1) > 0).sum().item()
                 self.assertEqual(touched, npix, f"{name}: only {touched} of {npix} input points received a gradient")
-
-
-if __name__ == "__main__":
-    unittest.main()

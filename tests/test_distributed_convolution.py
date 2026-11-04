@@ -746,7 +746,3 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 th.as_grid("equiangular", nlat=32, nlon=64), th.as_grid("equiangular", nlat=32, nlon=64), 1, 1, kernel_shape=(3, 3), polar_mode="halo"
             )
         self.assertIn("halo-exchange", str(ctx.exception))
-
-
-if __name__ == "__main__":
-    unittest.main()

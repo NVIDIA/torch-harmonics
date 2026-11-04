@@ -327,7 +327,3 @@ class TestGridDescriptorCaching(unittest.TestCase):
                 _ = grid.colats.mul_(-1.0)  # try to poison the underlying node cache
                 self.assertEqual(grid.max_latitude_spacing, first)
                 self.assertEqual(grid.max_latitude_spacing, grid.latitude_spacing.max().item())
-
-
-if __name__ == "__main__":
-    unittest.main()

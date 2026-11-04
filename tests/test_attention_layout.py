@@ -234,7 +234,3 @@ class TestAttentionLayoutUncompiledDevice(unittest.TestCase):
         self.assertTrue(torch.equal(to_nchw(y), x))
         y.backward(torch.ones_like(y))
         self.assertTrue(torch.equal(x.grad, torch.ones_like(x)))
-
-
-if __name__ == "__main__":
-    unittest.main()

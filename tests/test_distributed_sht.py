@@ -627,7 +627,3 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         mmax = min(lmax, grid.max_azimuthal_order)
         with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
             getattr(thd, cls_name)(grid, lmax=lmax, mmax=mmax)
-
-
-if __name__ == "__main__":
-    unittest.main()

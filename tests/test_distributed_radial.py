@@ -231,7 +231,3 @@ class TestDistributedLayersOnProductGrids(unittest.TestCase):
         x = torch.ones(_RADIAL.nr, *quad.shard.shape, device=self.device)
         self.assertAlmostEqual(quad(x).item(), 4.0 / 3.0 * math.pi * 7.0, places=3)
         self.assertAlmostEqual(thd.DistributedQuadratureVolume(grid, normalize=True).to(self.device)(x).item(), 1.0, places=5)
-
-
-if __name__ == "__main__":
-    unittest.main()

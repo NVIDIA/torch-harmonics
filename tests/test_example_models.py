@@ -173,7 +173,3 @@ class TestExampleSolvers(unittest.TestCase):
         self.assertFalse([name for name, b in solver.named_buffers() if b.dtype == torch.float64])
         # the buffers were cast to float32 at use before the move, so the step agrees
         torch.testing.assert_close(solver.timestep(uspec, 2), expected)
-
-
-if __name__ == "__main__":
-    unittest.main()

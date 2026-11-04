@@ -190,7 +190,3 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         )
         ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
-
-
-if __name__ == "__main__":
-    unittest.main()

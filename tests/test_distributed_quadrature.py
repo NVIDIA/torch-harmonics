@@ -141,7 +141,3 @@ class TestDistributedQuadrature(unittest.TestCase):
         # the gradient is the upstream gradient times the weights, elementwise: exact
         ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=0.0, rtol=0.0, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
-
-
-if __name__ == "__main__":
-    unittest.main()

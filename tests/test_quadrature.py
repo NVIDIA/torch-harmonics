@@ -449,7 +449,3 @@ class TestQuadratureExactness(unittest.TestCase):
             self.assertEqual(descriptor.max_exact_degree, supported)
         elif nlat > 2:
             self.assertGreater(descriptor.max_exact_degree, supported)
-
-
-if __name__ == "__main__":
-    unittest.main()

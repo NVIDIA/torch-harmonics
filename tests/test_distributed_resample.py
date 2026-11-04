@@ -223,7 +223,3 @@ class TestDistributedResampling(unittest.TestCase):
         igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
         ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -205,7 +205,3 @@ class TestLatitudeFolding(unittest.TestCase):
         another.weights.zero_()
         self.assertGreater(analysis.weights.abs().max().item(), 0)
         self.assertEqual(_precompute_folded_projection.cache_parameters()["maxsize"], 2)
-
-
-if __name__ == "__main__":
-    unittest.main()

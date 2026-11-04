@@ -604,7 +604,3 @@ class TestCompileIfSupported(unittest.TestCase):
         sentinel = object()
         with unittest.mock.patch.object(torch, "compile", lambda f, *a, **k: sentinel):
             self.assertIs(compile_if_supported(fn), sentinel)
-
-
-if __name__ == "__main__":
-    unittest.main()

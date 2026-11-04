@@ -549,7 +549,3 @@ class TestTruncationOnHealpix(unittest.TestCase):
         # the message matters more than the exception class
         with self.assertRaises(TypeError):
             truncate_sht(HealpixGrid(nside=8))
-
-
-if __name__ == "__main__":
-    unittest.main()
