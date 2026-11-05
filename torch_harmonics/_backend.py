@@ -56,7 +56,7 @@ from typing import Dict, Hashable, Optional
 
 import torch
 
-from torch_harmonics.cache import _deepcopy_sharing, lookup_shared, store_shared
+from torch_harmonics.cache import _deepcopy_sharing, shared_value
 from torch_harmonics.utils import recast_buffers_for
 
 
@@ -174,17 +174,20 @@ class BackendSelectionMixin:
 
             # state shared with identical layers: the backend instance too, since it may hold
             # Python-side metadata from its prepare
-            key = None if layer_key is None else ("backend-state", cls, layer_key, device, getattr(self, "dtype", None))
-            shared = None if key is None else lookup_shared(key)
-            if shared is not None:
-                backend, state = shared
-            else:
+            def prepare(cls=cls):
                 backend = cls()
                 state = backend.prepare(self, device)
-                if state is None:
-                    continue
-                if key is not None:
-                    store_shared(key, (backend, state))
+                return None if state is None else (backend, state)
+
+            if layer_key is None:
+                prepared = prepare()
+            else:
+                # looked up, prepared and stored in one locked step, so layers selecting at once
+                # in several threads prepare the state once
+                prepared = shared_value(("backend-state", cls, layer_key, device, getattr(self, "dtype", None)), prepare)
+            if prepared is None:
+                continue
+            backend, state = prepared
 
             for name, tensor in state.items():
                 self.register_buffer(name, tensor, persistent=False)

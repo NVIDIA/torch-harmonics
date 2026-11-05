@@ -30,6 +30,8 @@
 #
 
 import gc
+import threading
+import time
 import unittest
 import weakref
 from copy import deepcopy
@@ -39,7 +41,7 @@ from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, regular_grid_types
 
 import torch_harmonics as th
-from torch_harmonics.cache import is_shared, lru_cache, move_shared, shared_table, store_shared
+from torch_harmonics.cache import is_shared, lru_cache, move_shared, shared_table, shared_value, store_shared
 from torch_harmonics.grid import as_grid
 
 _devices = [(torch.device("cpu"),)]
@@ -344,6 +346,28 @@ class TestGridDescriptorCaching(unittest.TestCase):
                 self.assertEqual(grid.max_latitude_spacing, grid.latitude_spacing.max().item())
 
 
+def _concurrently(work, nthreads=8):
+    """``work()`` in ``nthreads`` threads released at once; their results, re-raising any error."""
+    barrier = threading.Barrier(nthreads)
+    results, errors = [None] * nthreads, []
+
+    def run(index):
+        try:
+            barrier.wait()
+            results[index] = work()
+        except BaseException as error:  # noqa: B036 - re-raised in the main thread
+            errors.append(error)
+
+    threads = [threading.Thread(target=run, args=(index,)) for index in range(nthreads)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if errors:
+        raise errors[0]
+    return results
+
+
 class TestSharedTable(unittest.TestCase):
     """The registry behind shared_table: one table per distinct arguments, alive while held."""
 
@@ -467,6 +491,48 @@ class TestSharedTable(unittest.TestCase):
         self.assertEqual(back.dtype, torch.float16)
         self.assertTrue(torch.equal(back, (0.1 * torch.arange(6, dtype=torch.float64)).half()))
         self.assertEqual(len(self.builds), 2)
+
+    def test_concurrent_requests_build_once(self):
+        @shared_table
+        def slow(n):
+            self.builds.append(n)
+            time.sleep(0.05)
+            return torch.zeros(n)
+
+        results = _concurrently(lambda: slow(5))
+        self.assertEqual(len(self.builds), 1)
+        self.assertTrue(all(result is results[0] for result in results))
+
+    def test_concurrent_moves_make_one_copy(self):
+        exact = self.table(1000, 0.1)
+        results = _concurrently(lambda: move_shared(exact, lambda t: t.float()))
+        self.assertTrue(all(result is results[0] for result in results))
+        self.assertIs(move_shared(exact, lambda t: t.float()), results[0])
+
+    def test_concurrent_shared_values_build_once(self):
+        builds = []
+
+        def build():
+            builds.append(1)
+            time.sleep(0.05)
+            return torch.ones(3)
+
+        results = _concurrently(lambda: shared_value(("test-concurrent", id(self)), build))
+        self.assertEqual(len(builds), 1)
+        self.assertTrue(all(result is results[0] for result in results))
+
+    def test_a_declined_value_is_not_stored(self):
+        """None from a builder -- a backend declining -- is returned, and the next call builds again."""
+        builds = []
+
+        def decline():
+            builds.append(1)
+            return None
+
+        key = ("test-declined", id(self))
+        self.assertIsNone(shared_value(key, decline))
+        self.assertIsNone(shared_value(key, decline))
+        self.assertEqual(len(builds), 2)
 
     def test_unbuildable_state_falls_back_to_the_conversion(self):
         """State stored without a builder leaves the meta device as an unshared buffer would."""
@@ -669,6 +735,24 @@ class TestSharedBackendState(unittest.TestCase):
         b = deepcopy(a)
         self._assert_shared(a, b)
         self.assertIsNot(next(a.parameters()), next(b.parameters()))
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_layers_selecting_concurrently_share_state(self, _, build, kind):
+        """Identical layers built and moved in several threads at once prepare one state."""
+        layers = _concurrently(lambda: build(kind).to(self.device))
+        for layer in layers[1:]:
+            self._assert_shared(layers[0], layer)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_backend_state_is_freed_with_the_last_layer(self, _, build, kind):
+        """The registry must not keep a layer alive through the builder of its state."""
+        layers = [build(kind).to(self.device) for _ in range(2)]
+        refs = [weakref.ref(getattr(layers[0], name)) for name in layers[0]._backend_state]
+        layer_ref = weakref.ref(layers[0])
+        layers.clear()
+        gc.collect()
+        self.assertIsNone(layer_ref(), "a deleted layer is still referenced")
+        self.assertTrue(all(ref() is None for ref in refs), "backend state outlived every layer using it")
 
     def test_attention_layers_of_different_dtype_do_not_share(self):
         """The reference prepares float64 weights for a float64 layer; the dtype is part of the key."""

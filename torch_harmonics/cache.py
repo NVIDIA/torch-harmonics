@@ -315,25 +315,33 @@ class TableRegistry:
             self._entries[key] = (spec, refs, token)
         return value
 
-    def get_or_build(self, key: Hashable, build: Callable[[], Any]) -> Any:
+    def get_or_build(self, key: Hashable, build: Callable[[], Any], rebuildable: bool = True) -> Any:
         """
         The value under ``key``, built and stored on a miss.
 
-        A miss is first answered from the families of an earlier value under ``key``: if a
-        copy with the exact values of each of its tensors is alive anywhere, the value is put
-        back together from those, on the device and in the dtype the builder produces.
+        Lookup, build and store are one locked step, so threads asking for the same value at
+        once build it once. A miss is first answered from the families of an earlier value
+        under ``key``: if a copy with the exact values of each of its tensors is alive
+        anywhere, the value is put back together from those, on the device and in the dtype
+        the builder produces. ``None`` from ``build`` is returned but not stored.
+
+        With ``rebuildable`` the registry keeps ``build`` to rebuild the value from while any
+        copy of it lives. Pass ``False`` for a builder that references objects which must not
+        be kept alive -- such as the layer whose state it prepares, which holds that state.
         """
         value = self.lookup(key)
         if value is not _MISSING:
             return value
         with self._lock:
             value = self.lookup(key)
-            if value is _MISSING:
-                value = self._reassemble(key)
+            if value is not _MISSING:
+                return value
+            value = self._reassemble(key)
             if value is _MISSING:
                 value = build()
-            value = self.store(key, value, build)
-        return value
+                if value is None:
+                    return None
+            return self.store(key, value, build if rebuildable else None)
 
     def _reassemble(self, key: Hashable) -> Any:
         record = self._records.get(key)
@@ -513,8 +521,14 @@ def shared_table(f: Callable) -> Callable:
 
 
 def shared_value(key: Hashable, build: Callable[[], Any]) -> Any:
-    """The value stored under ``key`` in the shared registry, built by ``build`` on a miss."""
-    return _REGISTRY.get_or_build(key, build)
+    """
+    The value stored under ``key`` in the shared registry, built by ``build`` on a miss.
+
+    Lookup, build and store are one locked step, so concurrent callers build once.
+    ``build`` is not kept: it may reference the layer the value is for. A ``None`` result
+    is returned and not stored.
+    """
+    return _REGISTRY.get_or_build(key, build, rebuildable=False)
 
 
 def lookup_shared(key: Hashable) -> Any:
