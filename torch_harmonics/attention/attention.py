@@ -44,6 +44,7 @@ from torch_harmonics._field_contract import check_field
 from torch_harmonics.attention._attention_utils import _check_batches_match, _check_dtypes_match, _fold_radius_qkv
 from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
+from torch_harmonics.cache import SharedBufferMixin, shared_table
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
 from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
 from torch_harmonics.radial import split_radial_pair, unfold_radius
@@ -92,7 +93,13 @@ def _drop_inert_key_bias(module, state_dict, prefix, local_metadata, strict, mis
         state_dict.pop(prefix + "k_bias", None)
 
 
-class AttentionS2(nn.Module):
+@shared_table
+def _log_point_weights(grid: GridS2) -> torch.Tensor:
+    """The log of the input grid's quadrature weights, ``(1, 1, npoints)`` float32, shared between layers on that grid."""
+    return torch.log(grid.point_weights(torch.float32)).reshape(1, 1, -1)
+
+
+class AttentionS2(SharedBufferMixin, nn.Module):
     r"""
     (Global) attention on the 2-sphere.
 
@@ -225,9 +232,8 @@ class AttentionS2(nn.Module):
             # compute log because they are applied as an addition prior to the softmax ('attn_mask'), which includes an exponential.
             # see https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
             # for info on how 'attn_mask' is applied to the attention weights
-            point_weights = self.grid_in.point_weights(torch.float32)
-            log_point_weights = torch.log(point_weights).reshape(1, 1, -1)
-        self.register_buffer("log_point_weights", log_point_weights, persistent=False)
+            log_point_weights = _log_point_weights(self.grid_in)
+        self.register_shared_buffer("log_point_weights", log_point_weights)
 
         # learnable parameters — Xavier uniform init matching PyTorch MHA convention:
         # bound = sqrt(6 / (fan_in + fan_out)) for each projection
@@ -674,6 +680,17 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         # fold_longitude checks -- so `not self.ragged` is not a shortcut here, it is the
         # same condition stated once.
         return precompute_neighborhood_arcs_s2(self._arcs_src, self._arcs_dst, theta_cutoff=self.theta_cutoff, fold_longitude=not self.ragged)
+
+    def _shard_key(self) -> tuple:
+        """What identifies this layer's block of the neighbourhood beyond its grids and support: nothing on a serial layer."""
+        return ()
+
+    def _backend_state_key(self):
+        # everything the backends' prepare reads: the neighbourhood, through the grids and the
+        # support; its direction; and on a distributed layer the shard. The layer dtype, which
+        # sets the reference's weight dtype, is added by the selection. See
+        # BackendSelectionMixin._backend_state_key.
+        return (type(self), self.grid_in, self.grid_out, self._arcs_src, self._arcs_dst, self.theta_cutoff, self.upsample, self._shard_key())
 
     def _setup(self) -> None:
         """

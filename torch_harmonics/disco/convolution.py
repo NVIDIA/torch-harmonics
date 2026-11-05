@@ -40,7 +40,7 @@ from disco_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import BackendSelectionMixin
 from torch_harmonics._field_contract import check_field
-from torch_harmonics.cache import lru_cache
+from torch_harmonics.cache import shared_table
 from torch_harmonics.filter_basis import FilterBasis, get_filter_basis
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid, require_regular_grid
 from torch_harmonics.neighborhood import _row_chunks, precompute_neighborhood_csr_s2
@@ -308,7 +308,7 @@ def _normalize_convolution_tensor_s2(
     return psi_vals
 
 
-@lru_cache(typed=True, copy=True)
+@shared_table
 def _precompute_convolution_tensor_s2(
     grid_in: RegularGridS2,
     grid_out: RegularGridS2,
@@ -484,7 +484,7 @@ def _precompute_convolution_tensor_s2(
 _PAIR_BUDGET = 1 << 20
 
 
-@lru_cache(typed=True, copy=True)
+@shared_table
 def _precompute_convolution_tensor_s2_ragged(
     grid_in: GridS2,
     grid_out: GridS2,
@@ -771,6 +771,10 @@ class DiscreteContinuousConv(BackendSelectionMixin, nn.Module, metaclass=abc.ABC
         self._backend_state = ()
         self.backend = None
 
+        # the shared host psi the backend state was prepared from, held while the layer lives
+        # so that a move to another device derives that device's state without recomputing it
+        self._held_tables = None
+
     @property
     def kernel_size(self):
         return self.filter_basis.kernel_size
@@ -786,10 +790,35 @@ class DiscreteContinuousConv(BackendSelectionMixin, nn.Module, metaclass=abc.ABC
         """
         return self.weight.device
 
+    def _shard_key(self) -> tuple:
+        """What identifies this layer's block of psi beyond its grids and support: nothing on a serial layer."""
+        return ()
+
+    def _backend_state_key(self):
+        # everything the backends' prepare reads: psi, through the grids, support, basis and
+        # normalization; the extents the layouts are built for; and on a distributed layer
+        # the shard. The class tells forward and transpose apart. See
+        # BackendSelectionMixin._backend_state_key.
+        return (
+            type(self),
+            self.grid_in,
+            self.grid_out,
+            self.filter_basis,
+            self.theta_cutoff,
+            self.basis_norm_mode,
+            self._needs_split,
+            getattr(self, "_psi_nlon", None),
+            getattr(self, "_contract_shape", None),
+            self._shard_key(),
+        )
+
     @abc.abstractmethod
     def _psi_coo(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        The psi entries ``(ker_idx, row_idx, col_idx, vals)``, as fresh tensors.
+        The psi entries ``(ker_idx, row_idx, col_idx, vals)``.
+
+        They may be views of the shared psi (see
+        :func:`~torch_harmonics.cache.shared_table`): read them, never write to them.
 
         A row is a latitude of the grid psi is keyed by and a column a flat index
         ``ring * _psi_nlon + lon`` into the other grid. On a ragged layer a row is a point
@@ -930,7 +959,7 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
 
     def _psi_coo(self):
         precompute = _precompute_convolution_tensor_s2_ragged if self.ragged else _precompute_convolution_tensor_s2
-        idx, vals = precompute(
+        self._held_tables = precompute(
             self.grid_in,
             self.grid_out,
             self.filter_basis,
@@ -938,7 +967,8 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
             transpose_normalization=False,
             basis_norm_mode=self.basis_norm_mode,
             merge_quadrature=True,
-        )[:2]
+        )
+        idx, vals = self._held_tables[:2]
         return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
 
     def _reference_psi(self, ker_idx, row_idx, col_idx, vals):
@@ -1087,7 +1117,7 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def _psi_coo(self):
         # switch in_shape and out_shape since we want the transpose convolution
         precompute = _precompute_convolution_tensor_s2_ragged if self.ragged else _precompute_convolution_tensor_s2
-        idx, vals = precompute(
+        self._held_tables = precompute(
             self.grid_out,
             self.grid_in,
             self.filter_basis,
@@ -1095,7 +1125,8 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             transpose_normalization=True,
             basis_norm_mode=self.basis_norm_mode,
             merge_quadrature=True,
-        )[:2]
+        )
+        idx, vals = self._held_tables[:2]
         return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
 
     def _reference_psi(self, ker_idx, row_idx, col_idx, vals):

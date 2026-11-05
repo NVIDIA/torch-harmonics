@@ -627,3 +627,19 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         mmax = min(lmax, grid.max_azimuthal_order)
         with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
             getattr(thd, cls_name)(grid, lmax=lmax, mmax=mmax)
+
+    @parameterized.expand(
+        [["DistributedRealSHT", "weights"], ["DistributedInverseRealSHT", "pct"], ["DistributedRealVectorSHT", "weights"], ["DistributedInverseRealVectorSHT", "dpct"]]
+    )
+    def test_identical_transforms_share_their_block(self, cls_name, buffer):
+        """
+        Two identical distributed transforms hold one copy of this rank's block, and it is
+        the block a transform of different bounds does not get; see torch_harmonics.cache.
+        """
+        grid = th.as_grid("legendre-gauss", nlat=16, nlon=32)
+        cls = getattr(thd, cls_name)
+        a = cls(grid).to(self.device)
+        b = cls(grid).to(self.device)
+        other = cls(grid, lmax=10, mmax=10).to(self.device)
+        self.assertIs(getattr(a, buffer), getattr(b, buffer))
+        self.assertIsNot(getattr(a, buffer), getattr(other, buffer))

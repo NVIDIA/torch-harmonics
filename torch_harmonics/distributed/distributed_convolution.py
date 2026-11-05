@@ -418,9 +418,13 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
 
         self._select_backend()
 
+    def _shard_key(self):
+        # this rank's block: its place in the process grid, and the polar mode with its halo
+        return (self.comm_rank_polar, self.comm_size_polar, self.comm_rank_azimuth, self.comm_size_azimuth, self.use_halo, self.r_lat)
+
     def _psi_coo(self):
         """This rank's block of psi: its output rows over the halo band, or its input rows over all output rows."""
-        idx, vals, _ = _precompute_convolution_tensor_s2(
+        self._held_tables = _precompute_convolution_tensor_s2(
             self.grid_in,
             self.grid_out,
             self.filter_basis,
@@ -429,6 +433,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             basis_norm_mode=self.basis_norm_mode,
             merge_quadrature=True,
         )
+        idx, vals, _ = self._held_tables
         if self.use_halo:
             idx, vals = _split_halo_convolution_tensor_s2(idx, vals, self.grid_in, self.grid_out, self.r_lat)
         else:
@@ -599,10 +604,14 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         self._select_backend()
 
+    def _shard_key(self):
+        # this rank's block: its place in the process grid
+        return (self.comm_rank_polar, self.comm_size_polar, self.comm_rank_azimuth, self.comm_size_azimuth)
+
     def _psi_coo(self):
         # switch in_shape and out_shape since we want the transpose convolution, and split
         # along latitude with their meaning swapped for the same reason
-        idx, vals, _ = _precompute_convolution_tensor_s2(
+        self._held_tables = _precompute_convolution_tensor_s2(
             self.grid_out,
             self.grid_in,
             self.filter_basis,
@@ -611,6 +620,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             basis_norm_mode=self.basis_norm_mode,
             merge_quadrature=True,
         )
+        idx, vals, _ = self._held_tables
         idx, vals = _split_distributed_convolution_tensor_s2(idx, vals, self.grid_out, self.grid_in)
         return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
 

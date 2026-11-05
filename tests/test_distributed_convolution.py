@@ -727,6 +727,30 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
             dist.all_reduce(local_nnz, group=self.h_group)
         self.assertEqual(int(local_nnz.item()), int(ser_vals.numel()), "polar ranks together must hold every serial psi entry exactly once")
 
+    @parameterized.expand([["forward", "reduce-scatter"], ["forward", "halo-exchange"], ["transpose", None]])
+    def test_identical_layers_share_their_block(self, direction, polar_mode):
+        """
+        Two identical distributed DISCO layers share this rank's backend state, the backend
+        included; one with a different support does not. See BackendSelectionMixin.
+        """
+        g_in, g_out = th.as_grid("equiangular", nlat=32, nlon=64), th.as_grid("equiangular", nlat=16, nlon=32)
+        if direction == "transpose":
+
+            def build(**kwargs):
+                return thd.DistributedDiscreteContinuousConvTransposeS2(g_out, g_in, 4, 4, kernel_shape=3, **kwargs).to(self.device)
+
+        else:
+
+            def build(**kwargs):
+                return thd.DistributedDiscreteContinuousConvS2(g_in, g_out, 4, 4, kernel_shape=3, polar_mode=polar_mode, **kwargs).to(self.device)
+
+        a, b = build(), build()
+        self.assertIs(a.backend, b.backend)
+        for name in a._backend_state:
+            self.assertIs(getattr(a, name), getattr(b, name), msg=name)
+        other = build(theta_cutoff=1.5 * a.theta_cutoff)
+        self.assertTrue(any(getattr(a, name) is not getattr(other, name) for name in a._backend_state))
+
     def test_fused_runs_on_every_backend(self):
         """
         fused=True is accepted wherever the layer can be built, the torch reference included:
