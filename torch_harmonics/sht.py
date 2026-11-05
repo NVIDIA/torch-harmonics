@@ -35,13 +35,12 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics._field_contract import check_coeffs, check_field
-from torch_harmonics.cache import lru_cache
+from torch_harmonics.cache import SharedBufferMixin, shared_table
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import EquiangularGrid, Fejer1Grid, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.legendre import _mask_spectral_block, _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
 from torch_harmonics.radial import split_radial
 from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_not_spectrally_accurate, truncate_sht
-from torch_harmonics.utils import recast_buffers_for
 
 
 def _extended_folded_analysis(grid: RegularGridS2, spectral_grid: SpectralGrid) -> bool:
@@ -143,7 +142,7 @@ def _fold_resampled_latitude(
     return native_weights * x + _periodic_latitude_extension_adjoint(folded, signs, include_poles)
 
 
-@lru_cache(maxsize=2, typed=True, copy=True)
+@shared_table
 @torch.no_grad()
 def _precompute_folded_projection(
     grid: RegularGridS2,
@@ -223,7 +222,97 @@ def _precompute_folded_projection(
     return weights
 
 
-class RealSHT(nn.Module):
+@shared_table
+@torch.no_grad()
+def _analysis_weights(
+    grid: RegularGridS2,
+    truncation: SpectralGrid,
+    norm: str,
+    csphase: bool,
+    vector: bool,
+    mmin: int,
+    mmax: int,
+    kmin: int,
+    kmax: int,
+) -> torch.Tensor:
+    r"""
+    The analysis buffer of a forward SHT: quadrature-weighted projection rows.
+
+    Shape ``(mmax - mmin, lmax, kmax - kmin)``, or ``(2, ...)`` for a vector transform: orders
+    ``[mmin, mmax)``, every degree, and rings ``[kmin, kmax)``. A serial transform asks for
+    every order and ring, a distributed one for its block. On equiangular and Fejer-1 grids
+    beyond the native bound these are the folded projection rows. Otherwise the Legendre
+    table times the quadrature weights, which include the longitude scale :math:`2\pi` of
+    the forward-normalized FFT, and for a vector transform the degree factor
+    :math:`1 / (l (l + 1))` and the conjugation of the imaginary derivative component.
+
+    Shared between all transforms with the same arguments, see
+    :func:`~torch_harmonics.cache.shared_table`.
+    """
+    lmax = truncation.lmax
+    # quadrature weights come from the grid descriptor, which supports every grid
+    # precompute_latitudes does. Only this block's rings are needed: the contraction over
+    # rings is completed by a reduce-scatter in a distributed forward, and rings are
+    # independent of one another, so restricting them costs nothing
+    quad_weights = (2.0 * torch.pi * grid.colat_weights)[kmin:kmax]
+
+    if _extended_folded_analysis(grid, truncation):
+        weights = _precompute_folded_projection(grid, truncation, norm, csphase, vector=vector, mmin=mmin, mmax=mmax, kmin=kmin, kmax=kmax)
+    elif not vector:
+        pct = _precompute_legpoly(mmax, lmax, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=mmin, kmin=kmin, kmax=kmax)
+        weights = torch.einsum("mlk,k->mlk", pct, quad_weights).contiguous()
+    else:
+        dpct = _precompute_dlegpoly(mmax, lmax, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=mmin, kmin=kmin, kmax=kmax)
+        # combine integration weights, normalization factor in to one. The degrees are
+        # float64: an integer arange divided by a float gives the default dtype, float32,
+        # and that rounding of 1/(l(l+1)) would survive a later .double()
+        l = torch.arange(0, lmax, dtype=torch.float64)
+        norm_factor = 1.0 / l / (l + 1)
+        if lmax:
+            norm_factor[0] = 1.0
+        weights = torch.einsum("dmlk,k,l->dmlk", dpct, quad_weights, norm_factor).contiguous()
+        # conjugate the imaginary derivative component; weights is fresh, so writing to it is safe
+        weights[1] = -1 * weights[1]
+
+    return weights
+
+
+@shared_table
+@torch.no_grad()
+def _synthesis_table(
+    grid: RegularGridS2,
+    truncation: SpectralGrid,
+    norm: str,
+    csphase: bool,
+    vector: bool,
+    mmin: int,
+    mmax: int,
+    lmin: int,
+    lmax: int,
+) -> torch.Tensor:
+    r"""
+    The synthesis buffer of an inverse SHT: the Legendre table on the grid's rings.
+
+    Shape ``(mmax - mmin, nlat, lmax - lmin)``, or ``(2, ...)`` with the derivative tables for
+    a vector transform: orders ``[mmin, mmax)``, every ring, degrees ``[lmin, lmax)``, stored
+    with the contracted degree axis stride-1. A serial transform asks for every order and
+    degree, a distributed one for its block; both ranges are walked from the start, since
+    the sectoral seed couples orders and the three-term recurrence couples degrees.
+
+    Shared between all transforms with the same arguments, see
+    :func:`~torch_harmonics.cache.shared_table`.
+    """
+    if not vector:
+        pct = _precompute_legpoly(mmax, lmax, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=mmin, lmin=lmin)
+        table = pct.permute(0, 2, 1).contiguous()
+    else:
+        dpct = _precompute_dlegpoly(mmax, lmax, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=mmin, lmin=lmin)
+        table = dpct.permute(0, 1, 3, 2).contiguous()
+
+    return table
+
+
+class RealSHT(SharedBufferMixin, nn.Module):
     r"""
     Defines a module for computing the forward (real-valued) SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -340,26 +429,12 @@ class RealSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # TODO: include assertions regarding the dimensions
-
-        # quadrature weights come from the grid descriptor, which supports every grid
-        # precompute_latitudes does -- the switch this replaced silently rejected
-        # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
-        # descriptor and reads them itself, which is also what keys its cache.
-        weights = self.grid.colat_weights
-
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
         _validate_forward_sht_degree(self.grid, self.lmax)
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
-        if self._extended_folded:
-            weights = _precompute_folded_projection(self.grid, self._trunc, self.norm, self.csphase)
-        else:
-            # Include the longitude scale of the forward-normalized FFT.
-            pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
-            weights = torch.einsum("mlk,k->mlk", pct, 2.0 * torch.pi * weights).contiguous()
 
-        # remember quadrature weights
-        self.register_buffer("weights", weights, persistent=False)
+        # quadrature-weighted Legendre rows, shared with every transform of the same kind
+        self.register_shared_buffer("weights", _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, False, 0, self.mmax, 0, self.nlat))
 
     @property
     def lmax(self) -> int:
@@ -386,11 +461,6 @@ class RealSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
-
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -429,7 +499,7 @@ class RealSHT(nn.Module):
         return torch.complex(out_re.contiguous(), out_im.contiguous())
 
 
-class InverseRealSHT(nn.Module):
+class InverseRealSHT(SharedBufferMixin, nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -539,13 +609,9 @@ class InverseRealSHT(nn.Module):
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
-        # precompute associated Legendre polynomials
-        # store as (mmax, nlat, lmax) so the contraction dim l is stride-1
-        pct = _precompute_legpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase, truncation=self._trunc)
-        pct = pct.permute(0, 2, 1).contiguous()
-
-        # register buffer
-        self.register_buffer("pct", pct, persistent=False)
+        # associated Legendre polynomials as (mmax, nlat, lmax), so the contraction dim l is
+        # stride-1; shared with every transform of the same kind
+        self.register_shared_buffer("pct", _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, False, 0, self.mmax, 0, self.lmax))
 
     @property
     def lmax(self) -> int:
@@ -572,11 +638,6 @@ class InverseRealSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
-
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -615,7 +676,7 @@ class InverseRealSHT(nn.Module):
         return x
 
 
-class RealVectorSHT(nn.Module):
+class RealVectorSHT(SharedBufferMixin, nn.Module):
     r"""
     Defines a module for computing the forward (real) vector SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -714,29 +775,12 @@ class RealVectorSHT(nn.Module):
         self.norm = norm
         self.csphase = csphase
 
-        # quadrature weights come from the grid descriptor; see the note in RealSHT
-        weights = self.grid.colat_weights
-
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
         _validate_forward_sht_degree(self.grid, self.lmax)
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
-        if self._extended_folded:
-            weights = _precompute_folded_projection(self.grid, self._trunc, self.norm, self.csphase, vector=True)
-        else:
-            dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, csphase=self.csphase, truncation=self._trunc)
-            # combine integration weights, normalization factor in to one. The degrees are
-            # float64: an integer arange divided by a float gives the default dtype, float32,
-            # and that rounding of 1/(l(l+1)) would survive a later .double()
-            l = torch.arange(0, self.lmax, dtype=torch.float64)
-            norm_factor = 1.0 / l / (l + 1)
-            if self.lmax:
-                norm_factor[0] = 1.0
-            weights = torch.einsum("dmlk,k,l->dmlk", dpct, 2.0 * torch.pi * weights, norm_factor).contiguous()
-            # Conjugate the imaginary derivative component.
-            weights[1] = -1 * weights[1]
 
-        # remember quadrature weights
-        self.register_buffer("weights", weights, persistent=False)
+        # quadrature-weighted derivative rows, shared with every transform of the same kind
+        self.register_shared_buffer("weights", _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, True, 0, self.mmax, 0, self.nlat))
 
     @property
     def lmax(self) -> int:
@@ -763,11 +807,6 @@ class RealVectorSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
-
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """
@@ -823,7 +862,7 @@ class RealVectorSHT(nn.Module):
         return torch.complex(out_re, out_im)
 
 
-class InverseRealVectorSHT(nn.Module):
+class InverseRealVectorSHT(SharedBufferMixin, nn.Module):
     r"""
     Defines a module for computing the inverse (real-valued) vector SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -924,13 +963,9 @@ class InverseRealVectorSHT(nn.Module):
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
-        # precompute associated Legendre polynomials
-        # store as (2, mmax, nlat, lmax) so the contraction dim l is stride-1
-        dpct = _precompute_dlegpoly(self.mmax, self.lmax, self.grid, norm=self.norm, inverse=True, csphase=self.csphase, truncation=self._trunc)
-        dpct = dpct.permute(0, 1, 3, 2).contiguous()
-
-        # register weights
-        self.register_buffer("dpct", dpct, persistent=False)
+        # derivative Legendre tables as (2, mmax, nlat, lmax), so the contraction dim l is
+        # stride-1; shared with every transform of the same kind
+        self.register_shared_buffer("dpct", _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, True, 0, self.mmax, 0, self.lmax))
 
     @property
     def lmax(self) -> int:
@@ -957,11 +992,6 @@ class InverseRealVectorSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
-
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
 
     def forward(self, x: torch.Tensor):
         """

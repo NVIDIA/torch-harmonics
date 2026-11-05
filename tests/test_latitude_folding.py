@@ -198,10 +198,7 @@ class TestLatitudeFolding(unittest.TestCase):
             actual_grad = torch.autograd.grad(actual, x, gradient, retain_graph=True)[0]
             torch.testing.assert_close(actual_grad, expected_grad, atol=1e-12, rtol=1e-12)
         self.assertEqual(list(dict(analysis.named_buffers())), ["weights"])
-        # A warm constructor must reuse numerical work without sharing mutable buffers.
+        # an identical transform shares the folded rows rather than building or copying them;
+        # see torch_harmonics.cache.shared_table
         another = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=analysis.lmax, mmax=analysis.mmax, lmmax=lmmax)
-        torch.testing.assert_close(analysis.weights, another.weights, atol=0, rtol=0)
-        self.assertNotEqual(analysis.weights.data_ptr(), another.weights.data_ptr())
-        another.weights.zero_()
-        self.assertGreater(analysis.weights.abs().max().item(), 0)
-        self.assertEqual(_precompute_folded_projection.cache_parameters()["maxsize"], 2)
+        self.assertIs(another.weights, analysis.weights)

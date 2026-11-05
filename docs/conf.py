@@ -151,6 +151,9 @@ nitpick_ignore = [
     # Abstract base shown by "show-inheritance"; intentionally not part of the
     # public API reference, so there is no page to link to.
     ("py:class", "torch_harmonics.disco.convolution.DiscreteContinuousConv"),
+    # Mixin shown by "show-inheritance" on the layers that share their precomputed tables;
+    # an implementation detail with no page of its own.
+    ("py:class", "torch_harmonics.cache.SharedBufferMixin"),
 ]
 
 # -- HTML output -------------------------------------------------------------

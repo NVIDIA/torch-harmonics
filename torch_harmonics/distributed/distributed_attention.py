@@ -1191,6 +1191,10 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             optimized_kernel=True,
         )
 
+    def _shard_key(self):
+        # this rank's block: its place in the process grid and the halo it borrows
+        return (self.comm_rank_polar, self.comm_size_polar, self.comm_rank_azimuth, self.comm_size_azimuth, self.r_lat)
+
     def _setup(self) -> None:
         """Split the grids across the polar and azimuth groups, and size the latitude halo."""
 

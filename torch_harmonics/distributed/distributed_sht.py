@@ -35,13 +35,12 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics._field_contract import check_coeffs, check_field
+from torch_harmonics.cache import SharedBufferMixin
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
-from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
 from torch_harmonics.radial import split_radial
-from torch_harmonics.sht import _extended_folded_analysis, _precompute_folded_projection
+from torch_harmonics.sht import _analysis_weights, _extended_folded_analysis, _synthesis_table
 from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_not_spectrally_accurate, truncate_sht
-from torch_harmonics.utils import recast_buffers_for
 
 from .primitives import (
     compute_split_shapes,
@@ -53,7 +52,7 @@ from .primitives import (
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
-class DistributedRealSHT(nn.Module):
+class DistributedRealSHT(SharedBufferMixin, nn.Module):
     """
     Distributed version of the forward (real-valued) SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -163,12 +162,6 @@ class DistributedRealSHT(nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # quadrature weights come from the grid descriptor, which supports every grid
-        # precompute_latitudes does -- the switch this replaced silently rejected
-        # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
-        # descriptor and reads them itself, which is also what keys its cache.
-        weights = self.grid.colat_weights
-
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
         _validate_forward_sht_degree(self.grid, self.lmax)
 
@@ -190,48 +183,15 @@ class DistributedRealSHT(nn.Module):
         self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
+        # build only the block this rank keeps: local orders, all degrees, local latitudes. The
+        # contraction over k is a distributed matmul completed by a reduce-scatter in the forward,
+        # so only the local latitudes are needed; l is contracted in full. The block is shared
+        # with every transform of the same kind on this rank's block, see _analysis_weights.
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
-        if self._extended_folded:
-            weights = _precompute_folded_projection(
-                self.grid,
-                self._trunc,
-                self.norm,
-                self.csphase,
-                vector=False,
-                mmin=self.mmax_offset,
-                mmax=self.mmax_offset + self.mmax_local,
-                kmin=self.lat_offset,
-                kmax=self.lat_offset + self.nlat_local,
-            )
-        else:
-            # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
-            # quadrature weights. It is a constant prefactor of a linear transform, so folding it
-            # here is exact and saves a pointwise multiply on a complex tensor in every forward.
-            weights = 2.0 * torch.pi * weights
-
-            # build only the block this rank keeps, rather than the whole table. The contraction
-            # over k is a distributed matmul completed by a reduce-scatter in the forward, so only
-            # the local latitudes are needed; l is contracted in full. Latitudes restrict for free
-            # via kmin/kmax -- they are independent of each other -- whereas the order range needs
-            # mmin, since reaching P^m_m means walking the seed up from m=0.
-            weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
-
-            # combine quadrature weights with the legendre weights
-            pct = _precompute_legpoly(
-                self.mmax_offset + self.mmax_local,
-                self.lmax,
-                self.grid,
-                norm=self.norm,
-                csphase=self.csphase,
-                truncation=self._trunc,
-                mmin=self.mmax_offset,
-                kmin=self.lat_offset,
-                kmax=self.lat_offset + self.nlat_local,
-            )
-            weights = torch.einsum("mlk,k->mlk", pct, weights).contiguous()
-
-        # remember quadrature weights
-        self.register_buffer("weights", weights, persistent=False)
+        weights = _analysis_weights(
+            self.grid, self._trunc, self.norm, self.csphase, False, self.mmax_offset, self.mmax_offset + self.mmax_local, self.lat_offset, self.lat_offset + self.nlat_local
+        )
+        self.register_shared_buffer("weights", weights)
 
     @property
     def lmax(self) -> int:
@@ -258,11 +218,6 @@ class DistributedRealSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
-
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -324,7 +279,7 @@ class DistributedRealSHT(nn.Module):
         return x
 
 
-class DistributedInverseRealSHT(nn.Module):
+class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
     """
     Distributed version of the inverse (real-valued) SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -444,22 +399,12 @@ class DistributedInverseRealSHT(nn.Module):
         # while all latitudes are produced. Both ranges need an explicit offset: the sectoral
         # seed couples orders and the three-term recurrence couples degrees, so each has to be
         # walked from the start even though only the local window is stored.
-        # store as (mmax_local, nlat, lmax_local) so the contraction dim l is stride-1
-        pct = _precompute_legpoly(
-            self.mmax_offset + self.mmax_local,
-            self.lmax_offset + self.lmax_local,
-            self.grid,
-            norm=self.norm,
-            inverse=True,
-            csphase=self.csphase,
-            truncation=self._trunc,
-            mmin=self.mmax_offset,
-            lmin=self.lmax_offset,
+        # stored as (mmax_local, nlat, lmax_local) so the contraction dim l is stride-1, and
+        # shared with every transform of the same kind on this rank's block
+        pct = _synthesis_table(
+            self.grid, self._trunc, self.norm, self.csphase, False, self.mmax_offset, self.mmax_offset + self.mmax_local, self.lmax_offset, self.lmax_offset + self.lmax_local
         )
-        pct = pct.permute(0, 2, 1).contiguous()
-
-        # register
-        self.register_buffer("pct", pct, persistent=False)
+        self.register_shared_buffer("pct", pct)
 
     @property
     def lmax(self) -> int:
@@ -486,11 +431,6 @@ class DistributedInverseRealSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
-
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -550,7 +490,7 @@ class DistributedInverseRealSHT(nn.Module):
         return x
 
 
-class DistributedRealVectorSHT(nn.Module):
+class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
     """
     Distributed version of the forward (real) vector SHT.
     Precomputes the associated Legendre polynomials and quadrature weights of the given grid.
@@ -631,12 +571,6 @@ class DistributedRealVectorSHT(nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # quadrature weights come from the grid descriptor, which supports every grid
-        # precompute_latitudes does -- the switch this replaced silently rejected
-        # "trapezoidal". The nodes are not needed here: _precompute_legpoly takes the
-        # descriptor and reads them itself, which is also what keys its cache.
-        weights = self.grid.colat_weights
-
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
         _validate_forward_sht_degree(self.grid, self.lmax)
 
@@ -657,54 +591,13 @@ class DistributedRealVectorSHT(nn.Module):
         self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
+        # build only the block this rank keeps: local orders, all degrees, local latitudes, see
+        # DistributedRealSHT.__init__
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
-        if self._extended_folded:
-            weights = _precompute_folded_projection(
-                self.grid,
-                self._trunc,
-                self.norm,
-                self.csphase,
-                vector=True,
-                mmin=self.mmax_offset,
-                mmax=self.mmax_offset + self.mmax_local,
-                kmin=self.lat_offset,
-                kmax=self.lat_offset + self.nlat_local,
-            )
-        else:
-            # build only the block this rank keeps: local latitudes, local orders, all degrees,
-            # see DistributedRealSHT.__init__
-            weights = weights[self.lat_offset : self.lat_offset + self.nlat_local]
-
-            # compute weights
-            dpct = _precompute_dlegpoly(
-                self.mmax_offset + self.mmax_local,
-                self.lmax,
-                self.grid,
-                norm=self.norm,
-                csphase=self.csphase,
-                truncation=self._trunc,
-                mmin=self.mmax_offset,
-                kmin=self.lat_offset,
-                kmax=self.lat_offset + self.nlat_local,
-            )
-
-            # fold the 2*pi longitudinal scale factor of the forward-normalized FFT into the
-            # quadrature weights (see DistributedRealSHT.__init__)
-            weights = 2.0 * torch.pi * weights
-
-            # combine integration weights, normalization factor in to one. The degrees are
-            # float64: an integer arange divided by a float gives the default dtype, float32,
-            # and that rounding of 1/(l(l+1)) would survive a later .double()
-            l = torch.arange(0, self.lmax, dtype=torch.float64)
-            norm_factor = 1.0 / l / (l + 1)
-            if self.lmax:
-                norm_factor[0] = 1.0
-            weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor).contiguous()
-            # since the second component is imaginary, we need to take complex conjugation into account
-            weights[1] = -1 * weights[1]
-
-        # remember quadrature weights
-        self.register_buffer("weights", weights, persistent=False)
+        weights = _analysis_weights(
+            self.grid, self._trunc, self.norm, self.csphase, True, self.mmax_offset, self.mmax_offset + self.mmax_local, self.lat_offset, self.lat_offset + self.nlat_local
+        )
+        self.register_shared_buffer("weights", weights)
 
     @property
     def lmax(self) -> int:
@@ -731,11 +624,6 @@ class DistributedRealVectorSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
-
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -812,7 +700,7 @@ class DistributedRealVectorSHT(nn.Module):
         return x
 
 
-class DistributedInverseRealVectorSHT(nn.Module):
+class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
     """
     Distributed version of the inverse (real-valued) vector SHT.
     Precomputes the associated Legendre polynomials on the nodes of the given grid.
@@ -908,22 +796,12 @@ class DistributedInverseRealVectorSHT(nn.Module):
 
         # build only the block this rank keeps: local orders, local degrees, all latitudes,
         # see DistributedInverseRealSHT.__init__
-        # store as (2, mmax_local, nlat, lmax_local) so the contraction dim l is stride-1
-        dpct = _precompute_dlegpoly(
-            self.mmax_offset + self.mmax_local,
-            self.lmax_offset + self.lmax_local,
-            self.grid,
-            norm=self.norm,
-            inverse=True,
-            csphase=self.csphase,
-            truncation=self._trunc,
-            mmin=self.mmax_offset,
-            lmin=self.lmax_offset,
+        # stored as (2, mmax_local, nlat, lmax_local) so the contraction dim l is stride-1,
+        # and shared with every transform of the same kind on this rank's block
+        dpct = _synthesis_table(
+            self.grid, self._trunc, self.norm, self.csphase, True, self.mmax_offset, self.mmax_offset + self.mmax_local, self.lmax_offset, self.lmax_offset + self.lmax_local
         )
-        dpct = dpct.permute(0, 1, 3, 2).contiguous()
-
-        # register buffer
-        self.register_buffer("dpct", dpct, persistent=False)
+        self.register_shared_buffer("dpct", dpct)
 
     @property
     def lmax(self) -> int:
@@ -950,11 +828,6 @@ class DistributedInverseRealVectorSHT(nn.Module):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
-
-    def _apply(self, fn, recurse=True):
-        # float64 buffers cannot move to MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
-        return super()._apply(fn, recurse)
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
