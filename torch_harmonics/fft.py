@@ -212,14 +212,17 @@ def _ring_fft_tables(grid: GridS2, mmax: int) -> Dict[str, object]:
     pos = torch.where(k_pos <= half, ring * stride + k_pos, dump)
     neg = torch.where((k_neg <= half) & (m > 0), ring * stride + k_neg, dump)
 
-    # the DC and Nyquist bins of a real ring are real. Folding makes them so up to
+    # the DC bin of a real ring, and the Nyquist bin of an even one, are real. Folding
+    # makes them so up to
     # round-off, and the imaginary part of m = 0 is dropped by definition, so both are
     # zeroed explicitly rather than left to the irfft backend. A precomputed mask
     # rather than irfft's per-call one, which writes to the device from the host
     # and would synchronize once per ring length.
     imag_mask = torch.ones(nrings, stride, dtype=torch.float64)
     imag_mask[:, 0] = 0.0
-    imag_mask[torch.arange(nrings), nlon_per_lat // 2] = 0.0
+    # an odd ring has no Nyquist bin: its last bin n // 2 is an ordinary frequency
+    even = nlon_per_lat % 2 == 0
+    imag_mask[torch.arange(nrings)[even], nlon_per_lat[even] // 2] = 0.0
 
     # ring phases e^{-i m lambda_0}, lambda_0 = 2 pi shift / n
     lam0 = 2.0 * torch.pi * grid.lon_shifts.to(torch.float64) / nlon_per_lat.to(torch.float64)

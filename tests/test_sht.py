@@ -1033,6 +1033,25 @@ class TestRingFFT(unittest.TestCase):
         back = RingFFT(g, mmax=8).inverse(ref)
         self.assertTrue(compare_tensors("ring ifft", back, torch.fft.irfft(ref, n=16, norm="forward").reshape(3, -1), atol=1e-14, rtol=0.0))
 
+    def test_the_inverse_matches_irfft_on_odd_and_even_rings(self):
+        """Every bin of an odd ring, the last one included, keeps its imaginary part."""
+        set_seed(333)
+        for nlon in (7, 8, 15, 16):
+            with self.subTest(nlon=nlon):
+                g = th.as_grid("equiangular", nlat=3, nlon=nlon)
+                mmax = (nlon + 1) // 2
+                c = torch.randn(2, 3, mmax, dtype=torch.complex128)
+                c[..., 0] = c[..., 0].real
+                expected = torch.fft.irfft(c, n=nlon, norm="forward").reshape(2, -1)
+                self.assertTrue(compare_tensors("ring ifft", RingFFT(g, mmax=mmax).inverse(c), expected, atol=1e-13, rtol=0.0))
+
+    def test_the_last_bin_of_an_odd_ring_keeps_its_sine_term(self):
+        g = th.as_grid("equiangular", nlat=2, nlon=5)
+        c = torch.zeros(2, 3, dtype=torch.complex128)
+        c[:, 2] = 1j
+        expected = (-2.0 * torch.sin(2 * g.lons())).repeat(2)
+        self.assertTrue(compare_tensors("odd ring", RingFFT(g, mmax=3).inverse(c), expected, atol=1e-14, rtol=0.0))
+
     def test_the_nyquist_order_is_a_two_sided_harmonic(self):
         """
         Order n / 2 synthesizes 2 Re(G e^{i m lambda}), like every m > 0, not irfft's
