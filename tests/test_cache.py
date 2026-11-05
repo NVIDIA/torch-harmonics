@@ -689,3 +689,133 @@ class TestSharedBackendState(unittest.TestCase):
         a = th.AttentionS2(grid, grid, 8, num_heads=2).to(self.device)
         b = th.AttentionS2(grid, grid, 8, num_heads=2).to(self.device)
         self.assertIs(a.log_point_weights, b.log_point_weights)
+
+
+_SHT_CLASSES = [["RealSHT", "weights"], ["InverseRealSHT", "pct"], ["RealVectorSHT", "weights"], ["InverseRealVectorSHT", "dpct"]]
+
+
+def _layer_input(layer, generator):
+    """Random inputs for ``layer`` on the CPU: an SHT's grid or spectrum, or a DISCO/attention field."""
+    if isinstance(layer, (th.RealSHT, th.RealVectorSHT)):
+        shape = (2,) * isinstance(layer, th.RealVectorSHT) + tuple(layer.grid.shape)
+        return (torch.randn(2, *shape, generator=generator, dtype=torch.float64),)
+    if isinstance(layer, (th.InverseRealSHT, th.InverseRealVectorSHT)):
+        shape = (2,) * isinstance(layer, th.InverseRealVectorSHT) + (layer.lmax, layer.mmax)
+        return (torch.randn(2, *shape, generator=generator, dtype=torch.complex128),)
+    if isinstance(layer, th.NeighborhoodAttentionS2):
+        query = torch.randn(2, layer.in_channels, *layer.grid_out.shape, generator=generator)
+        key = torch.randn(2, layer.in_channels, *layer.grid_in.shape, generator=generator)
+        return query, key, key.clone()
+    return (torch.randn(2, layer.in_channels, *layer.grid_in.shape, generator=generator),)
+
+
+@unittest.skipUnless(torch.cuda.is_available(), "needs a CUDA device")
+class TestSharedTablesAcrossDevices(unittest.TestCase):
+    """Layers built on the CPU and moved to the GPU: where their tables land, and what they hold there."""
+
+    def setUp(self):
+        self.cuda = torch.device("cuda", torch.cuda.current_device())
+        self.generator = torch.Generator().manual_seed(333)
+
+    @parameterized.expand(_SHT_CLASSES)
+    def test_an_sht_moved_to_cuda_holds_its_table_there(self, cls_name, name):
+        cls = getattr(th, cls_name)
+        grid = as_grid("legendre-gauss", nlat=12, nlon=24)
+        layer = cls(grid)
+        cpu_table = getattr(layer, name)
+        self.assertEqual(cpu_table.device.type, "cpu")
+
+        layer.to(self.cuda)
+        table = getattr(layer, name)
+        self.assertEqual(table.device, self.cuda)
+        self.assertEqual(table.dtype, cpu_table.dtype)
+        self.assertTrue(torch.equal(table.cpu(), cpu_table), "the table changed on the way to the device")
+
+        # a layer still on the CPU keeps the host table, and an identical layer moved later
+        # shares the device copy; moving back returns the host table itself
+        self.assertIs(getattr(cls(grid), name), cpu_table)
+        self.assertIs(getattr(cls(grid).to(self.cuda), name), table)
+        self.assertIs(getattr(layer.to("cpu"), name), cpu_table)
+
+    @parameterized.expand(_SHT_CLASSES)
+    def test_an_sht_converted_on_the_way_holds_the_converted_table(self, cls_name, name):
+        """.to(device, dtype) gives the device copy of the table in that dtype, converted from the exact one."""
+        cls = getattr(th, cls_name)
+        grid = as_grid("equiangular", nlat=13, nlon=26)
+        layer = cls(grid)
+        cpu_table = getattr(layer, name)
+        layer.to(device=self.cuda, dtype=torch.float32)
+        table = getattr(layer, name)
+        self.assertEqual((table.device, table.dtype), (self.cuda, torch.float32))
+        self.assertTrue(torch.equal(table.cpu(), cpu_table.float()))
+        self.assertIs(getattr(cls(grid).cuda().float(), name), table)
+
+    @parameterized.expand(_SHT_CLASSES)
+    def test_an_sht_computes_the_same_on_cuda(self, cls_name, _):
+        cls = getattr(th, cls_name)
+        layer = cls(as_grid("legendre-gauss", nlat=12, nlon=24))
+        inputs = _layer_input(layer, self.generator)
+        expected = layer(*inputs)
+        actual = layer.to(self.cuda)(*(x.to(self.cuda) for x in inputs))
+        self.assertEqual(actual.device, self.cuda)
+        torch.testing.assert_close(actual.cpu(), expected, atol=1e-10, rtol=1e-10)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_backend_state_moved_to_cuda_lives_there(self, _, build, kind):
+        layer = build(kind)
+        cpu_state = {name: getattr(layer, name) for name in layer._backend_state}
+        layer.to(self.cuda)
+        self.assertEqual(layer.device, self.cuda)
+        self.assertTrue(layer._backend_state)
+        for name in layer._backend_state:
+            self.assertEqual(getattr(layer, name).device, self.cuda, msg=name)
+        # shared with an identical layer moved there, and the CPU state stays with CPU layers
+        other = build(kind).to(self.cuda)
+        self.assertIs(other.backend, layer.backend)
+        for name in layer._backend_state:
+            self.assertIs(getattr(other, name), getattr(layer, name), msg=name)
+        for name, tensor in cpu_state.items():
+            self.assertIs(getattr(build(kind), name), tensor, msg=name)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_a_backend_layer_computes_the_same_on_cuda(self, _, build, kind):
+        torch.manual_seed(333)
+        layer = build(kind)
+        inputs = _layer_input(layer, self.generator)
+        expected = layer(*inputs)
+        actual = layer.to(self.cuda)(*(x.to(self.cuda) for x in inputs))
+        self.assertEqual(actual.device, self.cuda)
+        torch.testing.assert_close(actual.cpu(), expected, atol=1e-4, rtol=1e-4)
+
+    def test_the_attention_point_weights_move_to_cuda(self):
+        grid = as_grid("legendre-gauss", nlat=8, nlon=16)
+        layer = th.AttentionS2(grid, grid, 8, num_heads=2)
+        cpu_weights = layer.log_point_weights
+        layer.to(self.cuda)
+        self.assertEqual(layer.log_point_weights.device, self.cuda)
+        self.assertTrue(torch.equal(layer.log_point_weights.cpu(), cpu_weights))
+        self.assertIs(th.AttentionS2(grid, grid, 8, num_heads=2).to(self.cuda).log_point_weights, layer.log_point_weights)
+
+    def test_identical_layers_on_cuda_hold_one_copy(self):
+        """Device memory grows with the first transform moved there, not with the next ones."""
+        grid = as_grid("legendre-gauss", nlat=64, nlon=128)
+        torch.cuda.synchronize()
+        baseline = torch.cuda.memory_allocated(self.cuda)
+        first = th.RealSHT(grid).to(self.cuda)
+        one = torch.cuda.memory_allocated(self.cuda) - baseline
+        self.assertGreaterEqual(one, first.weights.numel() * first.weights.element_size())
+        more = [th.RealSHT(grid).to(self.cuda) for _ in range(3)]
+        self.assertEqual(torch.cuda.memory_allocated(self.cuda) - baseline, one)
+        del first, more
+        gc.collect()
+        self.assertEqual(torch.cuda.memory_allocated(self.cuda), baseline, "the device table outlived its transforms")
+
+    @unittest.skipUnless(torch.cuda.device_count() > 1, "needs two CUDA devices")
+    def test_each_device_holds_its_own_copy(self):
+        grid = as_grid("legendre-gauss", nlat=12, nlon=24)
+        on_0 = th.RealSHT(grid).to("cuda:0")
+        on_1 = th.RealSHT(grid).to("cuda:1")
+        self.assertEqual((on_0.weights.device.index, on_1.weights.device.index), (0, 1))
+        self.assertTrue(torch.equal(on_0.weights.cpu(), on_1.weights.cpu()))
+        # moving between devices lands on the copy already there
+        self.assertIs(on_0.to("cuda:1").weights, on_1.weights)
