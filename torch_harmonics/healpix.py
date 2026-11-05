@@ -40,10 +40,10 @@ no pixel carries more of the sphere than any other, so a per-pixel loss needs no
 area weighting and the poles are not oversampled the way they are on an
 equiangular grid.
 
-The isolatitude property is what makes it expressible here at all. Everything in
-this library that is not a spherical harmonic transform -- the DISCO convolutions,
-neighborhood attention, the quadrature -- needs only that the points be organized
-into rings of constant colatitude, which is exactly what
+The isolatitude property is what makes it expressible here at all. The DISCO
+convolutions, neighborhood attention, the quadrature and the spherical harmonic
+transforms need only that the points be organized into rings of constant
+colatitude, which is exactly what
 :attr:`~torch_harmonics.grid.GridS2.nlon_per_lat` and
 :attr:`~torch_harmonics.grid.GridS2.lon_offsets` describe. What HEALPix does not
 give is a *rectangular* ring structure: ring sizes grow from 4 at the pole to
