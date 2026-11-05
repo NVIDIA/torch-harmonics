@@ -29,9 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import gc
 import math
 import unittest
 import warnings
+import weakref
 
 import numpy as np
 import torch
@@ -41,7 +43,7 @@ from testutils import compare_tensors, range_atol, requires_torch_compile, set_s
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
-from torch_harmonics._ring_fft import RingFFT
+from torch_harmonics.fft import RingFFT
 from torch_harmonics.healpix import healpix_ring_weights
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
 from torch_harmonics.quadrature import precompute_latitudes
@@ -1298,6 +1300,61 @@ class TestHealpixVectorSHT(unittest.TestCase):
         (actual_grad,) = torch.autograd.grad(actual, x, grad_outputs=gradient)
         self.assertTrue(compare_tensors("compiled forward", actual, expected, atol=0.0, rtol=0.0, ulps=64))
         self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=0.0, rtol=0.0, ulps=64))
+
+
+_RING_FFT_TABLES = ("_ring_inverse", "_pixel_inverse", "_gather", "_gather_sign", "_fold_pos", "_fold_neg", "_imag_mask", "_phase_re", "_phase_im")
+
+
+@parameterized_class(("device"), _devices)
+class TestHealpixSharedTables(unittest.TestCase):
+    """HEALPix transforms share their tables like the regular ones: see torch_harmonics.cache."""
+
+    def _assert_ring_fft_shared(self, a, b):
+        for name in _RING_FFT_TABLES + tuple(f"_{kind}_{i}" for i in range(len(a._lengths)) for kind in ("pixels", "rings")):
+            self.assertIs(getattr(a, name), getattr(b, name), msg=name)
+
+    @parameterized.expand([["RealSHT", "weights"], ["InverseRealSHT", "pct"], ["RealVectorSHT", "weights"], ["InverseRealVectorSHT", "dpct"]])
+    def test_identical_transforms_share_their_tables(self, cls_name, name):
+        cls = getattr(th, cls_name)
+        g = th.HealpixGrid(nside=4)
+        a, b = cls(g).to(self.device), cls(g).to(self.device)
+        self.assertIs(getattr(a, name), getattr(b, name))
+        self._assert_ring_fft_shared(a.ring_fft, b.ring_fft)
+        self.assertEqual(getattr(a, name).device.type, torch.device(self.device).type)
+        # a different band is a different table
+        self.assertIsNot(getattr(cls(g, lmax=10, mmax=10).to(self.device), name), getattr(a, name))
+
+    def test_forward_and_inverse_share_the_ring_fft(self):
+        """The ring tables depend on the grid and mmax only, not on the direction."""
+        g = th.HealpixGrid(nside=4)
+        self._assert_ring_fft_shared(th.RealSHT(g).to(self.device).ring_fft, th.InverseRealSHT(g).to(self.device).ring_fft)
+
+    def test_the_jacobi_synthesis_shares_with_a_standalone_inverse(self):
+        g = th.HealpixGrid(nside=4)
+        sht = th.RealSHT(g, iter=3).to(self.device)
+        isht = th.InverseRealSHT(g).to(self.device)
+        self.assertIs(sht._synthesis.pct, isht.pct)
+        self._assert_ring_fft_shared(sht._synthesis.ring_fft, isht.ring_fft)
+        self._assert_ring_fft_shared(sht.ring_fft, isht.ring_fft)
+
+    def test_the_tables_are_freed_with_the_last_transform(self):
+        g = th.HealpixGrid(nside=3)
+        layers = [th.RealSHT(g).to(self.device) for _ in range(2)]
+        refs = [weakref.ref(layers[0].weights), weakref.ref(layers[0].ring_fft._gather)]
+        layers.clear()
+        gc.collect()
+        self.assertTrue(all(ref() is None for ref in refs), "a table outlived every transform using it")
+
+    def test_sharing_changes_no_result(self):
+        """Shared tables compute exactly what a transform with its own copies does."""
+        g = th.HealpixGrid(nside=4)
+        sht = th.RealSHT(g, iter=1).to(self.device)
+        unshared = th.RealSHT(g, iter=1).to(self.device)
+        unshared.weights = sht.weights.clone()
+        for name in _RING_FFT_TABLES:
+            setattr(unshared.ring_fft, name, getattr(sht.ring_fft, name).clone())
+        x = torch.randn(2, g.npoints, dtype=torch.float64, device=self.device)
+        self.assertTrue(torch.equal(sht.double()(x), unshared.double()(x)))
 
 
 class TestJacobiIteration(unittest.TestCase):

@@ -36,9 +36,8 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics._field_contract import check_coeffs, check_field
-from torch_harmonics._ring_fft import RingFFT
 from torch_harmonics.cache import SharedBufferMixin, shared_table
-from torch_harmonics.fft import irfft, rfft
+from torch_harmonics.fft import RingFFT, irfft, rfft
 from torch_harmonics.grid import EquiangularGrid, Fejer1Grid, GridS2, RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_grid
 from torch_harmonics.healpix import HealpixGrid, healpix_ring_weights
 from torch_harmonics.legendre import _mask_spectral_block, _precompute_dlegpoly, _precompute_legpoly, dlegpoly, legpoly
