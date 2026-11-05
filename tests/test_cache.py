@@ -39,7 +39,7 @@ from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, regular_grid_types
 
 import torch_harmonics as th
-from torch_harmonics.cache import is_shared, lru_cache, shared_table
+from torch_harmonics.cache import is_shared, lru_cache, move_shared, shared_table, store_shared
 from torch_harmonics.grid import as_grid
 
 _devices = [(torch.device("cpu"),)]
@@ -421,6 +421,63 @@ class TestSharedTable(unittest.TestCase):
         self.assertIs(double(4), a)
         self.assertEqual(len(self.builds), 2)
 
+    def test_a_rounded_copy_is_never_served_as_exact(self):
+        """The float32 copy of a table that went through half is not the float32 copy of the table."""
+        exact = self.table(7, 0.1)
+        rounded = move_shared(move_shared(exact, lambda t: t.half()), lambda t: t.float())
+        direct = move_shared(exact, lambda t: t.float())
+        self.assertIsNot(direct, rounded)
+        self.assertTrue(torch.equal(direct, exact.float()))
+        self.assertTrue(torch.equal(rounded, exact.half().float()))
+        # the same conversions share, and widening adds nothing to the history
+        self.assertIs(move_shared(move_shared(exact, lambda t: t.half()), lambda t: t.float()), rounded)
+        self.assertIs(move_shared(direct, lambda t: t.double()), move_shared(direct, lambda t: t.double()))
+        self.assertIsNot(move_shared(direct, lambda t: t.double()), exact)
+
+    def test_an_exact_copy_spares_the_rebuild(self):
+        """While copies with the exact values live, the value is put back together from them."""
+        zeros, ones, _ = self.pair(3)
+        wider = (move_shared(zeros, lambda t: t.double()), move_shared(ones, lambda t: t.double()))
+        del zeros, ones
+        gc.collect()
+        again = self.pair(3)
+        self.assertEqual(len(self.builds), 1)
+        self.assertEqual(again[2], "metadata")
+        self.assertEqual(again[0].dtype, torch.float32)
+        self.assertTrue(torch.equal(again[1], torch.ones(3)))
+        self.assertIs(move_shared(again[1], lambda t: t.double()), wider[1])
+
+    def test_a_rounded_copy_does_not_spare_the_rebuild(self):
+        source = self.table(6, 0.1)
+        rounded = move_shared(source, lambda t: t.float())
+        del source
+        gc.collect()
+        again = self.table(6, 0.1)
+        self.assertEqual(len(self.builds), 2)
+        self.assertTrue(torch.equal(again, 0.1 * torch.arange(6, dtype=torch.float64)))
+        self.assertIs(move_shared(again, lambda t: t.float()), rounded)
+
+    def test_values_come_back_from_the_meta_device(self):
+        """to_empty off the meta device rebuilds the table and replays its history."""
+        source = self.table(6, 0.1)
+        on_meta = move_shared(move_shared(source, lambda t: t.half()), lambda t: t.to("meta"))
+        del source
+        gc.collect()
+        back = move_shared(on_meta, lambda t: torch.empty_like(t, device="cpu"))
+        self.assertEqual(back.dtype, torch.float16)
+        self.assertTrue(torch.equal(back, (0.1 * torch.arange(6, dtype=torch.float64)).half()))
+        self.assertEqual(len(self.builds), 2)
+
+    def test_unbuildable_state_falls_back_to_the_conversion(self):
+        """State stored without a builder leaves the meta device as an unshared buffer would."""
+        state = store_shared(("test-state", id(self)), torch.ones(3))
+        on_meta = move_shared(state, lambda t: t.to("meta"))
+        del state
+        gc.collect()
+        back = move_shared(on_meta, lambda t: torch.empty_like(t, device="cpu"))
+        self.assertEqual((back.device.type, back.shape), ("cpu", (3,)))
+        self.assertFalse(is_shared(back))
+
 
 def _sht_pairs(device):
     """Two identical instances of each SHT, and one that differs only in lmax."""
@@ -474,6 +531,36 @@ class TestSharedSHTBuffers(unittest.TestCase):
                     convert(b)
                     self.assertIs(getattr(a, name), getattr(b, name))
                 self.assertEqual(getattr(a, name).dtype, torch.float64)
+
+    def test_a_lower_precision_copy_stays_with_its_layer(self):
+        """A layer rounded through half never hands its rounded table to a layer converted directly."""
+        for cls, name, a, _, _ in _sht_pairs(self.device):
+            with self.subTest(cls=cls.__name__):
+                rounded = deepcopy(a).half().float()
+                direct = deepcopy(a).float()
+                self.assertIsNot(getattr(direct, name), getattr(rounded, name))
+                self.assertTrue(torch.equal(getattr(direct, name), getattr(a, name).float()))
+                self.assertTrue(torch.equal(getattr(rounded, name), getattr(a, name).half().float()))
+
+    def test_a_transform_returns_from_the_meta_device(self):
+        """to_empty restores the table, which as a non-persistent buffer no state dict would."""
+        grid = as_grid("lobatto", nlat=9, nlon=18)
+        for cls, name in ((th.RealSHT, "weights"), (th.InverseRealSHT, "pct"), (th.RealVectorSHT, "weights"), (th.InverseRealVectorSHT, "dpct")):
+            with self.subTest(cls=cls.__name__):
+                layer = cls(grid).to("meta")
+                gc.collect()
+                layer.to_empty(device=self.device)
+                self.assertEqual(getattr(layer, name).device.type, torch.device(self.device).type)
+                self.assertTrue(torch.equal(getattr(layer, name).cpu(), getattr(cls(grid), name)))
+
+    def test_a_new_transform_reuses_a_live_device_copy(self):
+        """Constructed while an identical transform lives on the device, a transform shares its table there."""
+        for cls, name, a, _, _ in _sht_pairs(self.device):
+            with self.subTest(cls=cls.__name__):
+                gc.collect()
+                c = cls(a.grid)
+                self.assertTrue(torch.equal(getattr(c, name), getattr(a, name).cpu()))
+                self.assertIs(getattr(c.to(self.device), name), getattr(a, name))
 
     def test_a_deep_copy_shares_the_table(self):
         for cls, name, a, _, _ in _sht_pairs(self.device):

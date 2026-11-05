@@ -132,6 +132,30 @@ def lru_cache(maxsize=20, typed=False, copy=False):
 
 _MISSING = object()
 
+#: a member's rounding history: the dtypes its values were narrowed to, in order, on the way
+#: from the table as built. Empty for a member holding the exact values
+History = Tuple[torch.dtype, ...]
+
+
+def _kind(dtype: torch.dtype) -> int:
+    if dtype == torch.bool:
+        return 0
+    if dtype.is_complex:
+        return 3
+    if dtype.is_floating_point:
+        return 2
+    return 1
+
+
+def _lossless(source: torch.dtype, target: torch.dtype) -> bool:
+    """Whether every value of dtype ``source`` is exactly representable in dtype ``target``."""
+    if source == target:
+        return True
+    if torch.promote_types(source, target) != target:
+        return False
+    # promotion alone would call int64 -> float32 safe; across kinds only widening is
+    return _kind(source) == _kind(target) or _kind(source) == 0 or (_kind(source) == 2 and _kind(target) == 3)
+
 
 class _Strong:
     """A non-tensor leaf of a shared value, held strongly; called like a weakref."""
@@ -145,6 +169,68 @@ class _Strong:
         return self.value
 
 
+class _Record:
+    """
+    How the value under one key was built: the builder, the tree structure and the non-tensor leaves.
+
+    Outlives the entry, which goes as soon as any of its tensors dies: every family of the
+    value holds its record, so a value can be put back together, or built again, while any
+    copy of any of its tensors is in use.
+    """
+
+    __slots__ = ("key", "build", "spec", "strong", "families", "__weakref__")
+
+    def __init__(self, key: Hashable, build: Optional[Callable[[], Any]], spec, strong: Dict[int, Any]):
+        self.key = key
+        self.build = build
+        self.spec = spec
+        self.strong = strong
+        # leaf index -> weakref to its family; the families hold the record, not the reverse
+        self.families: Dict[int, weakref.ref] = {}
+
+    def family(self, index: int) -> Optional["_Family"]:
+        ref = self.families.get(index)
+        return None if ref is None else ref()
+
+
+class _Family:
+    """
+    One tensor of a shared value and all its copies, keyed by ``(device, dtype, history)``.
+
+    Alive while any member is: the registry holds a family only through its members' entries.
+    """
+
+    __slots__ = ("record", "index", "root_device", "root_dtype", "members", "__weakref__")
+
+    def __init__(self, record: _Record, index: int, root: torch.Tensor):
+        self.record = record
+        self.index = index
+        # where and in what dtype the builder produces this tensor
+        self.root_device = root.device
+        self.root_dtype = root.dtype
+        # (device, dtype, history) -> (weakref, token)
+        self.members: Dict[Tuple[torch.device, torch.dtype, History], Tuple[weakref.ref, object]] = {}
+
+    def member(self, device: torch.device, dtype: torch.dtype, history: History) -> Optional[torch.Tensor]:
+        entry = self.members.get((device, dtype, history))
+        return None if entry is None else entry[0]()
+
+    def live_members(self):
+        """``(history, tensor)`` of every live member."""
+        for (_, _, history), (ref, _) in list(self.members.items()):
+            tensor = ref()
+            if tensor is not None:
+                yield history, tensor
+
+
+def _replay(source: torch.Tensor, done: int, device: torch.device, dtype: torch.dtype, history: History) -> torch.Tensor:
+    """``source``, which went through ``history[:done]``, taken through the rest of ``history`` to ``device`` in ``dtype``."""
+    out = source
+    for narrowed in history[done:]:
+        out = out.to(dtype=narrowed)
+    return out.to(device=device, dtype=dtype)
+
+
 class TableRegistry:
     """
     Process-wide, weak-valued store of precomputed tables.
@@ -155,10 +241,15 @@ class TableRegistry:
     returns the complete value as it was stored or misses.
 
     Every tensor the registry hands out belongs to a *family*: the tensor as first built,
-    and the copies of it on other devices or in other dtypes, at most one per
-    ``(device, dtype)``. :meth:`variant` returns the family's copy for a target, creating it
-    from the tensor at hand on a miss, which is what lets layers moved with ``.to()`` keep
-    sharing.
+    and its copies on other devices and in other dtypes. A member is identified by its
+    device, its dtype and its *history*, the dtypes its values were narrowed to on the way
+    from the table as built, so a copy that went through half precision is never handed to
+    a layer that asked for a float32 copy of the exact values. :meth:`resolve` returns the
+    family's member for a target, creating it on a miss from a live member that holds the
+    values it needs, or else by building the table again. That is also how a value is put
+    back together after the tensors first built have died: a layer constructed while
+    identical layers live on another device gets its table from their copy, not by
+    building it again.
 
     Not meant to be used directly: :func:`shared_table` keys builders by their arguments,
     and :class:`SharedBufferMixin` and the backend selection in ``torch_harmonics._backend``
@@ -166,14 +257,14 @@ class TableRegistry:
     """
 
     def __init__(self):
-        # builds are serialized, so two threads asking for the same table build it once;
-        # re-entrant, since a builder may call other shared builders
-        self._build_lock = threading.RLock()
+        # builds and the creation of members are serialized, so two threads asking for the
+        # same table build it once; re-entrant, since a builder may call other shared builders
+        self._lock = threading.RLock()
         self._entries: Dict[Hashable, Tuple[Any, list, object]] = {}
-        # id(tensor) -> (weakref, family, token); ids are recycled, so a hit is confirmed by the weakref
-        self._families: Dict[int, Tuple[weakref.ref, Hashable, object]] = {}
-        # (family, device, dtype) -> (weakref, token)
-        self._variants: Dict[Tuple[Hashable, torch.device, torch.dtype], Tuple[weakref.ref, object]] = {}
+        # key -> record, for as long as some family of the key is alive
+        self._records: "weakref.WeakValueDictionary[Hashable, _Record]" = weakref.WeakValueDictionary()
+        # id(tensor) -> (weakref, family, history, token); ids are recycled, so a hit is confirmed by the weakref
+        self._members: Dict[int, Tuple[weakref.ref, _Family, History, object]] = {}
 
     # -- entries -------------------------------------------------------------------------
 
@@ -191,30 +282,74 @@ class TableRegistry:
             leaves.append(value)
         return tree_unflatten(leaves, spec)
 
-    def store(self, key: Hashable, value: Any) -> Any:
-        """Store ``value`` under ``key``, replacing any entry, and return it."""
+    def store(self, key: Hashable, value: Any, build: Optional[Callable[[], Any]] = None) -> Any:
+        """
+        Store ``value`` under ``key``, replacing any entry, and return it.
+
+        ``build`` rebuilds the value; without it a family of the value can only be served
+        from its live members.
+        """
         leaves, spec = tree_flatten(value)
-        token = object()
-        refs = []
-        for index, leaf in enumerate(leaves):
-            if isinstance(leaf, torch.Tensor):
-                refs.append(weakref.ref(leaf, _drop_callback(self._entries, key, token)))
-                self._adopt(leaf, (key, index))
-            else:
-                refs.append(_Strong(leaf))
-        self._entries[key] = (spec, refs, token)
+        with self._lock:
+            record = self._records.get(key)
+            if record is None or record.spec != spec:
+                strong = {index: leaf for index, leaf in enumerate(leaves) if not isinstance(leaf, torch.Tensor)}
+                record = _Record(key, build, spec, strong)
+                self._records[key] = record
+            elif build is not None:
+                record.build = build
+            token = object()
+            refs = []
+            for index, leaf in enumerate(leaves):
+                if isinstance(leaf, torch.Tensor):
+                    refs.append(weakref.ref(leaf, _drop_callback(self._entries, key, token)))
+                    if self.membership(leaf) is None:
+                        family = record.family(index)
+                        if family is None:
+                            family = _Family(record, index, leaf)
+                            record.families[index] = weakref.ref(family)
+                        # stored as built, or put back together from exact copies: no history
+                        self._adopt(leaf, family, ())
+                else:
+                    refs.append(_Strong(leaf))
+            self._entries[key] = (spec, refs, token)
         return value
 
     def get_or_build(self, key: Hashable, build: Callable[[], Any]) -> Any:
-        """The value under ``key``, built and stored on a miss."""
+        """
+        The value under ``key``, built and stored on a miss.
+
+        A miss is first answered from the families of an earlier value under ``key``: if a
+        copy with the exact values of each of its tensors is alive anywhere, the value is put
+        back together from those, on the device and in the dtype the builder produces.
+        """
         value = self.lookup(key)
         if value is not _MISSING:
             return value
-        with self._build_lock:
+        with self._lock:
             value = self.lookup(key)
             if value is _MISSING:
-                value = self.store(key, build())
+                value = self._reassemble(key)
+            if value is _MISSING:
+                value = build()
+            value = self.store(key, value, build)
         return value
+
+    def _reassemble(self, key: Hashable) -> Any:
+        record = self._records.get(key)
+        if record is None:
+            return _MISSING
+        leaves = []
+        for index in range(record.spec.num_leaves):
+            if index in record.strong:
+                leaves.append(record.strong[index])
+                continue
+            family = record.family(index)
+            tensor = None if family is None else self._from_members(family, family.root_device, family.root_dtype, ())
+            if tensor is None:
+                return _MISSING
+            leaves.append(tensor)
+        return tree_unflatten(leaves, record.spec)
 
     def __len__(self) -> int:
         """Number of live entries."""
@@ -222,40 +357,83 @@ class TableRegistry:
 
     # -- families ------------------------------------------------------------------------
 
-    def _adopt(self, tensor: torch.Tensor, family: Hashable) -> None:
-        """Make ``tensor`` a member of ``family``, unless it already belongs to one."""
-        if self.family_of(tensor) is not None:
+    def _adopt(self, tensor: torch.Tensor, family: _Family, history: History) -> None:
+        """Make ``tensor`` the member of ``family`` with ``history``, unless it already belongs to one."""
+        if self.membership(tensor) is not None:
             return
         token = object()
         tid = id(tensor)
-        self._families[tid] = (weakref.ref(tensor, _drop_callback(self._families, tid, token)), family, token)
-        vkey = (family, tensor.device, tensor.dtype)
-        self._variants[vkey] = (weakref.ref(tensor, _drop_callback(self._variants, vkey, token)), token)
+        self._members[tid] = (weakref.ref(tensor, _drop_callback(self._members, tid, token)), family, history, token)
+        mkey = (tensor.device, tensor.dtype, history)
+        family.members[mkey] = (weakref.ref(tensor, _drop_callback(family.members, mkey, token)), token)
 
-    def family_of(self, tensor: torch.Tensor) -> Optional[Hashable]:
-        """The family ``tensor`` belongs to, or ``None`` if the registry did not hand it out."""
-        entry = self._families.get(id(tensor))
+    def membership(self, tensor: torch.Tensor) -> Optional[Tuple[_Family, History]]:
+        """The family ``tensor`` belongs to and its history, or ``None`` if the registry did not hand it out."""
+        entry = self._members.get(id(tensor))
         if entry is None or entry[0]() is not tensor:
             return None
-        return entry[1]
+        return entry[1], entry[2]
 
-    def variant(self, tensor: torch.Tensor, device: torch.device, dtype: torch.dtype, convert: Callable[[], torch.Tensor]) -> torch.Tensor:
+    def _from_members(self, family: _Family, device: torch.device, dtype: torch.dtype, history: History, held: Optional[torch.Tensor] = None) -> Optional[torch.Tensor]:
         """
-        The member of ``tensor``'s family on ``device`` in ``dtype``.
+        The member for a target, made from a live member if one holds the values it needs.
 
-        Created by ``convert`` on a miss and adopted into the family. A tensor the registry
-        did not hand out is simply converted.
+        A source must hold data -- not be on the meta device -- and its history must be a
+        prefix of the target's: the rest of the history is replayed on it before the move.
+        Of several, one already on ``device`` and with the longest history is preferred.
         """
-        family = self.family_of(tensor)
-        if family is None:
-            return convert()
-        entry = self._variants.get((family, device, dtype))
-        existing = None if entry is None else entry[0]()
+        existing = family.member(device, dtype, history)
         if existing is not None:
             return existing
-        converted = convert()
-        self._adopt(converted, family)
-        return converted
+        candidates = list(family.live_members())
+        if held is not None:
+            membership = self.membership(held)
+            if membership is not None:
+                candidates.append((membership[1], held))
+        best = None
+        for source_history, source in candidates:
+            if source.is_meta or source_history != history[: len(source_history)]:
+                continue
+            rank = (source.device == device, len(source_history))
+            if best is None or rank > best[0]:
+                best = (rank, source_history, source)
+        if best is None:
+            return None
+        _, source_history, source = best
+        out = _replay(source, len(source_history), device, dtype, history)
+        self._adopt(out, family, history)
+        return out
+
+    def resolve(self, family: _Family, device: torch.device, dtype: torch.dtype, history: History, held: torch.Tensor, fallback: Callable[[], torch.Tensor]) -> torch.Tensor:
+        """
+        The member of ``family`` on ``device`` in ``dtype`` with ``history``.
+
+        Made on a miss from a live member that holds the values it needs, else from the table
+        built again; ``held`` is the member asking. A family that cannot be built again (state
+        stored without a builder) and has no such member is served by ``fallback``, whose
+        result does not join the family.
+        """
+        with self._lock:
+            existing = family.member(device, dtype, history)
+            if existing is not None:
+                return existing
+            if device.type == "meta":
+                # no values needed: any member gives the shape
+                out = held.to(device=device, dtype=dtype)
+                self._adopt(out, family, history)
+                return out
+            out = self._from_members(family, device, dtype, history, held)
+            if out is not None:
+                return out
+            record = family.record
+            if record.build is None:
+                return fallback()
+            value = self.get_or_build(record.key, record.build)
+            root = tree_flatten(value)[0][family.index]
+            if self.membership(root)[0] is not family:
+                # a rebuild after the record was replaced; serve the copy, as unshared
+                return _replay(root, 0, device, dtype, history)
+            return self._from_members(family, device, dtype, history, root)
 
 
 def _drop_callback(table: dict, key: Hashable, token: object):
@@ -352,7 +530,7 @@ def store_shared(key: Hashable, value: Any) -> Any:
 
 def is_shared(tensor: torch.Tensor) -> bool:
     """Whether ``tensor`` was handed out by the shared registry."""
-    return _REGISTRY.family_of(tensor) is not None
+    return _REGISTRY.membership(tensor) is not None
 
 
 def _conversion_target(fn: Callable, tensor: torch.Tensor) -> Tuple[torch.device, torch.dtype]:
@@ -379,12 +557,29 @@ def move_shared(tensor: torch.Tensor, fn: Callable) -> torch.Tensor:
     ``fn(tensor)`` for a shared tensor, as the family's copy on the target.
 
     Only the device and dtype ``fn`` produces are honoured; a conversion that changes
-    neither returns ``tensor`` itself.
+    neither returns ``tensor`` itself. The copy holds the values ``tensor`` would convert
+    to: a narrowing conversion adds to the history it carries, so the float32 copy of a
+    table that went through half precision is not the float32 copy of the exact table.
+    It need not be made from ``tensor`` itself, though, which is what lets a table on the
+    meta device come back, with its values, under ``to_empty``.
     """
     device, dtype = _conversion_target(fn, tensor)
     if device == tensor.device and dtype == tensor.dtype:
         return tensor
-    return _REGISTRY.variant(tensor, device, dtype, lambda: tensor.to(device=device, dtype=dtype))
+
+    def fallback():
+        # what an unshared buffer would get; a meta tensor has no values to convert
+        if tensor.is_meta and device.type != "meta":
+            return fn(tensor).to(dtype=dtype)
+        return tensor.to(device=device, dtype=dtype)
+
+    membership = _REGISTRY.membership(tensor)
+    if membership is None:
+        return fallback()
+    family, history = membership
+    if not _lossless(tensor.dtype, dtype):
+        history = history + (dtype,)
+    return _REGISTRY.resolve(family, device, dtype, history, tensor, fallback)
 
 
 def _deepcopy_sharing(module: torch.nn.Module, memo: dict, shared: list) -> torch.nn.Module:
