@@ -754,6 +754,16 @@ class TestSharedBackendState(unittest.TestCase):
         self.assertIsNone(layer_ref(), "a deleted layer is still referenced")
         self.assertTrue(all(ref() is None for ref in refs), "backend state outlived every layer using it")
 
+    def test_layers_share_state_across_filter_basis_instances(self):
+        """The basis is part of the key by value: a rebuilt basis object still finds the shared state."""
+        from torch_harmonics.filter_basis import get_filter_basis
+
+        a = _disco("regular").to(self.device)
+        get_filter_basis.cache_clear()
+        b = _disco("regular").to(self.device)
+        self.assertIsNot(a.filter_basis, b.filter_basis)
+        self._assert_shared(a, b)
+
     def test_attention_layers_of_different_dtype_do_not_share(self):
         """The reference prepares float64 weights for a float64 layer; the dtype is part of the key."""
         a = _attention("regular").to(self.device)

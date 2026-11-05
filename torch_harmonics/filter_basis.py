@@ -89,6 +89,25 @@ class FilterBasis(metaclass=abc.ABCMeta):
     def extra_repr(self):
         return f"kernel_shape={self.kernel_shape}"
 
+    def _identity(self) -> tuple:
+        """
+        Everything that determines the basis functions, as a hashable tuple.
+
+        Equality and hashing go by it, so two bases built alike are interchangeable -- in
+        particular as part of the key under which DISCO layers share psi. A subclass whose
+        constructor takes more than the kernel shape extends it.
+        """
+        shape = self.kernel_shape
+        return (type(self), tuple(shape) if isinstance(shape, (list, tuple)) else shape)
+
+    def __eq__(self, other):
+        if not isinstance(other, FilterBasis):
+            return NotImplemented
+        return self._identity() == other._identity()
+
+    def __hash__(self):
+        return hash(self._identity())
+
     @property
     @abc.abstractmethod
     def kernel_size(self):
@@ -355,8 +374,12 @@ class HarmonicFilterBasis(FilterBasis):
 
         super().__init__(kernel_shape=kernel_shape)
 
+        self.normalize = normalize
         if normalize:
             self._l2_norms = self.compute_l2_norms()
+
+    def _identity(self) -> tuple:
+        return super()._identity() + (self.normalize,)
 
     @property
     def kernel_size(self):

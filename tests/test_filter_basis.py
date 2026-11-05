@@ -35,7 +35,13 @@ import unittest
 import torch
 from parameterized import parameterized
 
-from torch_harmonics.filter_basis import get_filter_basis
+from torch_harmonics.filter_basis import (
+    FourierBesselFilterBasis,
+    HarmonicFilterBasis,
+    PiecewiseLinearFilterBasis,
+    ZernikeFilterBasis,
+    get_filter_basis,
+)
 
 
 # quadrature grid on the disk for integration tests
@@ -349,3 +355,42 @@ class TestFilterBasis(unittest.TestCase):
         """isotropic_mask should have exactly kernel_size entries."""
         basis = get_filter_basis(kernel_shape=kernel_shape, basis_type=basis_type)
         self.assertEqual(len(basis.isotropic_mask), basis.kernel_size)
+
+
+class TestFilterBasisEquality(unittest.TestCase):
+    """Bases compare and hash by what defines them, not by identity: psi is shared by that key."""
+
+    @parameterized.expand(
+        [
+            [PiecewiseLinearFilterBasis, (3, 2)],
+            [HarmonicFilterBasis, (2, 3)],
+            [ZernikeFilterBasis, 4],
+            [FourierBesselFilterBasis, 5],
+        ]
+    )
+    def test_bases_built_alike_are_equal(self, cls, kernel_shape):
+        a, b = cls(kernel_shape=kernel_shape), cls(kernel_shape=kernel_shape)
+        self.assertIsNot(a, b)
+        self.assertEqual(a, b)
+        self.assertEqual(hash(a), hash(b))
+        self.assertEqual(len({a, b}), 1)
+
+    def test_equivalent_kernel_shapes_are_equal(self):
+        """Spellings each basis normalizes to the same shape give the same basis."""
+        self.assertEqual(PiecewiseLinearFilterBasis(3), PiecewiseLinearFilterBasis((3, 1)))
+        self.assertEqual(HarmonicFilterBasis(3), HarmonicFilterBasis([3, 3]))
+        self.assertEqual(ZernikeFilterBasis(4), ZernikeFilterBasis((4,)))
+
+    def test_bases_that_differ_are_not_equal(self):
+        self.assertNotEqual(PiecewiseLinearFilterBasis((3, 2)), PiecewiseLinearFilterBasis((3, 3)))
+        # the same kernel shape, but a different family of functions
+        self.assertNotEqual(ZernikeFilterBasis(4), FourierBesselFilterBasis(4))
+        self.assertNotEqual(PiecewiseLinearFilterBasis(3), "piecewise linear")
+
+    def test_normalization_is_part_of_the_basis(self):
+        """'morlet' is the unnormalized harmonic basis: other values, so not equal."""
+        self.assertNotEqual(HarmonicFilterBasis(3), HarmonicFilterBasis(3, normalize=False))
+        with self.assertWarns(DeprecationWarning):
+            morlet = get_filter_basis(kernel_shape=(3, 3), basis_type="morlet")
+        self.assertNotEqual(get_filter_basis(kernel_shape=(3, 3), basis_type="harmonic"), morlet)
+        self.assertEqual(morlet, HarmonicFilterBasis(3, normalize=False))
