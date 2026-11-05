@@ -34,7 +34,7 @@ from typing import Optional
 
 import torch
 
-from torch_harmonics.cache import lru_cache
+from torch_harmonics.cache import shared_table
 from torch_harmonics.grid import GridS2, SpectralGrid
 
 
@@ -189,7 +189,7 @@ def legpoly(
     return out
 
 
-@lru_cache(typed=True, copy=True)
+@shared_table
 @torch.no_grad()
 def _precompute_legpoly(
     mmax: int,
@@ -215,6 +215,10 @@ def _precompute_legpoly(
     A :class:`~torch_harmonics.grid.GridS2` hashes on its type and resolution, so layers that
     share a grid share the table. Use :func:`legpoly` directly to evaluate at nodes that
     are not a grid's colatitudes.
+
+    The table is shared with every caller passing the same arguments while any of them
+    holds it (see :func:`~torch_harmonics.cache.shared_table`), so it must not be modified
+    in place.
 
     Parameters
     ----------
@@ -374,7 +378,7 @@ def dlegpoly(
     return dpct
 
 
-@lru_cache(typed=True, copy=True)
+@shared_table
 @torch.no_grad()
 def _precompute_dlegpoly(
     mmax: int,

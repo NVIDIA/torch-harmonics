@@ -254,7 +254,3 @@ class TestDistributedFieldContract(unittest.TestCase):
         # exactly one channel per rank is enough, even though the split is then as thin as it gets
         channels[name] = azimuth
         cls(_GRID, _GRID, kernel_shape=3, **channels)
-
-
-if __name__ == "__main__":
-    unittest.main()

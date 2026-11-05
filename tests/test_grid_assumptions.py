@@ -2047,7 +2047,3 @@ class TestHealpixGrid(unittest.TestCase):
         for name in ("lat_shapes", "lon_shapes"):
             with self.subTest(attribute=name):
                 self.assertFalse(hasattr(g, name))
-
-
-if __name__ == "__main__":
-    unittest.main()

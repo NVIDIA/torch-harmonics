@@ -393,7 +393,3 @@ class TestLayersOnProductGrids(unittest.TestCase):
     def test_repr_names_the_radial_grid(self):
         layer = th.RealSHT(SphericalProductGrid(_REGULAR, _RADIAL))
         self.assertIn(repr(_RADIAL), repr(layer))
-
-
-if __name__ == "__main__":
-    unittest.main()

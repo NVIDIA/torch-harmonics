@@ -35,7 +35,7 @@ import unittest
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, disable_tf32
+from testutils import compare_tensors
 
 import torch_harmonics as th
 from torch_harmonics.legendre import _precompute_dlegpoly, _precompute_legpoly
@@ -51,7 +51,6 @@ class TestLegendrePolynomials(unittest.TestCase):
     """Test the associated Legendre polynomials (CPU/CUDA if available)."""
 
     def setUp(self):
-        disable_tf32()
         self.cml = lambda m, l: math.sqrt((2 * l + 1) / 4 / math.pi) * math.sqrt(math.factorial(l - m) / math.factorial(l + m))
         self.pml = dict()
 
@@ -332,7 +331,3 @@ class TestSpectralLegendreMask(unittest.TestCase):
         self.assertTrue(torch.equal(masked[0, 2], torch.zeros_like(masked[0, 2])))  # (41, 84): l-m=43
         self.assertTrue(torch.equal(masked[1, 2], unmasked[1, 2]))  # (42, 84): l-m=42
         self.assertTrue((unmasked[0, 2].abs() > 0).any())
-
-
-if __name__ == "__main__":
-    unittest.main()

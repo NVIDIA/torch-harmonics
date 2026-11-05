@@ -565,7 +565,3 @@ class TestTruncationOnHealpix(unittest.TestCase):
         g = HealpixGrid(nside=4)
         with self.assertWarnsRegex(UserWarning, "max_recoverable_degree=12"):
             th.RealSHT(g, lmax=13, mmax=12)
-
-
-if __name__ == "__main__":
-    unittest.main()

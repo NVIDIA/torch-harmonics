@@ -29,26 +29,37 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import gc
+import threading
+import time
 import unittest
+import weakref
 from copy import deepcopy
 
 import torch
+from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, regular_grid_types
 
-from torch_harmonics.cache import lru_cache
+import torch_harmonics as th
+from torch_harmonics.cache import is_shared, lru_cache, move_shared, shared_table, shared_value, store_shared
 from torch_harmonics.grid import as_grid
+
+_devices = [(torch.device("cpu"),)]
+if torch.cuda.is_available():
+    _devices.append((torch.device("cuda"),))
 
 
 class TestCacheConsistency(unittest.TestCase):
     def test_consistency(self, verbose=False):
+        """Equal arguments share one table while it is held: a second build would be a second copy."""
         from torch_harmonics.legendre import _precompute_legpoly
 
         with torch.no_grad():
             leg1 = _precompute_legpoly(10, 10, as_grid("legendre-gauss", nlat=10, nlon=20))
-            # perform in-place modification of leg1
-            leg1 *= -1.0
             leg2 = _precompute_legpoly(10, 10, as_grid("legendre-gauss", nlat=10, nlon=20))
-            self.assertFalse(torch.allclose(leg1, leg2))
+            self.assertIs(leg1, leg2)
+            # the keyword spelling of the same call is the same entry
+            self.assertIs(_precompute_legpoly(mmax=10, lmax=10, grid=as_grid("legendre-gauss", nlat=10, nlon=20)), leg1)
 
     def test_cache_tensor(self, verbose=False):
         from torch_harmonics.legendre import _precompute_legpoly
@@ -76,8 +87,14 @@ class TestCacheConsistency(unittest.TestCase):
         import torch_harmonics.legendre as legendre
 
         def count_builds(inner_name, call, repeats=5):
-            """Invocations of the uncached core while ``call`` runs ``repeats`` times."""
+            """
+            Invocations of the uncached core while ``call`` runs ``repeats`` times.
+
+            The results are held throughout, as the layers of a model hold their tables: a
+            shared table lives only as long as someone uses it.
+            """
             calls = []
+            held = []
             original = getattr(legendre, inner_name)
 
             def counting(*args, **kwargs):
@@ -87,7 +104,7 @@ class TestCacheConsistency(unittest.TestCase):
             setattr(legendre, inner_name, counting)
             try:
                 for _ in range(repeats):
-                    call()
+                    held.append(call())
             finally:
                 setattr(legendre, inner_name, original)
             return len(calls)
@@ -329,5 +346,570 @@ class TestGridDescriptorCaching(unittest.TestCase):
                 self.assertEqual(grid.max_latitude_spacing, grid.latitude_spacing.max().item())
 
 
-if __name__ == "__main__":
-    unittest.main()
+def _concurrently(work, nthreads=8):
+    """``work()`` in ``nthreads`` threads released at once; their results, re-raising any error."""
+    barrier = threading.Barrier(nthreads)
+    results, errors = [None] * nthreads, []
+
+    def run(index):
+        try:
+            barrier.wait()
+            results[index] = work()
+        except BaseException as error:  # noqa: B036 - re-raised in the main thread
+            errors.append(error)
+
+    threads = [threading.Thread(target=run, args=(index,)) for index in range(nthreads)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if errors:
+        raise errors[0]
+    return results
+
+
+class TestSharedTable(unittest.TestCase):
+    """The registry behind shared_table: one table per distinct arguments, alive while held."""
+
+    def setUp(self):
+        self.builds = []
+
+        @shared_table
+        def table(n, scale=1.0):
+            self.builds.append((n, scale))
+            return scale * torch.arange(n, dtype=torch.float64)
+
+        @shared_table
+        def pair(n):
+            self.builds.append(("pair", n))
+            return torch.zeros(n), torch.ones(n), "metadata"
+
+        self.table = table
+        self.pair = pair
+
+    def test_equal_arguments_share_one_table(self):
+        a = self.table(4)
+        self.assertIs(self.table(4), a)
+        self.assertIs(self.table(n=4, scale=1.0), a)
+        self.assertEqual(len(self.builds), 1)
+        self.assertTrue(is_shared(a))
+        self.assertFalse(is_shared(a.clone()))
+
+    def test_typed_arguments_do_not_collide(self):
+        """As with lru_cache(typed=True), 1 and 1.0 are different keys."""
+        a = self.table(4, 1.0)
+        b = self.table(4, 1)
+        self.assertIsNot(a, b)
+        self.assertEqual(len(self.builds), 2)
+
+    def test_a_released_table_is_freed_and_rebuilt(self):
+        a = self.table(5)
+        ref = weakref.ref(a)
+        del a
+        gc.collect()
+        self.assertIsNone(ref(), "the registry kept a table nobody holds")
+        self.table(5)
+        self.assertEqual(len(self.builds), 2)
+
+    def test_a_value_is_returned_whole_or_rebuilt(self):
+        """A nested value whose tensors have partly died is a miss, never half a value."""
+        zeros, ones, meta = self.pair(3)
+        self.assertEqual(meta, "metadata")
+        self.assertIs(self.pair(3)[0], zeros)
+        del ones
+        gc.collect()
+        rebuilt = self.pair(3)
+        self.assertIsNot(rebuilt[0], zeros)
+        self.assertEqual(len(self.builds), 2)
+
+    def test_unhashable_arguments_raise(self):
+        with self.assertRaises(TypeError):
+            self.table({})
+
+    def test_builders_of_the_same_name_never_share(self):
+        """Closures from one factory share a qualname but not their tables."""
+
+        def make(scale):
+            @shared_table
+            def scaled(n):
+                self.builds.append(("scaled", scale))
+                return scale * torch.ones(n, dtype=torch.float64)
+
+            return scaled
+
+        double, triple = make(2.0), make(3.0)
+        self.assertEqual(double.__qualname__, triple.__qualname__)
+        a, b = double(4), triple(4)
+        self.assertIsNot(a, b)
+        torch.testing.assert_close(b, torch.full((4,), 3.0, dtype=torch.float64), atol=0, rtol=0)
+        self.assertIs(double(4), a)
+        self.assertEqual(len(self.builds), 2)
+
+    def test_a_rounded_copy_is_never_served_as_exact(self):
+        """The float32 copy of a table that went through half is not the float32 copy of the table."""
+        exact = self.table(7, 0.1)
+        rounded = move_shared(move_shared(exact, lambda t: t.half()), lambda t: t.float())
+        direct = move_shared(exact, lambda t: t.float())
+        self.assertIsNot(direct, rounded)
+        self.assertTrue(torch.equal(direct, exact.float()))
+        self.assertTrue(torch.equal(rounded, exact.half().float()))
+        # the same conversions share, and widening adds nothing to the history
+        self.assertIs(move_shared(move_shared(exact, lambda t: t.half()), lambda t: t.float()), rounded)
+        self.assertIs(move_shared(direct, lambda t: t.double()), move_shared(direct, lambda t: t.double()))
+        self.assertIsNot(move_shared(direct, lambda t: t.double()), exact)
+
+    def test_an_exact_copy_spares_the_rebuild(self):
+        """While copies with the exact values live, the value is put back together from them."""
+        zeros, ones, _ = self.pair(3)
+        wider = (move_shared(zeros, lambda t: t.double()), move_shared(ones, lambda t: t.double()))
+        del zeros, ones
+        gc.collect()
+        again = self.pair(3)
+        self.assertEqual(len(self.builds), 1)
+        self.assertEqual(again[2], "metadata")
+        self.assertEqual(again[0].dtype, torch.float32)
+        self.assertTrue(torch.equal(again[1], torch.ones(3)))
+        self.assertIs(move_shared(again[1], lambda t: t.double()), wider[1])
+
+    def test_a_rounded_copy_does_not_spare_the_rebuild(self):
+        source = self.table(6, 0.1)
+        rounded = move_shared(source, lambda t: t.float())
+        del source
+        gc.collect()
+        again = self.table(6, 0.1)
+        self.assertEqual(len(self.builds), 2)
+        self.assertTrue(torch.equal(again, 0.1 * torch.arange(6, dtype=torch.float64)))
+        self.assertIs(move_shared(again, lambda t: t.float()), rounded)
+
+    def test_values_come_back_from_the_meta_device(self):
+        """to_empty off the meta device rebuilds the table and replays its history."""
+        source = self.table(6, 0.1)
+        on_meta = move_shared(move_shared(source, lambda t: t.half()), lambda t: t.to("meta"))
+        del source
+        gc.collect()
+        back = move_shared(on_meta, lambda t: torch.empty_like(t, device="cpu"))
+        self.assertEqual(back.dtype, torch.float16)
+        self.assertTrue(torch.equal(back, (0.1 * torch.arange(6, dtype=torch.float64)).half()))
+        self.assertEqual(len(self.builds), 2)
+
+    def test_concurrent_requests_build_once(self):
+        @shared_table
+        def slow(n):
+            self.builds.append(n)
+            time.sleep(0.05)
+            return torch.zeros(n)
+
+        results = _concurrently(lambda: slow(5))
+        self.assertEqual(len(self.builds), 1)
+        self.assertTrue(all(result is results[0] for result in results))
+
+    def test_concurrent_moves_make_one_copy(self):
+        exact = self.table(1000, 0.1)
+        results = _concurrently(lambda: move_shared(exact, lambda t: t.float()))
+        self.assertTrue(all(result is results[0] for result in results))
+        self.assertIs(move_shared(exact, lambda t: t.float()), results[0])
+
+    def test_concurrent_shared_values_build_once(self):
+        builds = []
+
+        def build():
+            builds.append(1)
+            time.sleep(0.05)
+            return torch.ones(3)
+
+        results = _concurrently(lambda: shared_value(("test-concurrent", id(self)), build))
+        self.assertEqual(len(builds), 1)
+        self.assertTrue(all(result is results[0] for result in results))
+
+    def test_a_declined_value_is_not_stored(self):
+        """None from a builder -- a backend declining -- is returned, and the next call builds again."""
+        builds = []
+
+        def decline():
+            builds.append(1)
+            return None
+
+        key = ("test-declined", id(self))
+        self.assertIsNone(shared_value(key, decline))
+        self.assertIsNone(shared_value(key, decline))
+        self.assertEqual(len(builds), 2)
+
+    def test_unbuildable_state_falls_back_to_the_conversion(self):
+        """State stored without a builder leaves the meta device as an unshared buffer would."""
+        state = store_shared(("test-state", id(self)), torch.ones(3))
+        on_meta = move_shared(state, lambda t: t.to("meta"))
+        del state
+        gc.collect()
+        back = move_shared(on_meta, lambda t: torch.empty_like(t, device="cpu"))
+        self.assertEqual((back.device.type, back.shape), ("cpu", (3,)))
+        self.assertFalse(is_shared(back))
+
+
+def _sht_pairs(device):
+    """Two identical instances of each SHT, and one that differs only in lmax."""
+    grid = as_grid("legendre-gauss", nlat=12, nlon=24)
+    for cls, name in ((th.RealSHT, "weights"), (th.InverseRealSHT, "pct"), (th.RealVectorSHT, "weights"), (th.InverseRealVectorSHT, "dpct")):
+        yield cls, name, cls(grid).to(device), cls(grid).to(device), cls(grid, lmax=8, mmax=8).to(device)
+
+
+@parameterized_class(("device"), _devices)
+class TestSharedSHTBuffers(unittest.TestCase):
+    """Identical SHTs hold one copy of their table, on every device and in every dtype."""
+
+    def test_identical_transforms_share_their_table(self):
+        for cls, name, a, b, other in _sht_pairs(self.device):
+            with self.subTest(cls=cls.__name__):
+                self.assertIs(getattr(a, name), getattr(b, name))
+                self.assertEqual(getattr(a, name).device.type, self.device.type)
+                self.assertIsNot(getattr(other, name), getattr(a, name))
+                self.assertNotIn(name, a.state_dict())
+
+    @parameterized.expand([["ortho"], ["schmidt"], ["unnorm"]])
+    def test_forward_and_inverse_never_share(self, norm):
+        """
+        The forward table folds in the quadrature weights and the inverse one does not, so
+        on the same grid and bounds they must stay distinct entries: the builders key on
+        their own names, and the Legendre tables on ``inverse``.
+        """
+        from torch_harmonics.legendre import _precompute_legpoly
+
+        grid = as_grid("legendre-gauss", nlat=10, nlon=20)
+        for forward_cls, inverse_cls in ((th.RealSHT, th.InverseRealSHT), (th.RealVectorSHT, th.InverseRealVectorSHT)):
+            with self.subTest(cls=forward_cls.__name__):
+                forward = forward_cls(grid, norm=norm).to(self.device)
+                inverse = inverse_cls(grid, norm=norm).to(self.device)
+                table = inverse.pct if inverse_cls is th.InverseRealSHT else inverse.dpct
+                # the inverse table, transposed back to (..., m, l, k), is not the forward one
+                self.assertFalse(torch.equal(forward.weights, table.transpose(-1, -2)))
+        # and the raw tables are kept apart by inverse=
+        self.assertIsNot(_precompute_legpoly(10, 10, grid, norm=norm, inverse=True), _precompute_legpoly(10, 10, grid, norm=norm, inverse=False))
+        # the forward table is the inverse-free table times the quadrature weights: exactly what
+        # an unshared computation gives
+        forward = th.RealSHT(grid, norm=norm)
+        expected = torch.einsum("mlk,k->mlk", _precompute_legpoly(10, 10, grid, norm=norm), 2.0 * torch.pi * grid.colat_weights)
+        self.assertTrue(torch.equal(forward.weights, expected))
+
+    def test_sharing_survives_conversions(self):
+        for cls, name, a, b, _ in _sht_pairs("cpu"):
+            with self.subTest(cls=cls.__name__):
+                for convert in (lambda m: m.to(self.device), lambda m: m.float(), lambda m: m.double(), lambda m: m.cpu()):
+                    convert(a)
+                    convert(b)
+                    self.assertIs(getattr(a, name), getattr(b, name))
+                self.assertEqual(getattr(a, name).dtype, torch.float64)
+
+    def test_a_lower_precision_copy_stays_with_its_layer(self):
+        """A layer rounded through half never hands its rounded table to a layer converted directly."""
+        for cls, name, a, _, _ in _sht_pairs(self.device):
+            with self.subTest(cls=cls.__name__):
+                rounded = deepcopy(a).half().float()
+                direct = deepcopy(a).float()
+                self.assertIsNot(getattr(direct, name), getattr(rounded, name))
+                self.assertTrue(torch.equal(getattr(direct, name), getattr(a, name).float()))
+                self.assertTrue(torch.equal(getattr(rounded, name), getattr(a, name).half().float()))
+
+    def test_a_transform_returns_from_the_meta_device(self):
+        """to_empty restores the table, which as a non-persistent buffer no state dict would."""
+        grid = as_grid("lobatto", nlat=9, nlon=18)
+        for cls, name in ((th.RealSHT, "weights"), (th.InverseRealSHT, "pct"), (th.RealVectorSHT, "weights"), (th.InverseRealVectorSHT, "dpct")):
+            with self.subTest(cls=cls.__name__):
+                layer = cls(grid).to("meta")
+                gc.collect()
+                layer.to_empty(device=self.device)
+                self.assertEqual(getattr(layer, name).device.type, torch.device(self.device).type)
+                self.assertTrue(torch.equal(getattr(layer, name).cpu(), getattr(cls(grid), name)))
+
+    def test_a_new_transform_reuses_a_live_device_copy(self):
+        """Constructed while an identical transform lives on the device, a transform shares its table there."""
+        for cls, name, a, _, _ in _sht_pairs(self.device):
+            with self.subTest(cls=cls.__name__):
+                gc.collect()
+                c = cls(a.grid)
+                self.assertTrue(torch.equal(getattr(c, name), getattr(a, name).cpu()))
+                self.assertIs(getattr(c.to(self.device), name), getattr(a, name))
+
+    def test_a_deep_copy_shares_the_table(self):
+        for cls, name, a, _, _ in _sht_pairs(self.device):
+            with self.subTest(cls=cls.__name__):
+                self.assertIs(getattr(deepcopy(a), name), getattr(a, name))
+
+    def test_the_table_is_freed_with_the_last_transform(self):
+        grid = as_grid("lobatto", nlat=11, nlon=22)
+        layers = [th.RealSHT(grid).to(self.device) for _ in range(3)]
+        ref = weakref.ref(layers[0].weights)
+        layers.pop()
+        layers.pop()
+        gc.collect()
+        self.assertIsNotNone(ref())
+        layers.clear()
+        gc.collect()
+        self.assertIsNone(ref(), "the table outlived every transform using it")
+
+    def test_results_are_unchanged(self):
+        """Sharing is storage only: a transform computes exactly what an unshared one would."""
+        grid = as_grid("equiangular", nlat=13, nlon=26)
+        a = th.RealSHT(grid).to(self.device)
+        b = th.RealSHT(grid).to(self.device)
+        unshared = deepcopy(a)
+        unshared.weights = a.weights.clone()
+        x = torch.randn(2, 13, 26, device=self.device)
+        self.assertTrue(torch.equal(a(x), unshared(x)))
+        self.assertTrue(torch.equal(a(x), b(x)))
+
+
+def _disco(kind, **kwargs):
+    if kind == "regular":
+        g_in, g_out = as_grid("equiangular", nlat=16, nlon=32), as_grid("equiangular", nlat=8, nlon=16)
+    else:
+        g_in, g_out = th.HealpixGrid(nside=4), th.HealpixGrid(nside=2)
+    return th.DiscreteContinuousConvS2(g_in, g_out, 4, 6, kernel_shape=3, **kwargs)
+
+
+def _disco_transpose(kind, **kwargs):
+    if kind == "regular":
+        g_in, g_out = as_grid("equiangular", nlat=8, nlon=16), as_grid("equiangular", nlat=16, nlon=32)
+    else:
+        g_in, g_out = th.HealpixGrid(nside=2), th.HealpixGrid(nside=4)
+    return th.DiscreteContinuousConvTransposeS2(g_in, g_out, 4, 6, kernel_shape=3, **kwargs)
+
+
+def _attention(kind, **kwargs):
+    if kind == "regular":
+        g_in, g_out = as_grid("equiangular", nlat=16, nlon=32), as_grid("equiangular", nlat=8, nlon=16)
+    else:
+        g_in, g_out = th.HealpixGrid(nside=4), th.HealpixGrid(nside=2)
+    return th.NeighborhoodAttentionS2(g_in, g_out, 8, num_heads=2, **kwargs)
+
+
+_BACKEND_LAYERS = [[name, build, kind] for name, build in (("disco", _disco), ("disco-transpose", _disco_transpose), ("attention", _attention)) for kind in ("regular", "ragged")]
+
+
+@parameterized_class(("device"), _devices)
+class TestSharedBackendState(unittest.TestCase):
+    """Identical DISCO and attention layers share the state their backend prepared."""
+
+    def _assert_shared(self, a, b):
+        self.assertIs(a.backend, b.backend)
+        self.assertEqual(a._backend_state, b._backend_state)
+        for name in a._backend_state:
+            self.assertIs(getattr(a, name), getattr(b, name), msg=name)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_identical_layers_share_backend_state(self, _, build, kind):
+        a = build(kind).to(self.device)
+        b = build(kind).to(self.device)
+        self._assert_shared(a, b)
+        # the parameters are the layer's own
+        self.assertIsNot(next(a.parameters()), next(b.parameters()))
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_shared_state_is_what_the_backend_prepares(self, _, build, kind):
+        """
+        The guard against an incomplete key: state found in the registry must equal what the
+        backend prepares for this very layer from scratch.
+        """
+        a = build(kind).to(self.device)
+        b = build(kind).to(self.device)
+        fresh = type(b.backend)().prepare(b, b.device)
+        self.assertEqual(set(fresh), set(b._backend_state))
+        for name, tensor in fresh.items():
+            self.assertTrue(torch.equal(getattr(b, name), tensor), msg=name)
+        self._assert_shared(a, b)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_a_different_support_is_not_shared(self, _, build, kind):
+        a = build(kind).to(self.device)
+        b = build(kind, theta_cutoff=1.5 * a.theta_cutoff).to(self.device)
+        self.assertTrue(any(getattr(a, name) is not getattr(b, name) for name in a._backend_state))
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_layers_moved_together_share_state_on_the_target(self, _, build, kind):
+        model = torch.nn.ModuleList([build(kind) for _ in range(3)]).to(self.device)
+        for layer in model[1:]:
+            self._assert_shared(model[0], layer)
+        self.assertEqual(model[0].device.type, self.device.type)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_a_deep_copy_shares_state_but_not_parameters(self, _, build, kind):
+        a = build(kind).to(self.device)
+        b = deepcopy(a)
+        self._assert_shared(a, b)
+        self.assertIsNot(next(a.parameters()), next(b.parameters()))
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_layers_selecting_concurrently_share_state(self, _, build, kind):
+        """Identical layers built and moved in several threads at once prepare one state."""
+        layers = _concurrently(lambda: build(kind).to(self.device))
+        for layer in layers[1:]:
+            self._assert_shared(layers[0], layer)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_backend_state_is_freed_with_the_last_layer(self, _, build, kind):
+        """The registry must not keep a layer alive through the builder of its state."""
+        layers = [build(kind).to(self.device) for _ in range(2)]
+        refs = [weakref.ref(getattr(layers[0], name)) for name in layers[0]._backend_state]
+        layer_ref = weakref.ref(layers[0])
+        layers.clear()
+        gc.collect()
+        self.assertIsNone(layer_ref(), "a deleted layer is still referenced")
+        self.assertTrue(all(ref() is None for ref in refs), "backend state outlived every layer using it")
+
+    def test_layers_share_state_across_filter_basis_instances(self):
+        """The basis is part of the key by value: a rebuilt basis object still finds the shared state."""
+        from torch_harmonics.filter_basis import get_filter_basis
+
+        a = _disco("regular").to(self.device)
+        get_filter_basis.cache_clear()
+        b = _disco("regular").to(self.device)
+        self.assertIsNot(a.filter_basis, b.filter_basis)
+        self._assert_shared(a, b)
+
+    def test_attention_layers_of_different_dtype_do_not_share(self):
+        """The reference prepares float64 weights for a float64 layer; the dtype is part of the key."""
+        a = _attention("regular").to(self.device)
+        b = _attention("regular").to(self.device).double()
+        self.assertEqual(b.dtype, torch.float64)
+        self.assertTrue(any(getattr(a, name) is not getattr(b, name) for name in a._backend_state))
+
+    def test_forward_and_transpose_do_not_share(self):
+        """Mirrored grids give psi of the same extents; the class tells them apart."""
+        grid = as_grid("equiangular", nlat=8, nlon=16)
+        a = th.DiscreteContinuousConvS2(grid, grid, 4, 6, kernel_shape=3).to(self.device)
+        b = th.DiscreteContinuousConvTransposeS2(grid, grid, 4, 6, kernel_shape=3).to(self.device)
+        self.assertTrue(any(getattr(a, name) is not getattr(b, name) for name in a._backend_state))
+
+    def test_the_attention_point_weights_are_shared(self):
+        grid = as_grid("legendre-gauss", nlat=8, nlon=16)
+        a = th.AttentionS2(grid, grid, 8, num_heads=2).to(self.device)
+        b = th.AttentionS2(grid, grid, 8, num_heads=2).to(self.device)
+        self.assertIs(a.log_point_weights, b.log_point_weights)
+
+
+_SHT_CLASSES = [["RealSHT", "weights"], ["InverseRealSHT", "pct"], ["RealVectorSHT", "weights"], ["InverseRealVectorSHT", "dpct"]]
+
+
+def _layer_input(layer, generator):
+    """Random inputs for ``layer`` on the CPU: an SHT's grid or spectrum, or a DISCO/attention field."""
+    if isinstance(layer, (th.RealSHT, th.RealVectorSHT)):
+        shape = (2,) * isinstance(layer, th.RealVectorSHT) + tuple(layer.grid.shape)
+        return (torch.randn(2, *shape, generator=generator, dtype=torch.float64),)
+    if isinstance(layer, (th.InverseRealSHT, th.InverseRealVectorSHT)):
+        shape = (2,) * isinstance(layer, th.InverseRealVectorSHT) + (layer.lmax, layer.mmax)
+        return (torch.randn(2, *shape, generator=generator, dtype=torch.complex128),)
+    if isinstance(layer, th.NeighborhoodAttentionS2):
+        query = torch.randn(2, layer.in_channels, *layer.grid_out.shape, generator=generator)
+        key = torch.randn(2, layer.in_channels, *layer.grid_in.shape, generator=generator)
+        return query, key, key.clone()
+    return (torch.randn(2, layer.in_channels, *layer.grid_in.shape, generator=generator),)
+
+
+@unittest.skipUnless(torch.cuda.is_available(), "needs a CUDA device")
+class TestSharedTablesAcrossDevices(unittest.TestCase):
+    """Layers built on the CPU and moved to the GPU: where their tables land, and what they hold there."""
+
+    def setUp(self):
+        self.cuda = torch.device("cuda", torch.cuda.current_device())
+        self.generator = torch.Generator().manual_seed(333)
+
+    @parameterized.expand(_SHT_CLASSES)
+    def test_an_sht_moved_to_cuda_holds_its_table_there(self, cls_name, name):
+        cls = getattr(th, cls_name)
+        grid = as_grid("legendre-gauss", nlat=12, nlon=24)
+        layer = cls(grid)
+        cpu_table = getattr(layer, name)
+        self.assertEqual(cpu_table.device.type, "cpu")
+
+        layer.to(self.cuda)
+        table = getattr(layer, name)
+        self.assertEqual(table.device, self.cuda)
+        self.assertEqual(table.dtype, cpu_table.dtype)
+        self.assertTrue(torch.equal(table.cpu(), cpu_table), "the table changed on the way to the device")
+
+        # a layer still on the CPU keeps the host table, and an identical layer moved later
+        # shares the device copy; moving back returns the host table itself
+        self.assertIs(getattr(cls(grid), name), cpu_table)
+        self.assertIs(getattr(cls(grid).to(self.cuda), name), table)
+        self.assertIs(getattr(layer.to("cpu"), name), cpu_table)
+
+    @parameterized.expand(_SHT_CLASSES)
+    def test_an_sht_converted_on_the_way_holds_the_converted_table(self, cls_name, name):
+        """.to(device, dtype) gives the device copy of the table in that dtype, converted from the exact one."""
+        cls = getattr(th, cls_name)
+        grid = as_grid("equiangular", nlat=13, nlon=26)
+        layer = cls(grid)
+        cpu_table = getattr(layer, name)
+        layer.to(device=self.cuda, dtype=torch.float32)
+        table = getattr(layer, name)
+        self.assertEqual((table.device, table.dtype), (self.cuda, torch.float32))
+        self.assertTrue(torch.equal(table.cpu(), cpu_table.float()))
+        self.assertIs(getattr(cls(grid).cuda().float(), name), table)
+
+    @parameterized.expand(_SHT_CLASSES)
+    def test_an_sht_computes_the_same_on_cuda(self, cls_name, _):
+        cls = getattr(th, cls_name)
+        layer = cls(as_grid("legendre-gauss", nlat=12, nlon=24))
+        inputs = _layer_input(layer, self.generator)
+        expected = layer(*inputs)
+        actual = layer.to(self.cuda)(*(x.to(self.cuda) for x in inputs))
+        self.assertEqual(actual.device, self.cuda)
+        torch.testing.assert_close(actual.cpu(), expected, atol=1e-10, rtol=1e-10)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_backend_state_moved_to_cuda_lives_there(self, _, build, kind):
+        layer = build(kind)
+        cpu_state = {name: getattr(layer, name) for name in layer._backend_state}
+        layer.to(self.cuda)
+        self.assertEqual(layer.device, self.cuda)
+        self.assertTrue(layer._backend_state)
+        for name in layer._backend_state:
+            self.assertEqual(getattr(layer, name).device, self.cuda, msg=name)
+        # shared with an identical layer moved there, and the CPU state stays with CPU layers
+        other = build(kind).to(self.cuda)
+        self.assertIs(other.backend, layer.backend)
+        for name in layer._backend_state:
+            self.assertIs(getattr(other, name), getattr(layer, name), msg=name)
+        for name, tensor in cpu_state.items():
+            self.assertIs(getattr(build(kind), name), tensor, msg=name)
+
+    @parameterized.expand(_BACKEND_LAYERS)
+    def test_a_backend_layer_computes_the_same_on_cuda(self, _, build, kind):
+        torch.manual_seed(333)
+        layer = build(kind)
+        inputs = _layer_input(layer, self.generator)
+        expected = layer(*inputs)
+        actual = layer.to(self.cuda)(*(x.to(self.cuda) for x in inputs))
+        self.assertEqual(actual.device, self.cuda)
+        torch.testing.assert_close(actual.cpu(), expected, atol=1e-4, rtol=1e-4)
+
+    def test_the_attention_point_weights_move_to_cuda(self):
+        grid = as_grid("legendre-gauss", nlat=8, nlon=16)
+        layer = th.AttentionS2(grid, grid, 8, num_heads=2)
+        cpu_weights = layer.log_point_weights
+        layer.to(self.cuda)
+        self.assertEqual(layer.log_point_weights.device, self.cuda)
+        self.assertTrue(torch.equal(layer.log_point_weights.cpu(), cpu_weights))
+        self.assertIs(th.AttentionS2(grid, grid, 8, num_heads=2).to(self.cuda).log_point_weights, layer.log_point_weights)
+
+    def test_identical_layers_on_cuda_hold_one_copy(self):
+        """Device memory grows with the first transform moved there, not with the next ones."""
+        grid = as_grid("legendre-gauss", nlat=64, nlon=128)
+        torch.cuda.synchronize()
+        baseline = torch.cuda.memory_allocated(self.cuda)
+        first = th.RealSHT(grid).to(self.cuda)
+        one = torch.cuda.memory_allocated(self.cuda) - baseline
+        self.assertGreaterEqual(one, first.weights.numel() * first.weights.element_size())
+        more = [th.RealSHT(grid).to(self.cuda) for _ in range(3)]
+        self.assertEqual(torch.cuda.memory_allocated(self.cuda) - baseline, one)
+        del first, more
+        gc.collect()
+        self.assertEqual(torch.cuda.memory_allocated(self.cuda), baseline, "the device table outlived its transforms")
+
+    @unittest.skipUnless(torch.cuda.device_count() > 1, "needs two CUDA devices")
+    def test_each_device_holds_its_own_copy(self):
+        grid = as_grid("legendre-gauss", nlat=12, nlon=24)
+        on_0 = th.RealSHT(grid).to("cuda:0")
+        on_1 = th.RealSHT(grid).to("cuda:1")
+        self.assertEqual((on_0.weights.device.index, on_1.weights.device.index), (0, 1))
+        self.assertTrue(torch.equal(on_0.weights.cpu(), on_1.weights.cpu()))
+        # moving between devices lands on the copy already there
+        self.assertIs(on_0.to("cuda:1").weights, on_1.weights)

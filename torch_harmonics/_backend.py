@@ -52,10 +52,11 @@ False rather than by sitting at a particular depth of a tree, so a new axis -- a
 dtype, an SM version, a torch version -- is a new predicate, not a reshaped tree.
 """
 
-from typing import Dict, Optional
+from typing import Dict, Hashable, Optional
 
 import torch
 
+from torch_harmonics.cache import _deepcopy_sharing, shared_value
 from torch_harmonics.utils import recast_buffers_for
 
 
@@ -137,6 +138,19 @@ class BackendSelectionMixin:
     #: the live backend
     backend = None
 
+    def _backend_state_key(self) -> Optional[Hashable]:
+        """
+        What the backends' ``prepare`` reads off this layer, as a hashable key; ``None`` to not share.
+
+        Layers whose prepared state depends only on such a key share it: the first layer to
+        select a backend on a device prepares it, and every layer with the same key, backend,
+        device and dtype that selects while that state is alive reuses it, the backend
+        instance included. The key has to cover *everything* ``prepare`` reads -- grids,
+        support, basis, extents, and on a distributed layer the shard -- or two layers that
+        differ would share state. Sharing is off by default.
+        """
+        return None
+
     def _select_backend(self) -> None:
         """
         Pick the backend for the current device and register exactly its state.
@@ -152,13 +166,29 @@ class BackendSelectionMixin:
         self._backend_state = ()
         self.backend = None
 
+        layer_key = self._backend_state_key()
+
         for cls in self._backends:
             if not cls.available(self, device):
                 continue
-            backend = cls()
-            state = backend.prepare(self, device)
-            if state is None:
+
+            # state shared with identical layers: the backend instance too, since it may hold
+            # Python-side metadata from its prepare
+            def prepare(cls=cls):
+                backend = cls()
+                state = backend.prepare(self, device)
+                return None if state is None else (backend, state)
+
+            if layer_key is None:
+                prepared = prepare()
+            else:
+                # looked up, prepared and stored in one locked step, so layers selecting at once
+                # in several threads prepare the state once
+                prepared = shared_value(("backend-state", cls, layer_key, device, getattr(self, "dtype", None)), prepare)
+            if prepared is None:
                 continue
+            backend, state = prepared
+
             for name, tensor in state.items():
                 self.register_buffer(name, tensor, persistent=False)
             self._backend_state = tuple(state)
@@ -192,20 +222,45 @@ class BackendSelectionMixin:
         on what actually changed, the device, the layer's dtype (for a layer with a
         ``dtype`` property) or the state's dtypes, not on the call.
 
-        The state of the outgoing backend is moved or cast by ``super()._apply`` and then
-        thrown away -- once per move, against not having to know the target device or
-        dtype before anything has been touched.
+        The state of the outgoing backend is set aside rather than converted, and either
+        replaced by the reselection or put back unchanged. Converting it would copy every
+        layer's state to the target only to discard the copy; with sharing (see
+        :meth:`_backend_state_key`) the reselection finds the state another identical layer
+        already prepared there.
         """
-        # the outgoing state is moved before it is replaced, and float64 state cannot move to
-        # MPS; see recast_buffers_for
-        recast_buffers_for(self, fn)
+        # the outgoing state is set aside rather than converted: it is either reselected, and
+        # replaced, or kept as it is. Converting it first would make every layer of a model copy
+        # its state to the new device, only to throw the copy away
+        held = {name: self._buffers[name] for name in self._backend_state}
+        for name in held:
+            self._buffers[name] = None
         device_before, dtype_before = self.device, getattr(self, "dtype", None)
-        dtypes_before = {name: getattr(self, name).dtype for name in self._backend_state}
-        out = super()._apply(fn, recurse)
-        state_cast = any(getattr(self, name).dtype != dtype for name, dtype in dtypes_before.items())
-        # the layer's own dtype can decide the backend too (float64 may take the reference),
-        # and can change without casting the state: a reference backend's state may already
-        # be float32 when .float() brings the layer back from float64
-        if self.device != device_before or getattr(self, "dtype", None) != dtype_before or state_cast:
+        try:
+            # float64 buffers cannot move to MPS; see recast_buffers_for
+            recast_buffers_for(self, fn)
+            out = super()._apply(fn, recurse)
+        except BaseException:
+            self._buffers.update(held)
+            raise
+        # a conversion that casts floating tensors would have cast the state too, which the
+        # backend fixes the dtype of; the probe tells such a conversion from a pure move
+        float_cast = fn(torch.empty(0, dtype=torch.float32, device=device_before)).dtype != torch.float32
+        # the layer's own dtype can decide the backend too (float64 may take the reference)
+        if self.device != device_before or getattr(self, "dtype", None) != dtype_before or float_cast:
             self._select_backend()
+        else:
+            self._buffers.update(held)
         return out
+
+    def __deepcopy__(self, memo):
+        # the copy references the same backend state, which is shared and read-only, and the
+        # same backend instance; parameters are copied as usual
+        shared = [self._buffers[name] for name in self._backend_state if self._buffers.get(name) is not None]
+        if self.backend is not None:
+            shared.append(self.backend)
+        # host tables a layer holds on to (see DiscreteContinuousConv._held_tables), and the
+        # tuple holding them, so the copy refers to the same tuple rather than copying it
+        held = getattr(self, "_held_tables", None)
+        if held is not None:
+            shared.append(held)
+        return _deepcopy_sharing(self, memo, shared)

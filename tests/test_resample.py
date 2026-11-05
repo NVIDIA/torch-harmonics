@@ -377,7 +377,3 @@ class TestResampleS2(unittest.TestCase):
         a, b = 2.5, -1.75
         x1, x2 = torch.randn(*shape_in, **kw), torch.randn(*shape_in, **kw)
         self.assertTrue(compare_tensors("superposition", resample(a * x1 + b * x2), a * resample(x1) + b * resample(x2), atol=1e-12, rtol=1e-12))
-
-
-if __name__ == "__main__":
-    unittest.main()

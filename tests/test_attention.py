@@ -45,7 +45,6 @@ from testutils import (
     _ProductGridAsRagged,
     build_psi_segments,
     compare_tensors,
-    disable_tf32,
     expand_psi_segments,
     maybe_autocast,
     param_grad_ulps,
@@ -91,7 +90,6 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
     """Test the neighborhood attention module (CPU/CUDA if available)."""
 
     def setUp(self):
-        disable_tf32()
         torch.manual_seed(333)
         if self.device.type == "cuda":
             torch.cuda.manual_seed(333)
@@ -1353,7 +1351,6 @@ class TestKeyBias(unittest.TestCase):
     """
 
     def setUp(self):
-        disable_tf32()
         set_seed(333)
 
     _cases = [
@@ -1412,7 +1409,6 @@ class TestScale(unittest.TestCase):
     """
 
     def setUp(self):
-        disable_tf32()
         set_seed(333)
 
     _grids = [
@@ -1529,7 +1525,6 @@ class TestEmptyNeighborhood(unittest.TestCase):
     """
 
     def setUp(self):
-        disable_tf32()
         set_seed(333)
 
     @parameterized.expand(
@@ -1975,7 +1970,6 @@ class TestNeighborhoodAttentionRaggedS2(unittest.TestCase):
     """NeighborhoodAttentionS2 on HEALPix, against a dense masked-softmax oracle."""
 
     def setUp(self):
-        disable_tf32()
         set_seed(333)
 
     def _build(self, nside_in, nside_out, channels, out_channels, heads, use_qknorm, bias, theta_cutoff=None):
@@ -2452,7 +2446,6 @@ class TestAttentionS2RingGrids(unittest.TestCase):
     """
 
     def setUp(self):
-        disable_tf32()
         set_seed(333)
 
     @parameterized.expand(
@@ -2661,7 +2654,6 @@ class TestMixedGridNeighborhoodAttentionS2(unittest.TestCase):
     """
 
     def setUp(self):
-        disable_tf32()
         set_seed(333)
 
     @parameterized.expand(
@@ -2779,7 +2771,6 @@ class TestRaggedForwardCudaKernel(unittest.TestCase):
 
     def setUp(self):
         set_seed(333)
-        disable_tf32()
         self.device = torch.device("cuda")
 
     def _run_both(self, nside, batch, num_heads, channels, dtype, q_scale=1.0):
@@ -2911,7 +2902,6 @@ class TestRaggedBackwardCudaKernel(unittest.TestCase):
 
     def setUp(self):
         set_seed(444)
-        disable_tf32()
         self.device = torch.device("cuda")
 
     def _grads_from_both(self, nside, batch, num_heads, channels, dtype, q_scale=1.0):
@@ -3101,7 +3091,3 @@ class TestRaggedBackwardCudaKernel(unittest.TestCase):
                 self.assertTrue(torch.isfinite(g).all())
                 touched = (g.abs().sum(dim=-1) > 0).sum().item()
                 self.assertEqual(touched, npix, f"{name}: only {touched} of {npix} input points received a gradient")
-
-
-if __name__ == "__main__":
-    unittest.main()

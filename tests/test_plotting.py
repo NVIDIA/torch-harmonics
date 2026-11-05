@@ -202,7 +202,3 @@ class TestPlotSphereGrid(unittest.TestCase):
         with self.assertRaises(TypeError) as ctx:
             plot_sphere(torch.randn(5), fig=plt.figure(), grid=_Points())
         self.assertIn("GridS2", str(ctx.exception))
-
-
-if __name__ == "__main__":
-    unittest.main()

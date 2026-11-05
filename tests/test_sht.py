@@ -37,7 +37,7 @@ import numpy as np
 import torch
 from parameterized import parameterized, parameterized_class
 from scipy.special import gammaln, lpmv
-from testutils import compare_tensors, disable_tf32, range_atol, requires_torch_compile, set_seed
+from testutils import compare_tensors, range_atol, requires_torch_compile, set_seed
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
@@ -330,9 +330,6 @@ def _check_gram(test, nlat, grid, norm, vector, verbose=False):
 class TestSphericalHarmonicTransform(unittest.TestCase):
     """Test the spherical harmonic transform (CPU/CUDA if available)."""
 
-    def setUp(self):
-        disable_tf32()
-
     @parameterized.expand(_SCIPY_CASES, skip_on_empty=True)
     def test_scipy_harmonics(self, grid, extended, nlat, vector, l, m, component, norm, csphase, verbose=False):
         """Analysis and synthesis agree with harmonics, gradients and curls evaluated by SciPy.
@@ -601,9 +598,6 @@ class TestSphericalHarmonicsFunctions(unittest.TestCase):
     modes together, doubling the amplitude of each mode.
     """
 
-    def setUp(self):
-        disable_tf32()
-
     @parameterized.expand(_GRAM_CASES, skip_on_empty=True)
     def test_orthogonality(self, nlat, grid, norm, verbose=False):
         """isht synthesizes mutually orthogonal basis functions with the norms of each convention."""
@@ -624,9 +618,6 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
     both directions, such as the sign of the toroidal channel or the component order.
     Those are fixed by test_scipy_harmonics.
     """
-
-    def setUp(self):
-        disable_tf32()
 
     @parameterized.expand(_GRADIENT_CASES, skip_on_empty=True)
     def test_vector_grads(self, nlat, grid, extended, verbose=False):
@@ -675,9 +666,6 @@ class TestUnsuitableGridWarning(unittest.TestCase):
     a supported configuration, and pinning its error would suggest otherwise. What is
     covered is that a user cannot stumble into it silently.
     """
-
-    def setUp(self):
-        disable_tf32()
 
     @parameterized.expand([[cls_name] for cls_name in ["RealSHT", "InverseRealSHT", "RealVectorSHT", "InverseRealVectorSHT"]])
     def test_unsuitable_grid_warns(self, cls_name):
@@ -730,10 +718,6 @@ class TestUnsuitableGridWarning(unittest.TestCase):
 @parameterized_class(("device",), _devices)
 class TestSharedFoldedSHTAnalysis(unittest.TestCase):
     """Shared extended-analysis coverage for Clenshaw-Curtis and Fejer-1 grids."""
-
-    @classmethod
-    def setUpClass(cls):
-        disable_tf32()
 
     def test_f1_extended_selection_and_oversized_bounds(self):
         for nlat, nlon in [(8, 16), (9, 19)]:
@@ -1415,7 +1399,3 @@ class TestAgainstHealpy(unittest.TestCase):
         err_theirs = float((theirs - c).abs().max())
         self.assertLess(float((th.RealVectorSHT(g).double()(x) - c).abs().max()), 1.5 * err_theirs)
         self.assertLess(float((th.RealVectorSHT(g, iter=3).double()(x) - c).abs().max()), 1e-2 * err_theirs)
-
-
-if __name__ == "__main__":
-    unittest.main()

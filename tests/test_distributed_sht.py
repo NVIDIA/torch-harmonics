@@ -35,7 +35,6 @@ import torch
 from parameterized import parameterized
 from testutils import (
     compare_tensors,
-    disable_tf32,
     gather_tensor_hw,
     reduce_success,
     set_seed,
@@ -66,7 +65,6 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
-        disable_tf32()
 
     def _split_helper(self, tensor):
         return split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
@@ -630,6 +628,18 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_recoverable_degree"):
             getattr(thd, cls_name)(grid, lmax=lmax, mmax=mmax)
 
-
-if __name__ == "__main__":
-    unittest.main()
+    @parameterized.expand(
+        [["DistributedRealSHT", "weights"], ["DistributedInverseRealSHT", "pct"], ["DistributedRealVectorSHT", "weights"], ["DistributedInverseRealVectorSHT", "dpct"]]
+    )
+    def test_identical_transforms_share_their_block(self, cls_name, buffer):
+        """
+        Two identical distributed transforms hold one copy of this rank's block, and it is
+        the block a transform of different bounds does not get; see torch_harmonics.cache.
+        """
+        grid = th.as_grid("legendre-gauss", nlat=16, nlon=32)
+        cls = getattr(thd, cls_name)
+        a = cls(grid).to(self.device)
+        b = cls(grid).to(self.device)
+        other = cls(grid, lmax=10, mmax=10).to(self.device)
+        self.assertIs(getattr(a, buffer), getattr(b, buffer))
+        self.assertIsNot(getattr(a, buffer), getattr(other, buffer))

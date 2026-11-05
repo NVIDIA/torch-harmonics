@@ -280,7 +280,3 @@ class TestFieldContractHelper(unittest.TestCase):
             torch.testing.assert_close(out, torch.ones(batch))
         with self.assertRaises(Exception):
             compiled(torch.ones(2, _REGULAR.nlat, _REGULAR.nlon + 1))
-
-
-if __name__ == "__main__":
-    unittest.main()
