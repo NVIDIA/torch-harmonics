@@ -295,7 +295,9 @@ def shared_table(f: Callable) -> Callable:
     the same arguments returns the very same tensors. Once they have all been released the
     next call builds anew. The arguments are normalized through the signature, so
     positional and keyword spellings of one call share an entry, and typed, so ``1`` and
-    ``1.0`` do not. They must be hashable.
+    ``1.0`` do not. They must be hashable. Each decorated function has entries of its own:
+    two builders never share, even when they have the same name, as closures made by one
+    factory do.
 
     The returned tensors are shared and must not be modified in place.
 
@@ -313,6 +315,8 @@ def shared_table(f: Callable) -> Callable:
     False
     """
     signature = inspect.signature(f)
+    # identifies this builder: the name alone does not, closures from one factory share it
+    token = object()
 
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
@@ -324,7 +328,7 @@ def shared_table(f: Callable) -> Callable:
             if kind is inspect.Parameter.VAR_KEYWORD:
                 value = tuple(sorted(value.items()))
             arguments.append((name, _typed(value)))
-        key = (f.__module__, f.__qualname__, tuple(arguments))
+        key = (f.__module__, f.__qualname__, token, tuple(arguments))
         return _REGISTRY.get_or_build(key, lambda: f(*args, **kwargs))
 
     return wrapper

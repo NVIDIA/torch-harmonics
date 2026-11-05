@@ -402,6 +402,25 @@ class TestSharedTable(unittest.TestCase):
         with self.assertRaises(TypeError):
             self.table({})
 
+    def test_builders_of_the_same_name_never_share(self):
+        """Closures from one factory share a qualname but not their tables."""
+
+        def make(scale):
+            @shared_table
+            def scaled(n):
+                self.builds.append(("scaled", scale))
+                return scale * torch.ones(n, dtype=torch.float64)
+
+            return scaled
+
+        double, triple = make(2.0), make(3.0)
+        self.assertEqual(double.__qualname__, triple.__qualname__)
+        a, b = double(4), triple(4)
+        self.assertIsNot(a, b)
+        torch.testing.assert_close(b, torch.full((4,), 3.0, dtype=torch.float64), atol=0, rtol=0)
+        self.assertIs(double(4), a)
+        self.assertEqual(len(self.builds), 2)
+
 
 def _sht_pairs(device):
     """Two identical instances of each SHT, and one that differs only in lmax."""
