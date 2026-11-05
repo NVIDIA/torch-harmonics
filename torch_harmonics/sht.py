@@ -249,31 +249,31 @@ def _analysis_weights(
     Shared between all transforms with the same arguments, see
     :func:`~torch_harmonics.cache.shared_table`.
     """
-    if _extended_folded_analysis(grid, truncation):
-        return _precompute_folded_projection(grid, truncation, norm, csphase, vector=vector, mmin=mmin, mmax=mmax, kmin=kmin, kmax=kmax)
-
+    lmax = truncation.lmax
     # quadrature weights come from the grid descriptor, which supports every grid
     # precompute_latitudes does. Only this block's rings are needed: the contraction over
     # rings is completed by a reduce-scatter in a distributed forward, and rings are
     # independent of one another, so restricting them costs nothing
-    weights = (2.0 * torch.pi * grid.colat_weights)[kmin:kmax]
-    lmax = truncation.lmax
+    quad_weights = (2.0 * torch.pi * grid.colat_weights)[kmin:kmax]
 
-    if not vector:
+    if _extended_folded_analysis(grid, truncation):
+        weights = _precompute_folded_projection(grid, truncation, norm, csphase, vector=vector, mmin=mmin, mmax=mmax, kmin=kmin, kmax=kmax)
+    elif not vector:
         pct = _precompute_legpoly(mmax, lmax, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=mmin, kmin=kmin, kmax=kmax)
-        return torch.einsum("mlk,k->mlk", pct, weights).contiguous()
+        weights = torch.einsum("mlk,k->mlk", pct, quad_weights).contiguous()
+    else:
+        dpct = _precompute_dlegpoly(mmax, lmax, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=mmin, kmin=kmin, kmax=kmax)
+        # combine integration weights, normalization factor in to one. The degrees are
+        # float64: an integer arange divided by a float gives the default dtype, float32,
+        # and that rounding of 1/(l(l+1)) would survive a later .double()
+        l = torch.arange(0, lmax, dtype=torch.float64)
+        norm_factor = 1.0 / l / (l + 1)
+        if lmax:
+            norm_factor[0] = 1.0
+        weights = torch.einsum("dmlk,k,l->dmlk", dpct, quad_weights, norm_factor).contiguous()
+        # conjugate the imaginary derivative component; weights is fresh, so writing to it is safe
+        weights[1] = -1 * weights[1]
 
-    dpct = _precompute_dlegpoly(mmax, lmax, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=mmin, kmin=kmin, kmax=kmax)
-    # combine integration weights, normalization factor in to one. The degrees are
-    # float64: an integer arange divided by a float gives the default dtype, float32,
-    # and that rounding of 1/(l(l+1)) would survive a later .double()
-    l = torch.arange(0, lmax, dtype=torch.float64)
-    norm_factor = 1.0 / l / (l + 1)
-    if lmax:
-        norm_factor[0] = 1.0
-    weights = torch.einsum("dmlk,k,l->dmlk", dpct, weights, norm_factor).contiguous()
-    # conjugate the imaginary derivative component; weights is fresh, so writing to it is safe
-    weights[1] = -1 * weights[1]
     return weights
 
 
@@ -304,9 +304,12 @@ def _synthesis_table(
     """
     if not vector:
         pct = _precompute_legpoly(mmax, lmax, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=mmin, lmin=lmin)
-        return pct.permute(0, 2, 1).contiguous()
-    dpct = _precompute_dlegpoly(mmax, lmax, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=mmin, lmin=lmin)
-    return dpct.permute(0, 1, 3, 2).contiguous()
+        table = pct.permute(0, 2, 1).contiguous()
+    else:
+        dpct = _precompute_dlegpoly(mmax, lmax, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=mmin, lmin=lmin)
+        table = dpct.permute(0, 1, 3, 2).contiguous()
+
+    return table
 
 
 class RealSHT(SharedBufferMixin, nn.Module):
