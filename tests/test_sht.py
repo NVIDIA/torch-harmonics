@@ -31,9 +31,11 @@
 
 import gc
 import math
+import os
 import unittest
 import warnings
 import weakref
+from unittest import mock
 
 import numpy as np
 import torch
@@ -203,11 +205,11 @@ _COMPILE_CASES = [
 ]
 
 
-def _check_compile(test, nlat, nlon, grid, lmax, dtype, vector, verbose=False):
+def _check_compile(test, nlat, nlon, grid, lmax, dtype, vector, verbose=False, **kwargs):
     """Compile the round trip as one graph, forward and backward, and compare it to eager."""
     set_seed(333)
     descriptor = th.as_grid(grid, nlat=nlat, nlon=nlon)
-    forward, inverse = _transforms(descriptor, lmax, lmax, vector)
+    forward, inverse = _transforms(descriptor, lmax, lmax, vector, **kwargs)
     forward = forward.to(device=test.device, dtype=dtype)
     inverse = inverse.to(device=test.device, dtype=dtype)
 
@@ -878,6 +880,181 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         self.assertTrue(compare_tensors("empty gradient", torch.zeros_like(x), x.grad, atol=0, rtol=0, verbose=verbose))
 
 
+# grid, nlat, nlon, lmax, mmax, lmmax: direct quadrature, a band limit, a rectangular
+# truncation, and the folded analysis of an equiangular and a Fejer-1 grid
+_BLOCK_CASES = [
+    ("legendre-gauss", 20, 40, None, None, None),
+    ("legendre-gauss", 20, 40, None, None, 6),
+    ("legendre-gauss", 20, 40, 20, 11, None),
+    ("equiangular", 17, 32, 16, 16, None),
+    ("fejer1", 16, 32, 16, 16, 5),
+]
+
+
+def _block_tables(layer):
+    """The block tables an SHT registered, one per order block."""
+    return [getattr(layer, name) for name in layer._block_names]
+
+
+@parameterized_class(("device"), _devices)
+class TestBlockedLegendreTables(unittest.TestCase):
+    """
+    The SHTs store their Legendre tables in blocks of orders, each holding only the degrees its
+    orders have. The blocks change the storage, not the transform: every block size computes
+    what the single dense table, ``block_size=None``, computes.
+    """
+
+    @parameterized.expand(
+        [[*case, vector, block_size] for case in _BLOCK_CASES for vector in (False, True) for block_size in (1, 3, 7)],
+        skip_on_empty=True,
+    )
+    def test_blocks_compute_what_the_dense_table_does(self, grid, nlat, nlon, lmax, mmax, lmmax, vector, block_size):
+        set_seed(333)
+        descriptor = th.as_grid(grid, nlat=nlat, nlon=nlon)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forward, inverse = _transforms(descriptor, lmax, mmax, vector, lmmax=lmmax, block_size=block_size)
+            dense_forward, dense_inverse = _transforms(descriptor, lmax, mmax, vector, lmmax=lmmax, block_size=None)
+        self.assertGreater(len(forward._block_names), 1)
+        self.assertEqual(len(dense_forward._block_names), 1)
+        forward, inverse, dense_forward, dense_inverse = (t.to(self.device, torch.float64) for t in (forward, inverse, dense_forward, dense_inverse))
+
+        # the assembled tables are the dense ones
+        names = ("weights", "dpct") if vector else ("weights", "pct")
+        self.assertTrue(torch.equal(getattr(forward, names[0]), getattr(dense_forward, names[0])))
+        self.assertTrue(torch.equal(getattr(inverse, names[1]), getattr(dense_inverse, names[1])))
+
+        # and so are the transforms, forward and backward
+        x = torch.randn((3,) + (2,) * vector + descriptor.shape, device=self.device, dtype=torch.float64, requires_grad=True)
+        coeffs = forward(x)
+        expected = dense_forward(x)
+        self.assertTrue(compare_tensors("blocked analysis", coeffs, expected, atol=1e-13, rtol=1e-13))
+        gradient = torch.randn_like(coeffs)
+        (grad,) = torch.autograd.grad(coeffs, x, gradient)
+        (expected_grad,) = torch.autograd.grad(expected, x, gradient)
+        self.assertTrue(compare_tensors("blocked analysis gradient", grad, expected_grad, atol=1e-13, rtol=1e-13))
+
+        c = coeffs.detach().requires_grad_(True)
+        field = inverse(c)
+        expected = dense_inverse(c)
+        self.assertTrue(compare_tensors("blocked synthesis", field, expected, atol=1e-13, rtol=1e-13))
+        gradient = torch.randn_like(field)
+        (grad,) = torch.autograd.grad(field, c, gradient)
+        (expected_grad,) = torch.autograd.grad(expected, c, gradient)
+        self.assertTrue(compare_tensors("blocked synthesis gradient", grad, expected_grad, atol=1e-13, rtol=1e-13))
+
+    @parameterized.expand([[vector, iter, block_size] for vector in (False, True) for iter in (0, 2) for block_size in (1, 3)])
+    def test_healpix_blocks_compute_what_the_dense_table_does(self, vector, iter, block_size):
+        """HEALPix stores its tables in the same blocks; the Jacobi synthesis uses the transform's block size."""
+        set_seed(333)
+        g = th.HealpixGrid(nside=4)
+        forward_cls, inverse_cls = (th.RealVectorSHT, th.InverseRealVectorSHT) if vector else (th.RealSHT, th.InverseRealSHT)
+        forward = forward_cls(g, iter=iter, block_size=block_size).to(self.device, torch.float64)
+        dense_forward = forward_cls(g, iter=iter, block_size=None).to(self.device, torch.float64)
+        inverse = inverse_cls(g, block_size=block_size).to(self.device, torch.float64)
+        dense_inverse = inverse_cls(g, block_size=None).to(self.device, torch.float64)
+        self.assertGreater(len(forward._block_names), 1)
+        if iter:
+            self.assertEqual(forward._synthesis.block_size, block_size)
+
+        x = torch.randn((3,) + (2,) * vector + g.shape, device=self.device, dtype=torch.float64, requires_grad=True)
+        coeffs = forward(x)
+        expected = dense_forward(x)
+        self.assertTrue(compare_tensors("blocked analysis", coeffs, expected, atol=1e-13, rtol=1e-13))
+        gradient = torch.randn_like(coeffs)
+        (grad,) = torch.autograd.grad(coeffs, x, gradient)
+        (expected_grad,) = torch.autograd.grad(expected, x, gradient)
+        self.assertTrue(compare_tensors("blocked analysis gradient", grad, expected_grad, atol=1e-13, rtol=1e-13))
+
+        c = coeffs.detach()
+        self.assertTrue(compare_tensors("blocked synthesis", inverse(c), dense_inverse(c), atol=1e-13, rtol=1e-13))
+
+    @parameterized.expand([[False], [True]])
+    def test_a_block_keeps_only_the_degrees_of_its_orders(self, vector):
+        """Block [ms, me) stores degrees [ms, min(lmax, me - 1 + lmmax)): the triangle below the diagonal is never stored."""
+        grid = th.as_grid("legendre-gauss", nlat=20, nlon=40)
+        for lmmax in (None, 6):
+            with self.subTest(lmmax=lmmax):
+                forward, inverse = _transforms(grid, 20, 20, vector, lmmax=lmmax, block_size=6)
+                expected = [(0, 6), (6, 12), (12, 18), (18, 20)]
+                for (ms, me), w, p in zip(expected, _block_tables(forward), _block_tables(inverse)):
+                    top = 20 if lmmax is None else min(20, me - 1 + lmmax)
+                    self.assertEqual(tuple(w.shape[-3:]), (me - ms, top - ms, 20))
+                    self.assertEqual(tuple(p.shape[-3:]), (me - ms, 20, top - ms))
+                stored = sum(w.numel() for w in _block_tables(forward))
+                self.assertLess(stored, forward.weights.numel() * (0.65 if lmmax is None else 0.5))
+
+    @parameterized.expand(
+        [[*case, vector, block_size] for case in _BLOCK_CASES for vector in (False, True) for block_size in (1, 3, 15)],
+        skip_on_empty=True,
+    )
+    def test_a_block_owns_only_its_own_storage(self, grid, nlat, nlon, lmax, mmax, lmmax, vector, block_size):
+        """
+        No block keeps a larger allocation alive, such as the full-degree folded projection it was
+        cut from; single-order blocks, from block_size=1 or a short last block, included.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forward, inverse = _transforms(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax, mmax, vector, lmmax=lmmax, block_size=block_size)
+        for layer in (forward, inverse):
+            for name, table in zip(layer._block_names, _block_tables(layer)):
+                self.assertTrue(table.is_contiguous(), msg=name)
+                self.assertEqual(table.untyped_storage().nbytes(), table.numel() * table.element_size(), msg=name)
+
+    def test_a_block_size_of_at_least_mmax_is_the_dense_table(self):
+        """None and every block size >= mmax resolve to one block, and share it."""
+        grid = th.as_grid("legendre-gauss", nlat=12, nlon=24)
+        dense = th.RealSHT(grid, block_size=None)
+        for block_size in (12, 13, 1000):
+            with self.subTest(block_size=block_size):
+                layer = th.RealSHT(grid, block_size=block_size)
+                self.assertIsNone(layer.block_size)
+                self.assertIs(_block_tables(layer)[0], _block_tables(dense)[0])
+
+    def test_transforms_share_tables_only_with_their_block_size(self):
+        grid = th.as_grid("legendre-gauss", nlat=12, nlon=24)
+        for cls in (th.RealSHT, th.InverseRealSHT, th.RealVectorSHT, th.InverseRealVectorSHT):
+            with self.subTest(cls=cls.__name__):
+                a, b, c = cls(grid, block_size=4), cls(grid, block_size=4), cls(grid, block_size=5)
+                for x, y in zip(_block_tables(a), _block_tables(b)):
+                    self.assertIs(x, y)
+                self.assertFalse(any(x is y for x in _block_tables(a) for y in _block_tables(c)))
+                self.assertFalse(any(x is y for x in _block_tables(a) for y in _block_tables(cls(grid, block_size=None))))
+
+    def test_the_default_block_size_comes_from_the_environment(self):
+        grid = th.as_grid("legendre-gauss", nlat=40, nlon=80)
+        cases = [(None, th.sht.DEFAULT_SHT_BLOCK_SIZE), ("", th.sht.DEFAULT_SHT_BLOCK_SIZE), ("5", 5), (" 7 ", 7), ("none", None), ("Dense", None), ("100", None)]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                environ = {k: v for k, v in os.environ.items() if k != th.sht.SHT_BLOCK_SIZE_ENV}
+                if value is not None:
+                    environ[th.sht.SHT_BLOCK_SIZE_ENV] = value
+                with mock.patch.dict(os.environ, environ, clear=True):
+                    self.assertEqual(th.RealSHT(grid).block_size, expected)
+                    # an explicit argument wins over the environment
+                    self.assertEqual(th.InverseRealSHT(grid, block_size=3).block_size, 3)
+                    self.assertIsNone(th.RealVectorSHT(grid, block_size=None).block_size)
+
+    def test_invalid_block_sizes_raise(self):
+        grid = th.as_grid("legendre-gauss", nlat=12, nlon=24)
+        for block_size in (0, -1, True, 2.5, "4"):
+            with self.subTest(block_size=block_size):
+                with self.assertRaisesRegex(ValueError, "block_size"):
+                    th.RealSHT(grid, block_size=block_size)
+        with mock.patch.dict(os.environ, {th.sht.SHT_BLOCK_SIZE_ENV: "many"}):
+            with self.assertRaisesRegex(ValueError, th.sht.SHT_BLOCK_SIZE_ENV):
+                th.RealSHT(grid)
+        with mock.patch.dict(os.environ, {th.sht.SHT_BLOCK_SIZE_ENV: "0"}):
+            with self.assertRaisesRegex(ValueError, "block_size"):
+                th.RealSHT(grid)
+
+    @parameterized.expand([[False], [True]])
+    @requires_torch_compile
+    def test_blocks_compile(self, vector):
+        """The block loop unrolls into one graph, forward and backward, as the dense contraction does."""
+        _check_compile(self, 24, 48, "legendre-gauss", None, torch.float32, vector=vector, block_size=5)
+
+
 # -- HEALPix ---------------------------------------------------------------------------
 #
 # The scalar SHT on HEALPix. The references are independent of the ring machinery under
@@ -1353,16 +1530,23 @@ class TestHealpixSharedTables(unittest.TestCase):
         for name in _RING_FFT_TABLES:
             self.assertIs(getattr(a, name), getattr(b, name), msg=name)
 
-    @parameterized.expand([["RealSHT", "weights"], ["InverseRealSHT", "pct"], ["RealVectorSHT", "weights"], ["InverseRealVectorSHT", "dpct"]])
-    def test_identical_transforms_share_their_tables(self, cls_name, name):
+    def _assert_same_blocks(self, a, b):
+        self.assertEqual(len(_block_tables(a)), len(_block_tables(b)))
+        for x, y in zip(_block_tables(a), _block_tables(b)):
+            self.assertIs(x, y)
+
+    @parameterized.expand([[name, block_size] for name in ("RealSHT", "InverseRealSHT", "RealVectorSHT", "InverseRealVectorSHT") for block_size in (3, None)])
+    def test_identical_transforms_share_their_tables(self, cls_name, block_size):
         cls = getattr(th, cls_name)
         g = th.HealpixGrid(nside=4)
-        a, b = cls(g).to(self.device), cls(g).to(self.device)
-        self.assertIs(getattr(a, name), getattr(b, name))
+        a, b = cls(g, block_size=block_size).to(self.device), cls(g, block_size=block_size).to(self.device)
+        self.assertEqual(len(_block_tables(a)), 3 if block_size else 1)
+        self._assert_same_blocks(a, b)
         self._assert_ring_fft_shared(a.ring_fft, b.ring_fft)
-        self.assertEqual(getattr(a, name).device.type, torch.device(self.device).type)
+        self.assertEqual(_block_tables(a)[0].device.type, torch.device(self.device).type)
         # a different band is a different table
-        self.assertIsNot(getattr(cls(g, lmax=10, mmax=10).to(self.device), name), getattr(a, name))
+        other = cls(g, lmax=10, mmax=10, block_size=block_size).to(self.device)
+        self.assertIsNot(_block_tables(other)[0], _block_tables(a)[0])
 
     def test_forward_and_inverse_share_the_ring_fft(self):
         """The ring tables depend on the grid and mmax only, not on the direction."""
@@ -1371,16 +1555,16 @@ class TestHealpixSharedTables(unittest.TestCase):
 
     def test_the_jacobi_synthesis_shares_with_a_standalone_inverse(self):
         g = th.HealpixGrid(nside=4)
-        sht = th.RealSHT(g, iter=3).to(self.device)
-        isht = th.InverseRealSHT(g).to(self.device)
-        self.assertIs(sht._synthesis.pct, isht.pct)
+        sht = th.RealSHT(g, iter=3, block_size=3).to(self.device)
+        isht = th.InverseRealSHT(g, block_size=3).to(self.device)
+        self._assert_same_blocks(sht._synthesis, isht)
         self._assert_ring_fft_shared(sht._synthesis.ring_fft, isht.ring_fft)
         self._assert_ring_fft_shared(sht.ring_fft, isht.ring_fft)
 
     def test_the_tables_are_freed_with_the_last_transform(self):
         g = th.HealpixGrid(nside=3)
-        layers = [th.RealSHT(g).to(self.device) for _ in range(2)]
-        refs = [weakref.ref(layers[0].weights), weakref.ref(layers[0].ring_fft._gather)]
+        layers = [th.RealSHT(g, block_size=2).to(self.device) for _ in range(2)]
+        refs = [weakref.ref(w) for w in _block_tables(layers[0])] + [weakref.ref(layers[0].ring_fft._gather)]
         layers.clear()
         gc.collect()
         self.assertTrue(all(ref() is None for ref in refs), "a table outlived every transform using it")
@@ -1388,9 +1572,10 @@ class TestHealpixSharedTables(unittest.TestCase):
     def test_sharing_changes_no_result(self):
         """Shared tables compute exactly what a transform with its own copies does."""
         g = th.HealpixGrid(nside=4)
-        sht = th.RealSHT(g, iter=1).to(self.device)
-        unshared = th.RealSHT(g, iter=1).to(self.device)
-        unshared.weights = sht.weights.clone()
+        sht = th.RealSHT(g, iter=1, block_size=3).to(self.device)
+        unshared = th.RealSHT(g, iter=1, block_size=3).to(self.device)
+        for name in unshared._block_names:
+            setattr(unshared, name, getattr(sht, name).clone())
         for name in _RING_FFT_TABLES:
             setattr(unshared.ring_fft, name, getattr(sht.ring_fft, name).clone())
         x = torch.randn(2, g.npoints, dtype=torch.float64, device=self.device)

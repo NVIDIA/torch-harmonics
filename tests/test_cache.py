@@ -545,11 +545,27 @@ class TestSharedTable(unittest.TestCase):
         self.assertFalse(is_shared(back))
 
 
+# the order block size of the SHTs in these tests: small, so that their 12 orders make three blocks
+_BLOCK = 4
+
+
+def _tables(layer):
+    """The block tables of an SHT: the shared buffers it registered, one per order block."""
+    return tuple(getattr(layer, name) for name in layer._block_names)
+
+
+def _assert_same_tables(test, a, b):
+    """Every block table of ``a`` is the very tensor of ``b``."""
+    test.assertEqual(len(_tables(a)), len(_tables(b)))
+    for x, y in zip(_tables(a), _tables(b)):
+        test.assertIs(x, y)
+
+
 def _sht_pairs(device):
-    """Two identical instances of each SHT, and one that differs only in lmax."""
+    """Two identical instances of each SHT, and one that differs only in lmax; ``name`` is its dense table."""
     grid = as_grid("legendre-gauss", nlat=12, nlon=24)
     for cls, name in ((th.RealSHT, "weights"), (th.InverseRealSHT, "pct"), (th.RealVectorSHT, "weights"), (th.InverseRealVectorSHT, "dpct")):
-        yield cls, name, cls(grid).to(device), cls(grid).to(device), cls(grid, lmax=8, mmax=8).to(device)
+        yield cls, name, cls(grid, block_size=_BLOCK).to(device), cls(grid, block_size=_BLOCK).to(device), cls(grid, lmax=8, mmax=8, block_size=_BLOCK).to(device)
 
 
 @parameterized_class(("device"), _devices)
@@ -559,10 +575,11 @@ class TestSharedSHTBuffers(unittest.TestCase):
     def test_identical_transforms_share_their_table(self):
         for cls, name, a, b, other in _sht_pairs(self.device):
             with self.subTest(cls=cls.__name__):
-                self.assertIs(getattr(a, name), getattr(b, name))
-                self.assertEqual(getattr(a, name).device.type, self.device.type)
-                self.assertIsNot(getattr(other, name), getattr(a, name))
-                self.assertNotIn(name, a.state_dict())
+                self.assertEqual(len(_tables(a)), 3)
+                _assert_same_tables(self, a, b)
+                self.assertTrue(all(t.device.type == self.device.type for t in _tables(a)))
+                self.assertFalse(any(x is y for x in _tables(other) for y in _tables(a)))
+                self.assertEqual(list(a.state_dict()), [])
 
     @parameterized.expand([["ortho"], ["schmidt"], ["unnorm"]])
     def test_forward_and_inverse_never_share(self, norm):
@@ -595,8 +612,8 @@ class TestSharedSHTBuffers(unittest.TestCase):
                 for convert in (lambda m: m.to(self.device), lambda m: m.float(), lambda m: m.double(), lambda m: m.cpu()):
                     convert(a)
                     convert(b)
-                    self.assertIs(getattr(a, name), getattr(b, name))
-                self.assertEqual(getattr(a, name).dtype, torch.float64)
+                    _assert_same_tables(self, a, b)
+                self.assertTrue(all(t.dtype == torch.float64 for t in _tables(a)))
 
     def test_a_lower_precision_copy_stays_with_its_layer(self):
         """A layer rounded through half never hands its rounded table to a layer converted directly."""
@@ -604,7 +621,7 @@ class TestSharedSHTBuffers(unittest.TestCase):
             with self.subTest(cls=cls.__name__):
                 rounded = deepcopy(a).half().float()
                 direct = deepcopy(a).float()
-                self.assertIsNot(getattr(direct, name), getattr(rounded, name))
+                self.assertFalse(any(x is y for x, y in zip(_tables(direct), _tables(rounded))))
                 self.assertTrue(torch.equal(getattr(direct, name), getattr(a, name).float()))
                 self.assertTrue(torch.equal(getattr(rounded, name), getattr(a, name).half().float()))
 
@@ -624,34 +641,35 @@ class TestSharedSHTBuffers(unittest.TestCase):
         for cls, name, a, _, _ in _sht_pairs(self.device):
             with self.subTest(cls=cls.__name__):
                 gc.collect()
-                c = cls(a.grid)
+                c = cls(a.grid, block_size=_BLOCK)
                 self.assertTrue(torch.equal(getattr(c, name), getattr(a, name).cpu()))
-                self.assertIs(getattr(c.to(self.device), name), getattr(a, name))
+                _assert_same_tables(self, c.to(self.device), a)
 
     def test_a_deep_copy_shares_the_table(self):
         for cls, name, a, _, _ in _sht_pairs(self.device):
             with self.subTest(cls=cls.__name__):
-                self.assertIs(getattr(deepcopy(a), name), getattr(a, name))
+                _assert_same_tables(self, deepcopy(a), a)
 
     def test_the_table_is_freed_with_the_last_transform(self):
         grid = as_grid("lobatto", nlat=11, nlon=22)
-        layers = [th.RealSHT(grid).to(self.device) for _ in range(3)]
-        ref = weakref.ref(layers[0].weights)
+        layers = [th.RealSHT(grid, block_size=_BLOCK).to(self.device) for _ in range(3)]
+        refs = [weakref.ref(t) for t in _tables(layers[0])]
         layers.pop()
         layers.pop()
         gc.collect()
-        self.assertIsNotNone(ref())
+        self.assertTrue(all(ref() is not None for ref in refs))
         layers.clear()
         gc.collect()
-        self.assertIsNone(ref(), "the table outlived every transform using it")
+        self.assertTrue(all(ref() is None for ref in refs), "a table outlived every transform using it")
 
     def test_results_are_unchanged(self):
         """Sharing is storage only: a transform computes exactly what an unshared one would."""
         grid = as_grid("equiangular", nlat=13, nlon=26)
-        a = th.RealSHT(grid).to(self.device)
-        b = th.RealSHT(grid).to(self.device)
+        a = th.RealSHT(grid, block_size=_BLOCK).to(self.device)
+        b = th.RealSHT(grid, block_size=_BLOCK).to(self.device)
         unshared = deepcopy(a)
-        unshared.weights = a.weights.clone()
+        for name in unshared._block_names:
+            setattr(unshared, name, getattr(a, name).clone())
         x = torch.randn(2, 13, 26, device=self.device)
         self.assertTrue(torch.equal(a(x), unshared(x)))
         self.assertTrue(torch.equal(a(x), b(x)))
@@ -815,39 +833,40 @@ class TestSharedTablesAcrossDevices(unittest.TestCase):
     def test_an_sht_moved_to_cuda_holds_its_table_there(self, cls_name, name):
         cls = getattr(th, cls_name)
         grid = as_grid("legendre-gauss", nlat=12, nlon=24)
-        layer = cls(grid)
+        layer = cls(grid, block_size=_BLOCK)
+        cpu_layer = cls(grid, block_size=_BLOCK)
         cpu_table = getattr(layer, name)
         self.assertEqual(cpu_table.device.type, "cpu")
 
         layer.to(self.cuda)
         table = getattr(layer, name)
-        self.assertEqual(table.device, self.cuda)
+        self.assertTrue(all(t.device == self.cuda for t in _tables(layer)))
         self.assertEqual(table.dtype, cpu_table.dtype)
         self.assertTrue(torch.equal(table.cpu(), cpu_table), "the table changed on the way to the device")
 
-        # a layer still on the CPU keeps the host table, and an identical layer moved later
-        # shares the device copy; moving back returns the host table itself
-        self.assertIs(getattr(cls(grid), name), cpu_table)
-        self.assertIs(getattr(cls(grid).to(self.cuda), name), table)
-        self.assertIs(getattr(layer.to("cpu"), name), cpu_table)
+        # a layer still on the CPU keeps the host tables, and an identical layer moved later
+        # shares the device copies; moving back returns the host tables themselves
+        self.assertTrue(all(t.device.type == "cpu" for t in _tables(cpu_layer)))
+        _assert_same_tables(self, cls(grid, block_size=_BLOCK).to(self.cuda), layer)
+        _assert_same_tables(self, layer.to("cpu"), cpu_layer)
 
     @parameterized.expand(_SHT_CLASSES)
     def test_an_sht_converted_on_the_way_holds_the_converted_table(self, cls_name, name):
         """.to(device, dtype) gives the device copy of the table in that dtype, converted from the exact one."""
         cls = getattr(th, cls_name)
         grid = as_grid("equiangular", nlat=13, nlon=26)
-        layer = cls(grid)
+        layer = cls(grid, block_size=_BLOCK)
         cpu_table = getattr(layer, name)
         layer.to(device=self.cuda, dtype=torch.float32)
         table = getattr(layer, name)
         self.assertEqual((table.device, table.dtype), (self.cuda, torch.float32))
         self.assertTrue(torch.equal(table.cpu(), cpu_table.float()))
-        self.assertIs(getattr(cls(grid).cuda().float(), name), table)
+        _assert_same_tables(self, cls(grid, block_size=_BLOCK).cuda().float(), layer)
 
     @parameterized.expand(_SHT_CLASSES)
     def test_an_sht_computes_the_same_on_cuda(self, cls_name, _):
         cls = getattr(th, cls_name)
-        layer = cls(as_grid("legendre-gauss", nlat=12, nlon=24))
+        layer = cls(as_grid("legendre-gauss", nlat=12, nlon=24), block_size=_BLOCK)
         inputs = _layer_input(layer, self.generator)
         expected = layer(*inputs)
         actual = layer.to(self.cuda)(*(x.to(self.cuda) for x in inputs))
@@ -897,7 +916,7 @@ class TestSharedTablesAcrossDevices(unittest.TestCase):
         baseline = torch.cuda.memory_allocated(self.cuda)
         first = th.RealSHT(grid).to(self.cuda)
         one = torch.cuda.memory_allocated(self.cuda) - baseline
-        self.assertGreaterEqual(one, first.weights.numel() * first.weights.element_size())
+        self.assertGreaterEqual(one, sum(t.numel() * t.element_size() for t in _tables(first)))
         more = [th.RealSHT(grid).to(self.cuda) for _ in range(3)]
         self.assertEqual(torch.cuda.memory_allocated(self.cuda) - baseline, one)
         del first, more
@@ -912,4 +931,4 @@ class TestSharedTablesAcrossDevices(unittest.TestCase):
         self.assertEqual((on_0.weights.device.index, on_1.weights.device.index), (0, 1))
         self.assertTrue(torch.equal(on_0.weights.cpu(), on_1.weights.cpu()))
         # moving between devices lands on the copy already there
-        self.assertIs(on_0.to("cuda:1").weights, on_1.weights)
+        _assert_same_tables(self, on_0.to("cuda:1"), on_1)
