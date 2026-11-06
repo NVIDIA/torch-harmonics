@@ -1024,6 +1024,13 @@ class TestRingFFT(unittest.TestCase):
         self.assertFalse(RingFFT(th.as_grid("equiangular", nlat=5, nlon=16), mmax=9)._permuted)
         self.assertTrue(RingFFT(th.HealpixGrid(nside=2), mmax=4)._permuted)
 
+    def test_a_regular_grid_shares_its_tables(self):
+        """Without a gather the layer holds every table it is given, so the shared entry survives."""
+        g = th.as_grid("equiangular", nlat=5, nlon=16)
+        a, b = RingFFT(g, mmax=9), RingFFT(g, mmax=9)
+        for name in ("_gather", "_fold_pos", "_fold_neg", "_imag_mask", "_phase_re"):
+            self.assertIs(getattr(a, name), getattr(b, name), msg=name)
+
     def test_gradients_on_healpix(self):
         """The batch order is an internal layout: both directions differentiate exactly."""
         set_seed(333)

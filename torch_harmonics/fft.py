@@ -242,9 +242,10 @@ def _ring_fft_tables(grid: GridS2, mmax: int) -> Dict[str, object]:
         "nbins": nbins,
         "lengths": tuple(lengths),
         "counts": tuple(counts),
-        "identity": identity,
-        "pixel_order": pixel_order,
-        "pixel_inverse": torch.argsort(pixel_order),
+        # None where no gather is needed: every tensor returned must be kept alive by the
+        # layer, or the shared entry is dropped and the next identical ring FFT rebuilds it
+        "pixel_order": None if identity else pixel_order,
+        "pixel_inverse": None if identity else torch.argsort(pixel_order),
         "gather": (ring * nbins + k).reshape(-1),
         "gather_sign": torch.where(conj, -1.0, 1.0).to(torch.float64),
         "fold_pos": pos.reshape(-1),
@@ -296,7 +297,7 @@ class RingFFT(SharedBufferMixin, nn.Module):
         # pixels per batch, to split a field in batch order
         self._sizes = [n * count for n, count in zip(self._lengths, self._counts)]
         # no pixel permutation where the batch order is the pixel order, as on a regular grid
-        self._permuted = not tables["identity"]
+        self._permuted = tables["pixel_order"] is not None
         if self._permuted:
             self.register_shared_buffer("_pixel_order", tables["pixel_order"])
             self.register_shared_buffer("_pixel_inverse", tables["pixel_inverse"])
