@@ -37,7 +37,7 @@ equiangular grid raises instead of being ignored.
 | `"legendre-gauss"` | `LegendreGaussGrid` | `nlat`,`nlon` | Gauss-Legendre nodes                                       | no    | yes                          |
 | `"lobatto"`        | `LobattoGrid`       | `nlat`,`nlon` | Gauss-Lobatto nodes                                        | yes   | yes                          |
 | `"trapezoidal"`    | `TrapezoidalGrid`   | `nlat`,`nlon` | equispaced in `cos(colatitude)`                            | yes   | only at low truncation       |
-| `"healpix"`        | `HealpixGrid`       | `nside`       | `12 * nside**2` equal-area pixels on `4 * nside - 1` rings | no    | no                           |
+| `"healpix"`        | `HealpixGrid`       | `nside`       | `12 * nside**2` equal-area pixels on `4 * nside - 1` rings | no    | yes; analysis approximate    |
 
 The first five are latitude-longitude grids: `nlat` latitude rings with `nlon`
 equispaced longitudes each. They differ only in where the rings sit and in the
@@ -76,11 +76,13 @@ before v1.0.0.
 
 **HEALPix.** The HEALPix pixelization in RING order: equal-area pixels on rings
 whose length grows from 4 at the poles to `4 * nside` at the equator. Its
-quadrature integrates only constants exactly, so it does not support an SHT.
-It is accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
+quadrature integrates only constants exactly, so no SHT on it is exact in
+analysis. The scalar and vector SHTs accept it all the same: synthesis is exact,
+and analysis is approximate, refined by Jacobi iteration (see "SHT on HEALPix"
+below). It is also accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
 `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and `QuadratureS2`;
-the SHTs, spectral convolutions, resampling, random fields and the
-distributed layers require a latitude-longitude grid. `HealpixGrid.from_level(k)`
+spectral convolutions, resampling, random fields and the distributed layers
+require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
 ## Spherical harmonic truncation
@@ -96,7 +98,7 @@ how far each bound can go:
 | `"legendre-gauss"` | `nlat`                              | `nlat`                   | `(nlon + 1) // 2`     | raises `ValueError`                        |
 | `"lobatto"`        | `nlat - 1`                          | `nlat - 1`               | `(nlon + 1) // 2`     | raises `ValueError`                        |
 | `"trapezoidal"`    | `(nlat + 1) // 2`                   | `(nlat + 1) // 2`        | `(nlon + 1) // 2`     | warns (any SHT on this grid warns)         |
-| `"healpix"`        | SHT not supported yet               | SHT not supported yet    | SHT not supported yet | SHT not supported yet                      |
+| `"healpix"`        | none; default `lmax` is `2 * nside` | `3 * nside`              | `3 * nside`           | warns                                      |
 
 - `max_exact_degree` is the degree up to which the latitude quadrature keeps
   the associated Legendre functions discretely orthogonal.
@@ -106,13 +108,19 @@ how far each bound can go:
 - `max_azimuthal_order` depends only on the longitude sampling. For even
   `nlon` it excludes the Nyquist order `nlon / 2`: its sine component is zero at
   every longitude, so the complex coefficient cannot be recovered.
+- HEALPix has no exact quadrature, so its default comes from `default_sht_degree`
+  instead, `2 * nside`, where its approximate analysis is well conditioned (see
+  "SHT on HEALPix" below). Its rings differ in length, so its order bound is
+  not a ring's Nyquist limit: orders beyond a ring's limit are aliased on that
+  ring and recovered from the rings jointly, up to the same `3 * nside` as the
+  degree.
 
 `th.truncate_sht(grid, lmax, mmax, lmmax)` resolves the bounds, and the SHTs use
 it:
 
 | arguments             | resolved bounds                                                                        |
 | --------------------- | -------------------------------------------------------------------------------------- |
-| none, or only `lmmax` | triangular: `lmax = mmax = min(max_exact_degree, max_azimuthal_order)`                 |
+| none, or only `lmmax` | triangular: `lmax = mmax = min(default_sht_degree, max_azimuthal_order)`               |
 | only `mmax`           | `lmax = mmax`                                                                          |
 | only `lmax`           | `mmax = lmax`; raises if that exceeds `max_azimuthal_order`, so pass `mmax` explicitly |
 | `lmax` and `mmax`     | kept as given, also beyond the grid limits; `mmax > lmax` raises                       |
@@ -158,7 +166,48 @@ block size of at least `mmax` is a single block, the dense table, and shares
 it with `block_size=None`. The distributed transforms cut their blocks at the
 same global multiples of `block_size`, so a rank holds the serial blocks of its
 orders. `weights`, `pct` and `dpct` assemble the dense table on access, for
-inspection.
+inspection. HEALPix transforms store their tables in the same blocks.
+
+## SHT on HEALPix
+
+`RealSHT`, `InverseRealSHT`, `RealVectorSHT` and `InverseRealVectorSHT` accept a
+`HealpixGrid`. Fields are flat, `(..., npix)` in RING order (`(..., 2, npix)` for a
+vector field), and coefficients have the usual `(..., lmax, mmax)` layout:
+
+```python
+grid = th.HealpixGrid(nside=64)
+sht = th.RealSHT(grid, iter=3)    # lmax = mmax = 128
+isht = th.InverseRealSHT(grid)
+coeffs = sht(x)                   # x: (..., 49152)
+```
+
+Each ring is Fourier transformed at its own length and phase offset. Orders beyond a
+ring's Nyquist limit are aliased, not dropped: the polar rings carry as few as 4
+pixels, far fewer than the transform has orders.
+
+Synthesis is exact. Analysis is approximate, because no quadrature on HEALPix makes the
+spherical harmonics discretely orthogonal. It uses ring weights
+(`th.healpix.healpix_ring_weights`): the smallest correction to the equal-area weights
+that integrates every zonal harmonic below degree `3 * nside` exactly, computed at
+construction rather than shipped as data. Most of the remaining error is in the orders
+`m > 0`, which no choice of weights corrects. Jacobi iteration does: `iter=k` repeats
+`a <- a + A(f - S a)`, at the cost of one more synthesis and analysis each. For a field
+band-limited to the default `lmax = 2 * nside`, the relative error of the recovered
+coefficients is:
+
+| `iter` | relative error |
+| ------ | -------------- |
+| 0      | ~1e-2          |
+| 1      | ~1e-3          |
+| 3      | ~1e-6          |
+
+These match healpy's `map2alm(..., iter=k, use_weights=True)`, and the vector SHT
+behaves alike. `iter=3` is recommended when precision matters. Up to `lmax = 3 * nside`
+the transform is accepted, but analysis degrades quickly above `2 * nside`.
+
+The vector coefficients relate to healpy's spin-1 gradient and curl coefficients
+(`map2alm_spin` / `alm2map_spin` with `spin=1`) by `a_E = sqrt(l (l + 1)) * s` and
+`a_B = -sqrt(l (l + 1)) * t`, with the field components `(u_theta, u_phi)` as they are.
 
 ## Folded high-bandwidth SHT analysis
 

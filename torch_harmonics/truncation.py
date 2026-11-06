@@ -33,7 +33,7 @@ import math
 import warnings
 from typing import Optional
 
-from torch_harmonics.grid import PointSetS2, RegularGridS2, SpectralGrid, require_point_set, require_regular_grid
+from torch_harmonics.grid import GridS2, PointSetS2, RegularGridS2, SpectralGrid, require_grid, require_point_set
 
 
 def _warn_if_not_spectrally_accurate(grid: RegularGridS2) -> None:
@@ -61,9 +61,9 @@ def _warn_if_not_spectrally_accurate(grid: RegularGridS2) -> None:
     )
 
 
-def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, lmmax: Optional[int] = None) -> SpectralGrid:
+def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, lmmax: Optional[int] = None) -> SpectralGrid:
     r"""
-    Resolve the three non-inclusive spectral bounds of a regular-grid SHT.
+    Resolve the three non-inclusive spectral bounds of an SHT.
 
     The default latitude bound follows the quadrature table below. The
     trapezoidal grid uses the equiangular default, although its quadrature is
@@ -97,9 +97,20 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
          - No
          - :math:`N_\theta` for odd and :math:`N_\theta - 1` for even
          - :math:`\lceil N_\theta / 2 \rceil`
+       * - ``"healpix"``
+         - No
+         - none (analysis is approximate)
+         - :math:`2 N_{side}`
 
     On the trapezoidal grid, only the constant mode (``lmax=1``) is recovered
     exactly. Its default bound does not guarantee accurate SHT round trips.
+
+    HEALPix has no exact quadrature degree, so its default is
+    :attr:`~torch_harmonics.healpix.HealpixGrid.default_sht_degree`, where its
+    approximate analysis is well conditioned, and both bounds may be raised to
+    :math:`3 N_{side}`. Its rings differ in length, so the longitudinal bounds below,
+    stated for :math:`N_\lambda` longitudes, do not apply to it; it declares
+    :attr:`~torch_harmonics.healpix.HealpixGrid.max_azimuthal_order` itself.
 
     The default longitudinal truncation is the largest order whose complex
     coefficient the uniform longitude grid determines:
@@ -120,16 +131,19 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     :math:`l-m` bandwidth unrestricted; ``lmmax=mmax`` gives the classical
     rhomboidal case when ``lmax`` does not clip it.
 
-    The default bounds use :attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree`
-    and :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`.
+    The default bounds use :attr:`~torch_harmonics.grid.PointSetS2.default_sht_degree`
+    (:attr:`~torch_harmonics.grid.PointSetS2.max_exact_degree` on every grid with an exact
+    quadrature) and :attr:`~torch_harmonics.grid.RegularGridS2.max_azimuthal_order`.
     Forward transforms validate degree against ``max_recoverable_degree``;
     inverse transforms use the same resolved bounds but can synthesize higher
     degrees when both bounds are explicit.
 
     Parameters
     ----------
-    grid : RegularGridS2
-        Descriptor of the spatial grid the transform operates on.
+    grid : GridS2
+        Descriptor of the spatial grid the transform operates on: a
+        :class:`~torch_harmonics.grid.RegularGridS2` or a
+        :class:`~torch_harmonics.healpix.HealpixGrid`.
     lmax : int, optional
         User-defined maximum spherical harmonic degree (non-inclusive).
         If neither degree nor order is specified, it follows the table above.
@@ -168,7 +182,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
 
     # a shard has no spectral bounds of its own; say so with the migration message
     # rather than letting an AttributeError surface from deeper in
-    grid = require_regular_grid(grid)
+    grid = require_grid(grid)
 
     if lmax is not None:
         lmax = SpectralGrid._normalize_bound("lmax", lmax, 0, "non-negative")
@@ -184,7 +198,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
                 UserWarning,
                 stacklevel=2,
             )
-        lmax = min(grid.max_exact_degree, grid.max_azimuthal_order)
+        lmax = min(grid.default_sht_degree, grid.max_azimuthal_order)
         mmax = lmax
     elif lmax is None:
         lmax = mmax
@@ -199,7 +213,7 @@ def truncate_sht(grid: RegularGridS2, lmax: Optional[int] = None, mmax: Optional
     return SpectralGrid(lmax, mmax, lmmax)
 
 
-def _validate_forward_sht_degree(grid: RegularGridS2, lmax: int) -> None:
+def _validate_forward_sht_degree(grid: GridS2, lmax: int) -> None:
     """Validate latitude recovery for forward SHT analysis."""
     max_degree = grid.max_recoverable_degree
     if lmax <= max_degree:
@@ -208,7 +222,7 @@ def _validate_forward_sht_degree(grid: RegularGridS2, lmax: int) -> None:
     message = f"forward SHT lmax={lmax} exceeds grid '{grid.grid_type}' max_recoverable_degree={max_degree}"
     if grid.grid_type in ("legendre-gauss", "lobatto"):
         raise ValueError(message)
-    if grid.grid_type in ("equiangular", "fejer1"):
+    if grid.grid_type in ("equiangular", "fejer1", "healpix"):
         warnings.warn(message, UserWarning, stacklevel=3)
     # Trapezoidal transforms already emit their quadrature warning at construction.
 
