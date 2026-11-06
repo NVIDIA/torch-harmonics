@@ -1019,6 +1019,27 @@ class TestHealpixRingWeights(unittest.TestCase):
 class TestRingFFT(unittest.TestCase):
     """RingFFT on a regular grid, where a plain rfft is the reference."""
 
+    def test_a_regular_grid_needs_no_pixel_permutation(self):
+        """One batch of rings already in pixel order is transformed without a gather."""
+        self.assertFalse(RingFFT(th.as_grid("equiangular", nlat=5, nlon=16), mmax=9)._permuted)
+        self.assertTrue(RingFFT(th.HealpixGrid(nside=2), mmax=4)._permuted)
+
+    def test_a_regular_grid_shares_its_tables(self):
+        """Without a gather the layer holds every table it is given, so the shared entry survives."""
+        g = th.as_grid("equiangular", nlat=5, nlon=16)
+        a, b = RingFFT(g, mmax=9), RingFFT(g, mmax=9)
+        for name in ("_gather", "_fold_pos", "_fold_neg", "_imag_mask", "_phase_re"):
+            self.assertIs(getattr(a, name), getattr(b, name), msg=name)
+
+    def test_gradients_on_healpix(self):
+        """The batch order is an internal layout: both directions differentiate exactly."""
+        set_seed(333)
+        ring_fft = RingFFT(th.HealpixGrid(nside=2), mmax=6)
+        x = torch.randn(2, 48, dtype=torch.float64, requires_grad=True)
+        self.assertTrue(gradcheck(lambda t: torch.view_as_real(ring_fft(t)), (x,)))
+        c = torch.randn(2, ring_fft.nrings, 6, dtype=torch.complex128, requires_grad=True)
+        self.assertTrue(gradcheck(ring_fft.inverse, (c,)))
+
     def test_it_matches_rfft_on_a_regular_grid(self):
         set_seed(333)
         g = th.as_grid("equiangular", nlat=5, nlon=16)
@@ -1321,7 +1342,7 @@ class TestHealpixVectorSHT(unittest.TestCase):
         self.assertTrue(compare_tensors("compiled backward", actual_grad, expected_grad, atol=0.0, rtol=0.0, ulps=64))
 
 
-_RING_FFT_TABLES = ("_ring_inverse", "_pixel_inverse", "_gather", "_gather_sign", "_fold_pos", "_fold_neg", "_imag_mask", "_phase_re", "_phase_im")
+_RING_FFT_TABLES = ("_pixel_order", "_pixel_inverse", "_gather", "_gather_sign", "_fold_pos", "_fold_neg", "_imag_mask", "_phase_re", "_phase_im")
 
 
 @parameterized_class(("device"), _devices)
@@ -1329,7 +1350,7 @@ class TestHealpixSharedTables(unittest.TestCase):
     """HEALPix transforms share their tables like the regular ones: see torch_harmonics.cache."""
 
     def _assert_ring_fft_shared(self, a, b):
-        for name in _RING_FFT_TABLES + tuple(f"_{kind}_{i}" for i in range(len(a._lengths)) for kind in ("pixels", "rings")):
+        for name in _RING_FFT_TABLES:
             self.assertIs(getattr(a, name), getattr(b, name), msg=name)
 
     @parameterized.expand([["RealSHT", "weights"], ["InverseRealSHT", "pct"], ["RealVectorSHT", "weights"], ["InverseRealVectorSHT", "dpct"]])
