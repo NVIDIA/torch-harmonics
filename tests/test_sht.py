@@ -946,6 +946,23 @@ class TestBlockedLegendreTables(unittest.TestCase):
                 stored = sum(w.numel() for w in _block_tables(forward))
                 self.assertLess(stored, forward.weights.numel() * (0.65 if lmmax is None else 0.5))
 
+    @parameterized.expand(
+        [[*case, vector, block_size] for case in _BLOCK_CASES for vector in (False, True) for block_size in (1, 3, 15)],
+        skip_on_empty=True,
+    )
+    def test_a_block_owns_only_its_own_storage(self, grid, nlat, nlon, lmax, mmax, lmmax, vector, block_size):
+        """
+        No block keeps a larger allocation alive, such as the full-degree folded projection it was
+        cut from; single-order blocks, from block_size=1 or a short last block, included.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forward, inverse = _transforms(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax, mmax, vector, lmmax=lmmax, block_size=block_size)
+        for layer in (forward, inverse):
+            for name, table in zip(layer._block_names, _block_tables(layer)):
+                self.assertTrue(table.is_contiguous(), msg=name)
+                self.assertEqual(table.untyped_storage().nbytes(), table.numel() * table.element_size(), msg=name)
+
     def test_a_block_size_of_at_least_mmax_is_the_dense_table(self):
         """None and every block size >= mmax resolve to one block, and share it."""
         grid = th.as_grid("legendre-gauss", nlat=12, nlon=24)

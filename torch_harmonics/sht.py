@@ -302,7 +302,9 @@ def _analysis_block(
 
     if _extended_folded_analysis(grid, truncation):
         weights = _precompute_folded_projection(grid, truncation, norm, csphase, vector=vector, mmin=ms, mmax=me, kmin=kmin, kmax=kmax)
-        weights = weights[..., ls:le, :].contiguous()
+        # always copy: a single-order slice counts as contiguous, so .contiguous() would return
+        # the view and keep the projection of every degree alive
+        weights = weights[..., ls:le, :].clone(memory_format=torch.contiguous_format)
     elif not vector:
         pct = _precompute_legpoly(me, le, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=ms, lmin=ls, kmin=kmin, kmax=kmax)
         weights = torch.einsum("mlk,k->mlk", pct, quad_weights).contiguous()
