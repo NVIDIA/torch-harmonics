@@ -157,8 +157,8 @@ The default is the environment variable `TORCH_HARMONICS_SHT_BLOCK_SIZE`
 (an integer, or `none`) if it is set, else 32; an explicit argument wins.
 
 ```python
-sht = th.RealSHT(grid, block_size=64)   # blocks of 64 orders
-dense = th.RealSHT(grid, block_size=None)
+sht_b64 = th.RealSHT(grid, block_size=64)      # blocks of 64 orders
+sht_dense = th.RealSHT(grid, block_size=None)  # None: one dense table
 ```
 
 Identical transforms share their tables only when their block sizes agree. A
