@@ -29,7 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import Optional
+import numbers
+import os
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -222,6 +224,102 @@ def _precompute_folded_projection(
     return weights
 
 
+SHT_BLOCK_SIZE_ENV = "TORCH_HARMONICS_SHT_BLOCK_SIZE"
+"""Environment variable that sets the default ``block_size`` of the SHTs: an integer, or ``none`` for dense tables."""
+
+DEFAULT_SHT_BLOCK_SIZE = 32
+"""The default ``block_size`` of the SHTs when :data:`SHT_BLOCK_SIZE_ENV` is not set."""
+
+
+class _BlockSizeFromEnvironment:
+    """The default of every SHT's ``block_size``: read :data:`SHT_BLOCK_SIZE_ENV` at construction."""
+
+    def __repr__(self) -> str:
+        return f"${SHT_BLOCK_SIZE_ENV} or {DEFAULT_SHT_BLOCK_SIZE}"
+
+
+BLOCK_SIZE_FROM_ENVIRONMENT = _BlockSizeFromEnvironment()
+
+
+def _resolve_block_size(block_size, mmax: int) -> Optional[int]:
+    """
+    The order block size a transform stores its tables in, ``None`` for a single dense block.
+
+    ``block_size`` is a positive integer, ``None`` for dense tables, or
+    :data:`BLOCK_SIZE_FROM_ENVIRONMENT`, which reads :data:`SHT_BLOCK_SIZE_ENV` and falls back to
+    :data:`DEFAULT_SHT_BLOCK_SIZE`. A block size of at least ``mmax`` is a single block, the
+    dense table, and resolves to ``None``, so those transforms share their tables.
+    """
+    if block_size is BLOCK_SIZE_FROM_ENVIRONMENT:
+        value = os.environ.get(SHT_BLOCK_SIZE_ENV, "").strip()
+        if not value:
+            block_size = DEFAULT_SHT_BLOCK_SIZE
+        elif value.lower() in ("none", "dense"):
+            block_size = None
+        else:
+            try:
+                block_size = int(value)
+            except ValueError:
+                raise ValueError(f"{SHT_BLOCK_SIZE_ENV}={value!r} is neither a positive integer nor 'none'") from None
+    if block_size is not None and (isinstance(block_size, bool) or not isinstance(block_size, numbers.Integral) or block_size < 1):
+        raise ValueError(f"block_size must be a positive integer or None, got {block_size!r}")
+    return None if block_size is None or block_size >= mmax else int(block_size)
+
+
+def _sht_blocks(truncation: SpectralGrid, block_size: Optional[int], mmin: int, mmax: int, lmin: int, lmax: int) -> Tuple[Tuple[int, int, int, int], ...]:
+    r"""
+    The order blocks of a table holding orders ``[mmin, mmax)`` and degrees ``[lmin, lmax)``.
+
+    Each block is ``(ms, me, ls, le)`` in global indices: orders ``[ms, me)`` and the degrees
+    ``[ls, le)`` any of them has, :math:`m \le l < m + lm_{\max}`, clipped to ``[lmin, lmax)``.
+    The orders are cut at the global multiples of ``block_size``, so the blocks of a distributed
+    rank are a subset of the serial ones; ``None`` keeps them in one block.
+    """
+    if mmax <= mmin:
+        # one empty block, which still contracts: the output keeps its degrees and its graph
+        return ((mmin, mmin, lmin, lmax),)
+    if block_size is None:
+        cuts = [mmin, mmax]
+    else:
+        cuts = [mmin, *range((mmin // block_size + 1) * block_size, mmax, block_size), mmax]
+    blocks = []
+    for ms, me in zip(cuts[:-1], cuts[1:]):
+        top = lmax if truncation.lmmax is None else min(lmax, me - 1 + truncation.lmmax)
+        ls = min(max(ms, lmin), lmax)
+        blocks.append((ms, me, ls, max(top, ls)))
+    return tuple(blocks)
+
+
+def _analysis_block(
+    grid: RegularGridS2, truncation: SpectralGrid, norm: str, csphase: bool, vector: bool, ms: int, me: int, ls: int, le: int, kmin: int, kmax: int
+) -> torch.Tensor:
+    """The analysis table of orders ``[ms, me)`` and degrees ``[ls, le)`` on rings ``[kmin, kmax)``, see :func:`_analysis_weights`."""
+    # quadrature weights come from the grid descriptor, which supports every grid
+    # precompute_latitudes does. Only this block's rings are needed: the contraction over
+    # rings is completed by a reduce-scatter in a distributed forward, and rings are
+    # independent of one another, so restricting them costs nothing
+    quad_weights = (2.0 * torch.pi * grid.colat_weights)[kmin:kmax]
+
+    if _extended_folded_analysis(grid, truncation):
+        weights = _precompute_folded_projection(grid, truncation, norm, csphase, vector=vector, mmin=ms, mmax=me, kmin=kmin, kmax=kmax)
+        weights = weights[..., ls:le, :].contiguous()
+    elif not vector:
+        pct = _precompute_legpoly(me, le, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=ms, lmin=ls, kmin=kmin, kmax=kmax)
+        weights = torch.einsum("mlk,k->mlk", pct, quad_weights).contiguous()
+    else:
+        dpct = _precompute_dlegpoly(me, le, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=ms, lmin=ls, kmin=kmin, kmax=kmax)
+        # combine integration weights, normalization factor in to one. The degrees are
+        # float64: an integer arange divided by a float gives the default dtype, float32,
+        # and that rounding of 1/(l(l+1)) would survive a later .double()
+        l = torch.arange(ls, le, dtype=torch.float64)
+        norm_factor = torch.where(l > 0, 1.0 / l / (l + 1), 1.0)
+        weights = torch.einsum("dmlk,k,l->dmlk", dpct, quad_weights, norm_factor).contiguous()
+        # conjugate the imaginary derivative component; weights is fresh, so writing to it is safe
+        weights[1] = -1 * weights[1]
+
+    return weights
+
+
 @shared_table
 @torch.no_grad()
 def _analysis_weights(
@@ -234,47 +332,29 @@ def _analysis_weights(
     mmax: int,
     kmin: int,
     kmax: int,
-) -> torch.Tensor:
+    block_size: Optional[int],
+) -> Tuple[torch.Tensor, ...]:
     r"""
-    The analysis buffer of a forward SHT: quadrature-weighted projection rows.
+    The analysis buffers of a forward SHT: quadrature-weighted projection rows, in order blocks.
 
-    Shape ``(mmax - mmin, lmax, kmax - kmin)``, or ``(2, ...)`` for a vector transform: orders
-    ``[mmin, mmax)``, every degree, and rings ``[kmin, kmax)``. A serial transform asks for
-    every order and ring, a distributed one for its block. On equiangular and Fejer-1 grids
-    beyond the native bound these are the folded projection rows. Otherwise the Legendre
-    table times the quadrature weights, which include the longitude scale :math:`2\pi` of
-    the forward-normalized FFT, and for a vector transform the degree factor
-    :math:`1 / (l (l + 1))` and the conjugation of the imaginary derivative component.
+    One table per block of :func:`_sht_blocks` over orders ``[mmin, mmax)`` and every degree,
+    shaped ``(me - ms, le - ls, kmax - kmin)``, or ``(2, ...)`` for a vector transform: the
+    block's orders, the degrees they have, and rings ``[kmin, kmax)``. A serial transform asks
+    for every order and ring, a distributed one for its block. The degrees below an order
+    vanish, so a block stores only the lower triangle of the dense ``(mmax, lmax)`` table it
+    covers and its diagonal block; ``block_size=None`` is one block, the dense table.
 
-    Shared between all transforms with the same arguments, see
+    On equiangular and Fejer-1 grids beyond the native bound these are the folded projection
+    rows. Otherwise the Legendre table times the quadrature weights, which include the
+    longitude scale :math:`2\pi` of the forward-normalized FFT, and for a vector transform
+    the degree factor :math:`1 / (l (l + 1))` and the conjugation of the imaginary derivative
+    component.
+
+    Shared between all transforms with the same arguments, the block size included, see
     :func:`~torch_harmonics.cache.shared_table`.
     """
-    lmax = truncation.lmax
-    # quadrature weights come from the grid descriptor, which supports every grid
-    # precompute_latitudes does. Only this block's rings are needed: the contraction over
-    # rings is completed by a reduce-scatter in a distributed forward, and rings are
-    # independent of one another, so restricting them costs nothing
-    quad_weights = (2.0 * torch.pi * grid.colat_weights)[kmin:kmax]
-
-    if _extended_folded_analysis(grid, truncation):
-        weights = _precompute_folded_projection(grid, truncation, norm, csphase, vector=vector, mmin=mmin, mmax=mmax, kmin=kmin, kmax=kmax)
-    elif not vector:
-        pct = _precompute_legpoly(mmax, lmax, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=mmin, kmin=kmin, kmax=kmax)
-        weights = torch.einsum("mlk,k->mlk", pct, quad_weights).contiguous()
-    else:
-        dpct = _precompute_dlegpoly(mmax, lmax, grid, norm=norm, csphase=csphase, truncation=truncation, mmin=mmin, kmin=kmin, kmax=kmax)
-        # combine integration weights, normalization factor in to one. The degrees are
-        # float64: an integer arange divided by a float gives the default dtype, float32,
-        # and that rounding of 1/(l(l+1)) would survive a later .double()
-        l = torch.arange(0, lmax, dtype=torch.float64)
-        norm_factor = 1.0 / l / (l + 1)
-        if lmax:
-            norm_factor[0] = 1.0
-        weights = torch.einsum("dmlk,k,l->dmlk", dpct, quad_weights, norm_factor).contiguous()
-        # conjugate the imaginary derivative component; weights is fresh, so writing to it is safe
-        weights[1] = -1 * weights[1]
-
-    return weights
+    blocks = _sht_blocks(truncation, block_size, mmin, mmax, 0, truncation.lmax)
+    return tuple(_analysis_block(grid, truncation, norm, csphase, vector, ms, me, ls, le, kmin, kmax) for ms, me, ls, le in blocks)
 
 
 @shared_table
@@ -289,27 +369,104 @@ def _synthesis_table(
     mmax: int,
     lmin: int,
     lmax: int,
-) -> torch.Tensor:
+    block_size: Optional[int],
+) -> Tuple[torch.Tensor, ...]:
     r"""
-    The synthesis buffer of an inverse SHT: the Legendre table on the grid's rings.
+    The synthesis buffers of an inverse SHT: the Legendre table on the grid's rings, in order blocks.
 
-    Shape ``(mmax - mmin, nlat, lmax - lmin)``, or ``(2, ...)`` with the derivative tables for
-    a vector transform: orders ``[mmin, mmax)``, every ring, degrees ``[lmin, lmax)``, stored
-    with the contracted degree axis stride-1. A serial transform asks for every order and
-    degree, a distributed one for its block; both ranges are walked from the start, since
-    the sectoral seed couples orders and the three-term recurrence couples degrees.
+    One table per block of :func:`_sht_blocks` over orders ``[mmin, mmax)`` and degrees
+    ``[lmin, lmax)``, shaped ``(me - ms, nlat, le - ls)``, or ``(2, ...)`` with the derivative
+    tables for a vector transform, stored with the contracted degree axis stride-1. A serial
+    transform asks for every order and degree, a distributed one for its block; both ranges
+    are walked from the start, since the sectoral seed couples orders and the three-term
+    recurrence couples degrees. ``block_size=None`` is one block, the dense table.
 
-    Shared between all transforms with the same arguments, see
+    Shared between all transforms with the same arguments, the block size included, see
     :func:`~torch_harmonics.cache.shared_table`.
     """
-    if not vector:
-        pct = _precompute_legpoly(mmax, lmax, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=mmin, lmin=lmin)
-        table = pct.permute(0, 2, 1).contiguous()
-    else:
-        dpct = _precompute_dlegpoly(mmax, lmax, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=mmin, lmin=lmin)
-        table = dpct.permute(0, 1, 3, 2).contiguous()
+    tables = []
+    for ms, me, ls, le in _sht_blocks(truncation, block_size, mmin, mmax, lmin, lmax):
+        if not vector:
+            pct = _precompute_legpoly(me, le, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=ms, lmin=ls)
+            tables.append(pct.permute(0, 2, 1).contiguous())
+        else:
+            dpct = _precompute_dlegpoly(me, le, grid, norm=norm, inverse=True, csphase=csphase, truncation=truncation, mmin=ms, lmin=ls)
+            tables.append(dpct.permute(0, 1, 3, 2).contiguous())
+    return tuple(tables)
 
-    return table
+
+class _BlockLayout:
+    """
+    Where the order blocks of a table sit in a transform's local spectral block.
+
+    ``sizes`` are the blocks' order counts, to split the order axis by; ``degrees`` their
+    ``(offset, count)`` within the local degree range ``[lmin, ...)``. Plain ints, so
+    ``torch.compile`` specializes on them.
+    """
+
+    __slots__ = ("sizes", "degrees")
+
+    def __init__(self, blocks: Tuple[Tuple[int, int, int, int], ...], lmin: int):
+        self.sizes = [me - ms for ms, me, _, _ in blocks]
+        self.degrees = [(ls - lmin, le - ls) for _, _, ls, le in blocks]
+
+
+def _register_blocks(module: nn.Module, name: str, tables: Tuple[torch.Tensor, ...], blocks, lmin: int) -> None:
+    """Register the block tables of a transform as the shared buffers ``{name}_{i}``."""
+    module._layout = _BlockLayout(blocks, lmin)
+    module._block_names = tuple(f"{name}_{i}" for i in range(len(tables)))
+    for buffer, table in zip(module._block_names, tables):
+        module.register_shared_buffer(buffer, table)
+
+
+def _blocks(module: nn.Module) -> list:
+    """The block tables of a transform, as registered by :func:`_register_blocks`."""
+    return [getattr(module, name) for name in module._block_names]
+
+
+def _dense_table(module: nn.Module, degree_dim: int, ndegrees: int) -> torch.Tensor:
+    """The dense table of a transform, assembled from its blocks: a fresh tensor, for inspection."""
+    tables = _blocks(module)
+    padded = []
+    for table, (offset, count) in zip(tables, module._layout.degrees):
+        pad = [0, 0] * (table.dim() - 1 - (degree_dim % table.dim())) + [offset, ndegrees - offset - count]
+        padded.append(nn.functional.pad(table, pad))
+    return torch.cat(padded, dim=-3)
+
+
+def _analysis_contraction(x: torch.Tensor, tables: list, layout: _BlockLayout, lmax: int) -> torch.Tensor:
+    """
+    Contract ``(..., m, k)`` with the analysis blocks into ``(..., lmax, m)``.
+
+    One einsum per block over its degrees, each padded to every degree. The input is cut with
+    :func:`torch.split`, whose backward is a single concatenation; slicing it per block instead
+    would allocate a zero gradient of the full input for every block.
+    """
+    outs = []
+    for xb, w, (offset, count) in zip(torch.split(x, layout.sizes, dim=-2), tables, layout.degrees):
+        y = torch.einsum("...mk,mlk->...lm", xb, w)
+        if offset or offset + count != lmax:
+            y = nn.functional.pad(y, (0, 0, offset, lmax - offset - count))
+        outs.append(y)
+    return outs[0] if len(outs) == 1 else torch.cat(outs, dim=-1)
+
+
+def _synthesis_contraction(x: torch.Tensor, tables: list, layout: _BlockLayout) -> torch.Tensor:
+    """Contract ``(..., m, l)`` with the synthesis blocks into ``(..., nlat, m)``: one einsum per block over its degrees."""
+    outs = []
+    for xb, p, (offset, count) in zip(torch.split(x, layout.sizes, dim=-2), tables, layout.degrees):
+        outs.append(torch.einsum("...ml,mkl->...km", xb.narrow(-1, offset, count), p))
+    return outs[0] if len(outs) == 1 else torch.cat(outs, dim=-1)
+
+
+def _components(y: torch.Tensor, cdim: int) -> Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
+    """The real and imaginary parts of both vector components of a contraction of stacked parts, ``((re0, im0), (re1, im1))``."""
+    return tuple((y[0].select(cdim, c), y[1].select(cdim, c)) for c in (0, 1))
+
+
+def _real_and_imaginary(x: torch.Tensor) -> torch.Tensor:
+    """A complex tensor as a real one, with its real and imaginary parts stacked on a new leading axis."""
+    return torch.stack((x.real, x.imag))
 
 
 class RealSHT(SharedBufferMixin, nn.Module):
@@ -373,6 +530,12 @@ class RealSHT(SharedBufferMixin, nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    block_size : int or None
+        Number of orders per block of the stored Legendre tables, or ``None`` for one dense
+        table. A block keeps only the degrees its orders have, :math:`l \ge m`, which roughly
+        halves the tables and the contraction of a triangular truncation. By default
+        ``$TORCH_HARMONICS_SHT_BLOCK_SIZE`` (an integer, or ``none``) if set, else 32. Transforms
+        share their tables only with transforms of the same block size.
 
     Examples
     --------
@@ -416,6 +579,7 @@ class RealSHT(SharedBufferMixin, nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
     ):
 
         super().__init__()
@@ -433,8 +597,16 @@ class RealSHT(SharedBufferMixin, nn.Module):
         _validate_forward_sht_degree(self.grid, self.lmax)
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
 
-        # quadrature-weighted Legendre rows, shared with every transform of the same kind
-        self.register_shared_buffer("weights", _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, False, 0, self.mmax, 0, self.nlat))
+        # quadrature-weighted Legendre rows in order blocks, shared with every transform of the same kind
+        self.block_size = _resolve_block_size(block_size, self.mmax)
+        blocks = _sht_blocks(self._trunc, self.block_size, 0, self.mmax, 0, self.lmax)
+        tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, False, 0, self.mmax, 0, self.nlat, self.block_size)
+        _register_blocks(self, "weights", tables, blocks, 0)
+
+    @property
+    def weights(self) -> torch.Tensor:
+        """The dense analysis table ``(mmax, lmax, nlat)``, assembled from the blocks: a fresh tensor, for inspection."""
+        return _dense_table(self, -2, self.lmax)
 
     @property
     def lmax(self) -> int:
@@ -483,20 +655,17 @@ class RealSHT(SharedBufferMixin, nn.Module):
         # the quadrature weights, so no scaling of the complex output is needed here.
         x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
-        # transpose to put the contraction dim (nlat) on the fast axis
-        x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        # transpose to put the contraction dim (nlat) on the fast axis, real and imaginary
+        # parts stacked so that each block is one contraction
+        x = _real_and_imaginary(x.transpose(-1, -2))
 
         # Legendre-Gauss quadrature: contract over k=nlat (stride-1 in both operands)
-        w = self.weights.to(x_re.dtype)
-        out_re = torch.einsum("...mk,mlk->...lm", x_re, w)
-        out_im = torch.einsum("...mk,mlk->...lm", x_im, w)
+        out = _analysis_contraction(x, [w.to(x.dtype) for w in _blocks(self)], self._layout, self.lmax)
 
         # the ...lm einsum output is non-contiguous (l ends up stride-1, m slow); torch.complex
         # preserves those strides, but inductor's meta kernel for aten.complex predicts a contiguous
         # layout, tripping assert_size_stride under torch.compile(dynamic=False). Force contiguous.
-        return torch.complex(out_re.contiguous(), out_im.contiguous())
+        return torch.complex(out[0].contiguous(), out[1].contiguous())
 
 
 class InverseRealSHT(SharedBufferMixin, nn.Module):
@@ -539,6 +708,12 @@ class InverseRealSHT(SharedBufferMixin, nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    block_size : int or None
+        Number of orders per block of the stored Legendre tables, or ``None`` for one dense
+        table. A block keeps only the degrees its orders have, :math:`l \ge m`, which roughly
+        halves the tables and the contraction of a triangular truncation. By default
+        ``$TORCH_HARMONICS_SHT_BLOCK_SIZE`` (an integer, or ``none``) if set, else 32. Transforms
+        share their tables only with transforms of the same block size.
 
     Examples
     --------
@@ -594,6 +769,7 @@ class InverseRealSHT(SharedBufferMixin, nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
     ):
 
         super().__init__()
@@ -609,9 +785,17 @@ class InverseRealSHT(SharedBufferMixin, nn.Module):
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
-        # associated Legendre polynomials as (mmax, nlat, lmax), so the contraction dim l is
-        # stride-1; shared with every transform of the same kind
-        self.register_shared_buffer("pct", _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, False, 0, self.mmax, 0, self.lmax))
+        # associated Legendre polynomials in order blocks of (orders, nlat, degrees), so the
+        # contraction dim l is stride-1; shared with every transform of the same kind
+        self.block_size = _resolve_block_size(block_size, self.mmax)
+        blocks = _sht_blocks(self._trunc, self.block_size, 0, self.mmax, 0, self.lmax)
+        tables = _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, False, 0, self.mmax, 0, self.lmax, self.block_size)
+        _register_blocks(self, "pct", tables, blocks, 0)
+
+    @property
+    def pct(self) -> torch.Tensor:
+        """The dense synthesis table ``(mmax, nlat, lmax)``, assembled from the blocks: a fresh tensor, for inspection."""
+        return _dense_table(self, -1, self.lmax)
 
     @property
     def lmax(self) -> int:
@@ -656,19 +840,15 @@ class InverseRealSHT(SharedBufferMixin, nn.Module):
 
         check_coeffs(x, self.lmax, self.mmax, radial=self.radial)
 
-        # transpose to put the contraction dim (lmax) on the fast axis
-        x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        # transpose to put the contraction dim (lmax) on the fast axis, real and imaginary
+        # parts stacked so that each block is one contraction
+        x = _real_and_imaginary(x.transpose(-1, -2))
 
-        # legendre transformation: contract over l=lmax (stride-1 in both operands)
-        # pct layout: (mmax, nlat, lmax)
-        w = self.pct.to(x_re.dtype)
-        out_re = torch.einsum("...ml,mkl->...km", x_re, w)
-        out_im = torch.einsum("...ml,mkl->...km", x_im, w)
+        # legendre transformation: contract over l (stride-1 in both operands), block by block
+        out = _synthesis_contraction(x, [p.to(x.dtype) for p in _blocks(self)], self._layout)
         # force contiguous: the einsum output is non-contiguous and inductor's aten.complex meta
         # predicts a contiguous layout, tripping assert_size_stride under torch.compile (see fwd SHT).
-        x = torch.complex(out_re.contiguous(), out_im.contiguous())
+        x = torch.complex(out[0].contiguous(), out[1].contiguous())
 
         # apply the inverse (real) FFT
         x = irfft(x, n=self.nlon, dim=-1, norm="forward")
@@ -719,6 +899,12 @@ class RealVectorSHT(SharedBufferMixin, nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    block_size : int or None
+        Number of orders per block of the stored Legendre tables, or ``None`` for one dense
+        table. A block keeps only the degrees its orders have, :math:`l \ge m`, which roughly
+        halves the tables and the contraction of a triangular truncation. By default
+        ``$TORCH_HARMONICS_SHT_BLOCK_SIZE`` (an integer, or ``none``) if set, else 32. Transforms
+        share their tables only with transforms of the same block size.
 
     Examples
     --------
@@ -762,6 +948,7 @@ class RealVectorSHT(SharedBufferMixin, nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
     ):
 
         super().__init__()
@@ -779,8 +966,16 @@ class RealVectorSHT(SharedBufferMixin, nn.Module):
         _validate_forward_sht_degree(self.grid, self.lmax)
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
 
-        # quadrature-weighted derivative rows, shared with every transform of the same kind
-        self.register_shared_buffer("weights", _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, True, 0, self.mmax, 0, self.nlat))
+        # quadrature-weighted derivative rows in order blocks, shared with every transform of the same kind
+        self.block_size = _resolve_block_size(block_size, self.mmax)
+        blocks = _sht_blocks(self._trunc, self.block_size, 0, self.mmax, 0, self.lmax)
+        tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, True, 0, self.mmax, 0, self.nlat, self.block_size)
+        _register_blocks(self, "weights", tables, blocks, 0)
+
+    @property
+    def weights(self) -> torch.Tensor:
+        """The dense analysis tables ``(2, mmax, lmax, nlat)``, assembled from the blocks: a fresh tensor, for inspection."""
+        return _dense_table(self, -2, self.lmax)
 
     @property
     def lmax(self) -> int:
@@ -831,24 +1026,25 @@ class RealVectorSHT(SharedBufferMixin, nn.Module):
         # the quadrature weights, so no scaling of the complex output is needed here.
         x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
-        # transpose to put the contraction dim (nlat) on the fast axis
-        x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        # transpose to put the contraction dim (nlat) on the fast axis, real and imaginary
+        # parts stacked so that each block is one contraction per derivative table
+        x = _real_and_imaginary(x.transpose(-1, -2))
 
         # the component axis, in front of the radial one on a product grid
         cdim = -3 if self.radial is None else -4
 
-        w0 = self.weights[0].to(x_re.dtype)
-        w1 = self.weights[1].to(x_re.dtype)
+        tables = [w.to(x.dtype) for w in _blocks(self)]
+        y0 = _analysis_contraction(x, [w[0] for w in tables], self._layout, self.lmax)
+        y1 = _analysis_contraction(x, [w[1] for w in tables], self._layout, self.lmax)
+        (x0_re, x0_im), (x1_re, x1_im) = _components(y0, cdim)
+        (z0_re, z0_im), (z1_re, z1_im) = _components(y1, cdim)
 
-        # contraction - spheroidal component
-        s_re = torch.einsum("...mk,mlk->...lm", x_re.select(cdim, 0), w0) - torch.einsum("...mk,mlk->...lm", x_im.select(cdim, 1), w1)
-        s_im = torch.einsum("...mk,mlk->...lm", x_im.select(cdim, 0), w0) + torch.einsum("...mk,mlk->...lm", x_re.select(cdim, 1), w1)
-
-        # contraction - toroidal component
-        t_re = -torch.einsum("...mk,mlk->...lm", x_im.select(cdim, 0), w1) - torch.einsum("...mk,mlk->...lm", x_re.select(cdim, 1), w0)
-        t_im = torch.einsum("...mk,mlk->...lm", x_re.select(cdim, 0), w1) - torch.einsum("...mk,mlk->...lm", x_im.select(cdim, 1), w0)
+        # spheroidal and toroidal components; xc_* holds component c contracted with the
+        # first derivative table, zc_* with the second
+        s_re = x0_re - z1_im
+        s_im = x0_im + z1_re
+        t_re = -z0_im - x1_re
+        t_im = z0_re - x1_im
 
         # stack the spheroidal and toroidal components in real space, so the only complex-typed
         # op is a single aten.complex over contiguous operands. Stacking complex tensors instead
@@ -898,6 +1094,12 @@ class InverseRealVectorSHT(SharedBufferMixin, nn.Module):
     csphase : bool
         Whether to include the Condon--Shortley phase factor :math:`(-1)^m`,
         by default ``True``.
+    block_size : int or None
+        Number of orders per block of the stored Legendre tables, or ``None`` for one dense
+        table. A block keeps only the degrees its orders have, :math:`l \ge m`, which roughly
+        halves the tables and the contraction of a triangular truncation. By default
+        ``$TORCH_HARMONICS_SHT_BLOCK_SIZE`` (an integer, or ``none``) if set, else 32. Transforms
+        share their tables only with transforms of the same block size.
 
     Examples
     --------
@@ -948,6 +1150,7 @@ class InverseRealVectorSHT(SharedBufferMixin, nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
     ):
 
         super().__init__()
@@ -963,9 +1166,17 @@ class InverseRealVectorSHT(SharedBufferMixin, nn.Module):
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
-        # derivative Legendre tables as (2, mmax, nlat, lmax), so the contraction dim l is
-        # stride-1; shared with every transform of the same kind
-        self.register_shared_buffer("dpct", _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, True, 0, self.mmax, 0, self.lmax))
+        # derivative Legendre tables in order blocks of (2, orders, nlat, degrees), so the
+        # contraction dim l is stride-1; shared with every transform of the same kind
+        self.block_size = _resolve_block_size(block_size, self.mmax)
+        blocks = _sht_blocks(self._trunc, self.block_size, 0, self.mmax, 0, self.lmax)
+        tables = _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, True, 0, self.mmax, 0, self.lmax, self.block_size)
+        _register_blocks(self, "dpct", tables, blocks, 0)
+
+    @property
+    def dpct(self) -> torch.Tensor:
+        """The dense synthesis tables ``(2, mmax, nlat, lmax)``, assembled from the blocks: a fresh tensor, for inspection."""
+        return _dense_table(self, -1, self.lmax)
 
     @property
     def lmax(self) -> int:
@@ -1012,25 +1223,26 @@ class InverseRealVectorSHT(SharedBufferMixin, nn.Module):
 
         check_coeffs(x, self.lmax, self.mmax, leading=(..., 2), radial=self.radial)
 
-        # transpose to put the contraction dim (lmax) on the fast axis
-        x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        # transpose to put the contraction dim (lmax) on the fast axis, real and imaginary
+        # parts stacked so that each block is one contraction per derivative table
+        x = _real_and_imaginary(x.transpose(-1, -2))
 
-        # dpct layout: (2, mmax, nlat, lmax) — contract over l (stride-1 in both operands)
+        # dpct blocks: (2, orders, nlat, degrees) -- contract over l (stride-1 in both operands)
         # the component axis, in front of the radial one on a product grid
         cdim = -3 if self.radial is None else -4
 
-        d0 = self.dpct[0].to(x_re.dtype)
-        d1 = self.dpct[1].to(x_re.dtype)
+        tables = [d.to(x.dtype) for d in _blocks(self)]
+        y0 = _synthesis_contraction(x, [d[0] for d in tables], self._layout)
+        y1 = _synthesis_contraction(x, [d[1] for d in tables], self._layout)
+        (x0_re, x0_im), (x1_re, x1_im) = _components(y0, cdim)
+        (z0_re, z0_im), (z1_re, z1_im) = _components(y1, cdim)
 
-        # contraction - spheroidal component
-        srl = torch.einsum("...ml,mkl->...km", x_re.select(cdim, 0), d0) - torch.einsum("...ml,mkl->...km", x_im.select(cdim, 1), d1)
-        sim = torch.einsum("...ml,mkl->...km", x_im.select(cdim, 0), d0) + torch.einsum("...ml,mkl->...km", x_re.select(cdim, 1), d1)
-
-        # contraction - toroidal component
-        trl = -torch.einsum("...ml,mkl->...km", x_im.select(cdim, 0), d1) - torch.einsum("...ml,mkl->...km", x_re.select(cdim, 1), d0)
-        tim = torch.einsum("...ml,mkl->...km", x_re.select(cdim, 0), d1) - torch.einsum("...ml,mkl->...km", x_im.select(cdim, 1), d0)
+        # spheroidal and toroidal components; xc_* holds component c contracted with the
+        # first derivative table, zc_* with the second
+        srl = x0_re - z1_im
+        sim = x0_im + z1_re
+        trl = -z0_im - x1_re
+        tim = z0_re - x1_im
 
         # reassemble in real space and apply inverse FFT, see RealVectorSHT.forward
         out_re = torch.stack((srl, trl), dim=cdim)

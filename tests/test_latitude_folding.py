@@ -197,8 +197,9 @@ class TestLatitudeFolding(unittest.TestCase):
         for _ in range(2):
             actual_grad = torch.autograd.grad(actual, x, gradient, retain_graph=True)[0]
             torch.testing.assert_close(actual_grad, expected_grad, atol=1e-12, rtol=1e-12)
-        self.assertEqual(list(dict(analysis.named_buffers())), ["weights"])
+        self.assertEqual(list(dict(analysis.named_buffers())), list(analysis._block_names))
         # an identical transform shares the folded rows rather than building or copying them;
         # see torch_harmonics.cache.shared_table
         another = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=analysis.lmax, mmax=analysis.mmax, lmmax=lmmax)
-        self.assertIs(another.weights, analysis.weights)
+        for name in analysis._block_names:
+            self.assertIs(getattr(another, name), getattr(analysis, name))

@@ -30,8 +30,10 @@
 #
 
 import math
+import os
 import unittest
 import warnings
+from unittest import mock
 
 import numpy as np
 import torch
@@ -191,11 +193,11 @@ _COMPILE_CASES = [
 ]
 
 
-def _check_compile(test, nlat, nlon, grid, lmax, dtype, vector, verbose=False):
+def _check_compile(test, nlat, nlon, grid, lmax, dtype, vector, verbose=False, **kwargs):
     """Compile the round trip as one graph, forward and backward, and compare it to eager."""
     set_seed(333)
     descriptor = th.as_grid(grid, nlat=nlat, nlon=nlon)
-    forward, inverse = _transforms(descriptor, lmax, lmax, vector)
+    forward, inverse = _transforms(descriptor, lmax, lmax, vector, **kwargs)
     forward = forward.to(device=test.device, dtype=dtype)
     inverse = inverse.to(device=test.device, dtype=dtype)
 
@@ -864,3 +866,135 @@ class TestSharedFoldedSHTAnalysis(unittest.TestCase):
         self.assertTrue(compare_tensors("empty spectrum", expected, result, atol=0, rtol=0, verbose=verbose))
         result.real.sum().backward()
         self.assertTrue(compare_tensors("empty gradient", torch.zeros_like(x), x.grad, atol=0, rtol=0, verbose=verbose))
+
+
+# grid, nlat, nlon, lmax, mmax, lmmax: direct quadrature, a band limit, a rectangular
+# truncation, and the folded analysis of an equiangular and a Fejer-1 grid
+_BLOCK_CASES = [
+    ("legendre-gauss", 20, 40, None, None, None),
+    ("legendre-gauss", 20, 40, None, None, 6),
+    ("legendre-gauss", 20, 40, 20, 11, None),
+    ("equiangular", 17, 32, 16, 16, None),
+    ("fejer1", 16, 32, 16, 16, 5),
+]
+
+
+def _block_tables(layer):
+    """The block tables an SHT registered, one per order block."""
+    return [getattr(layer, name) for name in layer._block_names]
+
+
+@parameterized_class(("device"), _devices)
+class TestBlockedLegendreTables(unittest.TestCase):
+    """
+    The SHTs store their Legendre tables in blocks of orders, each holding only the degrees its
+    orders have. The blocks change the storage, not the transform: every block size computes
+    what the single dense table, ``block_size=None``, computes.
+    """
+
+    @parameterized.expand(
+        [[*case, vector, block_size] for case in _BLOCK_CASES for vector in (False, True) for block_size in (1, 3, 7)],
+        skip_on_empty=True,
+    )
+    def test_blocks_compute_what_the_dense_table_does(self, grid, nlat, nlon, lmax, mmax, lmmax, vector, block_size):
+        set_seed(333)
+        descriptor = th.as_grid(grid, nlat=nlat, nlon=nlon)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            forward, inverse = _transforms(descriptor, lmax, mmax, vector, lmmax=lmmax, block_size=block_size)
+            dense_forward, dense_inverse = _transforms(descriptor, lmax, mmax, vector, lmmax=lmmax, block_size=None)
+        self.assertGreater(len(forward._block_names), 1)
+        self.assertEqual(len(dense_forward._block_names), 1)
+        forward, inverse, dense_forward, dense_inverse = (t.to(self.device, torch.float64) for t in (forward, inverse, dense_forward, dense_inverse))
+
+        # the assembled tables are the dense ones
+        names = ("weights", "dpct") if vector else ("weights", "pct")
+        self.assertTrue(torch.equal(getattr(forward, names[0]), getattr(dense_forward, names[0])))
+        self.assertTrue(torch.equal(getattr(inverse, names[1]), getattr(dense_inverse, names[1])))
+
+        # and so are the transforms, forward and backward
+        x = torch.randn((3,) + (2,) * vector + descriptor.shape, device=self.device, dtype=torch.float64, requires_grad=True)
+        coeffs = forward(x)
+        expected = dense_forward(x)
+        self.assertTrue(compare_tensors("blocked analysis", coeffs, expected, atol=1e-13, rtol=1e-13))
+        gradient = torch.randn_like(coeffs)
+        (grad,) = torch.autograd.grad(coeffs, x, gradient)
+        (expected_grad,) = torch.autograd.grad(expected, x, gradient)
+        self.assertTrue(compare_tensors("blocked analysis gradient", grad, expected_grad, atol=1e-13, rtol=1e-13))
+
+        c = coeffs.detach().requires_grad_(True)
+        field = inverse(c)
+        expected = dense_inverse(c)
+        self.assertTrue(compare_tensors("blocked synthesis", field, expected, atol=1e-13, rtol=1e-13))
+        gradient = torch.randn_like(field)
+        (grad,) = torch.autograd.grad(field, c, gradient)
+        (expected_grad,) = torch.autograd.grad(expected, c, gradient)
+        self.assertTrue(compare_tensors("blocked synthesis gradient", grad, expected_grad, atol=1e-13, rtol=1e-13))
+
+    @parameterized.expand([[False], [True]])
+    def test_a_block_keeps_only_the_degrees_of_its_orders(self, vector):
+        """Block [ms, me) stores degrees [ms, min(lmax, me - 1 + lmmax)): the triangle below the diagonal is never stored."""
+        grid = th.as_grid("legendre-gauss", nlat=20, nlon=40)
+        for lmmax in (None, 6):
+            with self.subTest(lmmax=lmmax):
+                forward, inverse = _transforms(grid, 20, 20, vector, lmmax=lmmax, block_size=6)
+                expected = [(0, 6), (6, 12), (12, 18), (18, 20)]
+                for (ms, me), w, p in zip(expected, _block_tables(forward), _block_tables(inverse)):
+                    top = 20 if lmmax is None else min(20, me - 1 + lmmax)
+                    self.assertEqual(tuple(w.shape[-3:]), (me - ms, top - ms, 20))
+                    self.assertEqual(tuple(p.shape[-3:]), (me - ms, 20, top - ms))
+                stored = sum(w.numel() for w in _block_tables(forward))
+                self.assertLess(stored, forward.weights.numel() * (0.65 if lmmax is None else 0.5))
+
+    def test_a_block_size_of_at_least_mmax_is_the_dense_table(self):
+        """None and every block size >= mmax resolve to one block, and share it."""
+        grid = th.as_grid("legendre-gauss", nlat=12, nlon=24)
+        dense = th.RealSHT(grid, block_size=None)
+        for block_size in (12, 13, 1000):
+            with self.subTest(block_size=block_size):
+                layer = th.RealSHT(grid, block_size=block_size)
+                self.assertIsNone(layer.block_size)
+                self.assertIs(_block_tables(layer)[0], _block_tables(dense)[0])
+
+    def test_transforms_share_tables_only_with_their_block_size(self):
+        grid = th.as_grid("legendre-gauss", nlat=12, nlon=24)
+        for cls in (th.RealSHT, th.InverseRealSHT, th.RealVectorSHT, th.InverseRealVectorSHT):
+            with self.subTest(cls=cls.__name__):
+                a, b, c = cls(grid, block_size=4), cls(grid, block_size=4), cls(grid, block_size=5)
+                for x, y in zip(_block_tables(a), _block_tables(b)):
+                    self.assertIs(x, y)
+                self.assertFalse(any(x is y for x in _block_tables(a) for y in _block_tables(c)))
+                self.assertFalse(any(x is y for x in _block_tables(a) for y in _block_tables(cls(grid, block_size=None))))
+
+    def test_the_default_block_size_comes_from_the_environment(self):
+        grid = th.as_grid("legendre-gauss", nlat=40, nlon=80)
+        cases = [(None, th.sht.DEFAULT_SHT_BLOCK_SIZE), ("", th.sht.DEFAULT_SHT_BLOCK_SIZE), ("5", 5), (" 7 ", 7), ("none", None), ("Dense", None), ("100", None)]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                environ = {k: v for k, v in os.environ.items() if k != th.sht.SHT_BLOCK_SIZE_ENV}
+                if value is not None:
+                    environ[th.sht.SHT_BLOCK_SIZE_ENV] = value
+                with mock.patch.dict(os.environ, environ, clear=True):
+                    self.assertEqual(th.RealSHT(grid).block_size, expected)
+                    # an explicit argument wins over the environment
+                    self.assertEqual(th.InverseRealSHT(grid, block_size=3).block_size, 3)
+                    self.assertIsNone(th.RealVectorSHT(grid, block_size=None).block_size)
+
+    def test_invalid_block_sizes_raise(self):
+        grid = th.as_grid("legendre-gauss", nlat=12, nlon=24)
+        for block_size in (0, -1, True, 2.5, "4"):
+            with self.subTest(block_size=block_size):
+                with self.assertRaisesRegex(ValueError, "block_size"):
+                    th.RealSHT(grid, block_size=block_size)
+        with mock.patch.dict(os.environ, {th.sht.SHT_BLOCK_SIZE_ENV: "many"}):
+            with self.assertRaisesRegex(ValueError, th.sht.SHT_BLOCK_SIZE_ENV):
+                th.RealSHT(grid)
+        with mock.patch.dict(os.environ, {th.sht.SHT_BLOCK_SIZE_ENV: "0"}):
+            with self.assertRaisesRegex(ValueError, "block_size"):
+                th.RealSHT(grid)
+
+    @parameterized.expand([[False], [True]])
+    @requires_torch_compile
+    def test_blocks_compile(self, vector):
+        """The block loop unrolls into one graph, forward and backward, as the dense contraction does."""
+        _check_compile(self, 24, 48, "legendre-gauss", None, torch.float32, vector=vector, block_size=5)
