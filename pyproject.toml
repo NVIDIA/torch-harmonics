@@ -68,6 +68,10 @@ dev = [
     "coverage>=6.5.0",
     "parameterized",
     "scipy>=1.9.0",
+    # independent reference for the HEALPix SHT tests (tests/test_sht.py). An exact
+    # pin rather than a commit: PyPI rejects direct URL dependencies in extras, and a released
+    # version is immutable on PyPI, so the reference cannot move under us either way.
+    "healpy==1.20.1",
     "pre-commit>=4.0.0",
     "black>=24.0.0",
     "ruff>=0.4.0",

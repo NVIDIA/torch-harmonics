@@ -739,9 +739,10 @@ class TestGridDescriptor(unittest.TestCase):
     @parameterized.expand([[grid] for grid in _ALL_GRIDS])
     def test_equal_descriptors_hash_equal(self, grid):
         """
-        Load-bearing: `torch_harmonics/cache.py` keys its `lru_cache` on the grid.
-        A descriptor that hashed by object identity would turn every lookup into a
-        miss, silently regressing psi and Legendre precompute.
+        Load-bearing: the shared tables of `torch_harmonics/cache.py` and the
+        `lru_cache` of the grid helpers key on the grid. A descriptor that hashed by
+        object identity would turn every lookup into a miss, silently rebuilding the
+        psi and Legendre tables for every layer instead of sharing them.
         """
         a = as_grid(grid, nlat=64, nlon=128)
         b = as_grid(grid, nlat=64, nlon=128)
@@ -1881,10 +1882,14 @@ class TestHealpixGrid(unittest.TestCase):
         self.assertFalse(g.is_spectrally_accurate)
         with self.assertRaises(NotImplementedError):
             g.max_exact_degree
-        # no max_azimuthal_order assertion: that is a RegularGridS2 concept. Every
-        # HEALPix ring has its own azimuthal bandwidth, so a single value would have
-        # to be the widest ring's, which is not what any caller of it means.
-        self.assertFalse(hasattr(type(g), "max_azimuthal_order"))
+        # Every HEALPix ring has its own azimuthal bandwidth, so max_azimuthal_order is
+        # not the widest ring's: it is the order bound of the SHT, which recovers orders
+        # above a ring's Nyquist limit from the rings jointly, up to the same 3 * nside
+        # as the degree. The SHT defaults stay at 2 * nside, where the analysis is well
+        # conditioned.
+        self.assertEqual(g.max_azimuthal_order, 3 * g.nside)
+        self.assertEqual(g.max_recoverable_degree, 3 * g.nside)
+        self.assertEqual(g.default_sht_degree, 2 * g.nside)
 
     # -- support radius ------------------------------------------------------
 
