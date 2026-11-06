@@ -68,8 +68,12 @@ the phase :math:`e^{i m \lambda_{0,k}}`. An ``irfft`` of each ring finishes the 
 
 Both directions are exact. The ring FFTs are batched over the rings that share a length:
 one call per distinct length, which on HEALPix is a single call for the equatorial belt
-(two thirds of the pixels) and one per pair of mirrored polar-cap rings. The gather and the
-fold are precomputed index tables, so a forward pass has no host synchronization.
+(two thirds of the pixels) and one per pair of mirrored polar-cap rings. The batches are
+laid out one after another: the forward gathers the pixels into that order once and splits
+them, and the inverse folds each ring straight into its batch's place, so no batch selects
+its rings out of the whole field or spectrum, which would cost a full-size scatter per ring
+length in the backward. The gathers and the fold are precomputed index tables, so a forward
+pass has no host synchronization.
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -173,28 +177,33 @@ def _ring_fft_tables(grid: GridS2, mmax: int) -> Dict[str, object]:
     nbins = int(nlon_per_lat.max()) // 2 + 1
 
     # -- ring batches --------------------------------------------------------
-    # One batch per distinct ring length. A batch whose rings are consecutive is a
-    # contiguous pixel range, read with a slice; any other one with a gather.
+    # One batch per distinct ring length, transformed by one FFT. The transforms work in
+    # batch order: the rings of the first batch, then those of the second, and so on.
+    # A field is brought into it by one gather of its pixels and split into the batches,
+    # and a spectrum is folded directly into it, so no batch ever selects its rings out
+    # of the whole field or spectrum. Each such select would have a backward that
+    # scatters into a full-size zero tensor, once per ring length: hundreds of full-size
+    # passes on HEALPix, which has a ring length per polar ring pair.
     lengths = []
-    contiguous = []
-    batch_pixels = []
+    counts = []
     batch_rings = []
     for n, rings in _ring_groups(nlon_per_lat):
-        pixels = offsets[rings].unsqueeze(-1) + torch.arange(n, dtype=torch.int64)
-        is_contiguous = bool((rings[1:] - rings[:-1] == 1).all()) if rings.numel() > 1 else True
         lengths.append(n)
-        contiguous.append((int(pixels[0, 0]), rings.numel()) if is_contiguous else None)
-        batch_pixels.append(pixels)
+        counts.append(rings.numel())
         batch_rings.append(rings)
 
-    # the batches come out concatenated; these permutations restore ring order
+    # ring_order[s] is the ring in slot s of the batch order, slot[r] the slot of ring r
     ring_order = torch.cat(batch_rings)
-    pixel_order = torch.cat([pixels.reshape(-1) for pixels in batch_pixels])
+    slot = torch.argsort(ring_order)
+    pixel_order = torch.cat([(offsets[rings].unsqueeze(-1) + torch.arange(n, dtype=torch.int64)).reshape(-1) for n, rings in zip(lengths, batch_rings)])
+    # a regular grid is a single batch in pixel order already, which needs no gather
+    identity = bool(torch.equal(pixel_order, torch.arange(pixel_order.numel(), dtype=torch.int64)))
 
     # -- alias tables --------------------------------------------------------
+    # indexed by ring, pointing at the ring's slot in the batch order
     n = nlon_per_lat.unsqueeze(-1)
     m = torch.arange(mmax, dtype=torch.int64).unsqueeze(0)
-    ring = torch.arange(nrings, dtype=torch.int64).unsqueeze(-1)
+    ring = slot.unsqueeze(-1)
     half = n // 2
 
     # analysis: order m reads bin m mod n, or the conjugate of bin n - (m mod n)
@@ -218,11 +227,12 @@ def _ring_fft_tables(grid: GridS2, mmax: int) -> Dict[str, object]:
     # zeroed explicitly rather than left to the irfft backend. A precomputed mask
     # rather than irfft's per-call one, which writes to the device from the host
     # and would synchronize once per ring length.
+    # rows in batch order, like the folded spectrum
     imag_mask = torch.ones(nrings, stride, dtype=torch.float64)
     imag_mask[:, 0] = 0.0
     # an odd ring has no Nyquist bin: its last bin n // 2 is an ordinary frequency
     even = nlon_per_lat % 2 == 0
-    imag_mask[torch.arange(nrings)[even], nlon_per_lat[even] // 2] = 0.0
+    imag_mask[slot[even], nlon_per_lat[even] // 2] = 0.0
 
     # ring phases e^{-i m lambda_0}, lambda_0 = 2 pi shift / n
     lam0 = 2.0 * torch.pi * grid.lon_shifts.to(torch.float64) / nlon_per_lat.to(torch.float64)
@@ -231,10 +241,9 @@ def _ring_fft_tables(grid: GridS2, mmax: int) -> Dict[str, object]:
     return {
         "nbins": nbins,
         "lengths": tuple(lengths),
-        "contiguous": tuple(contiguous),
-        "pixels": tuple(batch_pixels),
-        "rings": tuple(batch_rings),
-        "ring_inverse": torch.argsort(ring_order),
+        "counts": tuple(counts),
+        "identity": identity,
+        "pixel_order": pixel_order,
         "pixel_inverse": torch.argsort(pixel_order),
         "gather": (ring * nbins + k).reshape(-1),
         "gather_sign": torch.where(conj, -1.0, 1.0).to(torch.float64),
@@ -283,15 +292,16 @@ class RingFFT(SharedBufferMixin, nn.Module):
         tables = _ring_fft_tables(grid, self.mmax)
         self.nbins = tables["nbins"]
         self._lengths = list(tables["lengths"])
-        self._contiguous = list(tables["contiguous"])
-        for i, (pixels, rings) in enumerate(zip(tables["pixels"], tables["rings"])):
-            self.register_shared_buffer(f"_pixels_{i}", pixels)
-            self.register_shared_buffer(f"_rings_{i}", rings)
-        for name in ("ring_inverse", "pixel_inverse", "gather", "gather_sign", "fold_pos", "fold_neg", "imag_mask", "phase_re", "phase_im"):
+        self._counts = list(tables["counts"])
+        # pixels per batch, to split a field in batch order
+        self._sizes = [n * count for n, count in zip(self._lengths, self._counts)]
+        # no pixel permutation where the batch order is the pixel order, as on a regular grid
+        self._permuted = not tables["identity"]
+        if self._permuted:
+            self.register_shared_buffer("_pixel_order", tables["pixel_order"])
+            self.register_shared_buffer("_pixel_inverse", tables["pixel_inverse"])
+        for name in ("gather", "gather_sign", "fold_pos", "fold_neg", "imag_mask", "phase_re", "phase_im"):
             self.register_shared_buffer(f"_{name}", tables[name])
-
-    def _batch(self, i: int, name: str) -> torch.Tensor:
-        return getattr(self, f"_{name}_{i}")
 
     def extra_repr(self) -> str:
         return f"nrings={self.nrings}, npoints={self.npoints}, mmax={self.mmax}, nbatches={len(self._lengths)}"
@@ -312,20 +322,18 @@ class RingFFT(SharedBufferMixin, nn.Module):
         """
         lead = x.shape[:-1]
 
-        # rfft each batch of equal-length rings and pad its half spectrum to nbins
+        # bring the pixels into batch order, then rfft each batch of equal-length rings and
+        # pad its half spectrum to nbins. Splitting, not selecting, keeps the backward one cat.
+        if self._permuted:
+            x = x.index_select(-1, self._pixel_order)
         spectra = []
-        for i, n in enumerate(self._lengths):
-            contiguous = self._contiguous[i]
-            if contiguous is not None:
-                start, count = contiguous
-                rings = x.narrow(-1, start, count * n).reshape(*lead, count, n)
-            else:
-                rings = x[..., self._batch(i, "pixels")]
-            spectrum = torch.fft.rfft(rings, dim=-1, norm="forward")
+        for pixels, n, count in zip(torch.split(x, self._sizes, dim=-1), self._lengths, self._counts):
+            spectrum = torch.fft.rfft(pixels.reshape(*lead, count, n), dim=-1, norm="forward")
             spectra.append(nn.functional.pad(spectrum, (0, self.nbins - spectrum.shape[-1])))
-        spectrum = torch.cat(spectra, dim=-2).index_select(-2, self._ring_inverse)
+        spectrum = torch.cat(spectra, dim=-2) if len(spectra) > 1 else spectra[0]
 
-        # alias gather, in real arithmetic: F = Re X + i * sign * Im X at the gathered bin
+        # alias gather from the batch order back to ring order, in real arithmetic:
+        # F = Re X + i * sign * Im X at the gathered bin
         spectrum = spectrum.reshape(*lead, self.nrings * self.nbins)
         dtype = spectrum.real.dtype
         re = spectrum.real[..., self._gather].reshape(*lead, self.nrings, self.mmax)
@@ -362,16 +370,18 @@ class RingFFT(SharedBufferMixin, nn.Module):
         re = re.reshape(*lead, self.nrings * self.mmax)
         im = im.reshape(*lead, self.nrings * self.mmax)
 
-        # fold: H_m into bin m mod n and conj(H_m) into bin (-m) mod n
+        # fold: H_m into bin m mod n and conj(H_m) into bin (-m) mod n, of the ring's slot in
+        # the batch order
         size = self.nrings * (self.nbins + 1)
         out_re = re.new_zeros(*lead, size).index_add(-1, self._fold_pos, re).index_add(-1, self._fold_neg, re)
         out_im = im.new_zeros(*lead, size).index_add(-1, self._fold_pos, im).index_add(-1, self._fold_neg, -im)
         out_im = out_im * self._imag_mask.to(dtype)
         spectrum = torch.complex(out_re, out_im).reshape(*lead, self.nrings, self.nbins + 1)
 
-        # irfft each batch of equal-length rings and restore pixel order
+        # the spectrum is folded in batch order: irfft each batch of equal-length rings and
+        # restore pixel order. Splitting, not selecting, keeps the backward one cat.
         fields = []
-        for i, n in enumerate(self._lengths):
-            rings = spectrum.index_select(-2, self._batch(i, "rings")).narrow(-1, 0, n // 2 + 1)
-            fields.append(torch.fft.irfft(rings, n=n, dim=-1, norm="forward").reshape(*lead, -1))
-        return torch.cat(fields, dim=-1).index_select(-1, self._pixel_inverse)
+        for rings, n in zip(torch.split(spectrum, self._counts, dim=-2), self._lengths):
+            fields.append(torch.fft.irfft(rings.narrow(-1, 0, n // 2 + 1), n=n, dim=-1, norm="forward").reshape(*lead, -1))
+        field = torch.cat(fields, dim=-1) if len(fields) > 1 else fields[0]
+        return field.index_select(-1, self._pixel_inverse) if self._permuted else field
