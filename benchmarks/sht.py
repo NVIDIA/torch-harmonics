@@ -28,7 +28,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import torch
-from bench import EQUIANGULAR_GRID_1DEG, EQUIANGULAR_GRID_HDEG, BenchmarkEntry, register
+from bench import EQUIANGULAR_GRID_1DEG, EQUIANGULAR_GRID_HDEG, EQUIANGULAR_GRID_QDEG, HEALPIX_GRID_NSIDE128, HEALPIX_GRID_NSIDE256, BenchmarkEntry, register
 
 from torch_harmonics import InverseRealSHT, RealSHT
 
@@ -37,11 +37,11 @@ from torch_harmonics import InverseRealSHT, RealSHT
 # ------------------------------------------------------------------------------
 
 
-def _sht_setup(grid, batch):
+def _sht_setup(grid, batch, **kwargs):
     def setup(device, dtype):
         x = torch.randn(batch, *grid.shape, dtype=dtype, device=device, requires_grad=True)
-        sht = RealSHT(grid).to(device=device, dtype=dtype)
-        return {"x": x, "sht": sht, "grid": grid}
+        sht = RealSHT(grid, **kwargs).to(device=device, dtype=dtype)
+        return {"x": x, "sht": sht, "grid": grid, "kwargs": kwargs}
 
     return setup
 
@@ -55,7 +55,7 @@ def _sht_backward(state, out):
 
 
 def _sht_reference(state):
-    sht_ref = RealSHT(state["grid"]).to(dtype=torch.float64)
+    sht_ref = RealSHT(state["grid"], **state["kwargs"]).to(dtype=torch.float64)
     return sht_ref(state["x"].detach().cpu().double())
 
 
@@ -101,6 +101,22 @@ _SHT_CONFIGS = [
     dict(name="sht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_1DEG, batch=8, skip_correctness=False, tags=["sht"]),
     # half degree, CUDA
     dict(name="sht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_HDEG, batch=1, skip_correctness=True, tags=["sht"]),
+    # quarter degree (ERA5, 721 x 1440), CUDA
+    dict(name="sht_fwd_bwd_qdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_QDEG, batch=1, skip_correctness=True, tags=["sht"]),
+    # HEALPix: nside 128 with a float64 reference, and nside 256, about ERA5 resolution, with and
+    # without the three Jacobi iterations recommended for precision (each adds a synthesis and an analysis)
+    dict(name="sht_fwd_bwd_hpx128_b8_float32_cuda", device="cuda", dtype=torch.float32, grid=HEALPIX_GRID_NSIDE128, batch=8, skip_correctness=False, tags=["sht", "healpix"]),
+    dict(name="sht_fwd_bwd_hpx256_b1_float32_cuda", device="cuda", dtype=torch.float32, grid=HEALPIX_GRID_NSIDE256, batch=1, skip_correctness=True, tags=["sht", "healpix"]),
+    dict(
+        name="sht_fwd_bwd_hpx256_iter3_b1_float32_cuda",
+        device="cuda",
+        dtype=torch.float32,
+        grid=HEALPIX_GRID_NSIDE256,
+        batch=1,
+        skip_correctness=True,
+        tags=["sht", "healpix"],
+        kwargs=dict(iter=3),
+    ),
 ]
 
 _ISHT_CONFIGS = [
@@ -110,6 +126,11 @@ _ISHT_CONFIGS = [
     dict(name="isht_fwd_bwd_1deg_b4096_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_1DEG, batch=8, skip_correctness=False, tags=["isht"]),
     # half degree, CUDA
     dict(name="isht_fwd_bwd_hdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_HDEG, batch=1, skip_correctness=True, tags=["isht"]),
+    # quarter degree (ERA5, 721 x 1440), CUDA
+    dict(name="isht_fwd_bwd_qdeg_b1_float32_cuda", device="cuda", dtype=torch.float32, grid=EQUIANGULAR_GRID_QDEG, batch=1, skip_correctness=True, tags=["isht"]),
+    # HEALPix, see the SHT entries
+    dict(name="isht_fwd_bwd_hpx128_b8_float32_cuda", device="cuda", dtype=torch.float32, grid=HEALPIX_GRID_NSIDE128, batch=8, skip_correctness=False, tags=["isht", "healpix"]),
+    dict(name="isht_fwd_bwd_hpx256_b1_float32_cuda", device="cuda", dtype=torch.float32, grid=HEALPIX_GRID_NSIDE256, batch=1, skip_correctness=True, tags=["isht", "healpix"]),
 ]
 
 for cfg in _SHT_CONFIGS:
@@ -118,7 +139,7 @@ for cfg in _SHT_CONFIGS:
             name=cfg["name"],
             device=cfg["device"],
             dtype=cfg["dtype"],
-            setup=_sht_setup(grid=cfg["grid"], batch=cfg["batch"]),
+            setup=_sht_setup(grid=cfg["grid"], batch=cfg["batch"], **cfg.get("kwargs", {})),
             forward=_sht_forward,
             backward=_sht_backward,
             reference=_sht_reference,

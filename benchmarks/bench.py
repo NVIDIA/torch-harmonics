@@ -46,12 +46,15 @@ from torch_harmonics import HealpixGrid, as_grid
 # The grids the entries run on. Configs name their grids by descriptor, the way the
 # layers take them, and size their inputs from grid.shape, so an entry on another grid
 # family (HEALPix, say) needs no change to the setup functions. The "1deg", "hdeg" and
-# "qdeg" in the entry names refer to these; the names are the keys of
+# "qdeg" in the entry names refer to these, "hpx128" and "hpx256" to the HEALPix ones; the names are the keys of
 # reference_results.csv, so they stay as they are.
 EQUIANGULAR_GRID_1DEG = as_grid("equiangular", nlat=180, nlon=360)
 EQUIANGULAR_GRID_HDEG = as_grid("equiangular", nlat=360, nlon=720)
 EQUIANGULAR_GRID_QDEG = as_grid("equiangular", nlat=721, nlon=1440)
 HEALPIX_GRID_NSIDE128 = HealpixGrid(nside=128)
+# about ERA5 resolution: 786432 pixels of 0.23 degrees, against the 1038240 points of the
+# 0.25 degree 721 x 1440 grid. nside must be a power of two, and 256 is the closest one.
+HEALPIX_GRID_NSIDE256 = HealpixGrid(nside=256)
 
 # ------------------------------------------------------------------------------
 # Precision contexts
