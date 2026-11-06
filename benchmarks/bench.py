@@ -289,9 +289,15 @@ def run_entry(
     warmup: int = 3,
     iters: int = 20,
     skip_reference: bool = False,
+    compile: bool = False,
 ) -> Optional[BenchmarkResult]:
     """
     Returns None if the entry's device requirement is not met on this machine.
+
+    With ``compile=True`` the entry's forward is wrapped in ``torch.compile(dynamic=False)``;
+    its backward then runs the compiled backward graph. Compilation happens in the first
+    warmup iteration, so it is never timed, and the result is named ``<name>_compiled`` to
+    keep it apart from the eager numbers in a reference CSV.
     """
     available, device = _resolve_device(entry.device)
     if not available:
@@ -305,9 +311,18 @@ def run_entry(
 
     state = entry.setup(device, entry.dtype)
 
+    forward = entry.forward
+    if compile:
+        # entries share forward functions, so without a reset every entry would add a
+        # recompilation of the same function until dynamo hits its cache limit and
+        # silently falls back to eager
+        torch._dynamo.reset()
+        forward = torch.compile(entry.forward, dynamic=False)
+
     # --- warmup ---
-    for _ in range(warmup):
-        out = entry.forward(state)
+    # at least one iteration, which compiles a compiled forward and backward
+    for _ in range(max(warmup, 1 if compile else 0)):
+        out = forward(state)
         if entry.backward is not None:
             _zero_grads(state)
             entry.backward(state, out)
@@ -322,7 +337,7 @@ def run_entry(
     for _ in range(iters):
         _zero_grads(state)
         with Timer(device) as t:
-            out = entry.forward(state)
+            out = forward(state)
         fwd_times.append(t.elapsed_ms)
         last_out = out.detach()
         del out
@@ -333,7 +348,7 @@ def run_entry(
     if entry.backward is not None:
         bwd_times = []
         for _ in range(iters):
-            out = entry.forward(state)  # rebuild graph (untimed)
+            out = forward(state)  # rebuild graph (untimed)
             _zero_grads(state)
             with Timer(device) as t:
                 entry.backward(state, out)  # backward frees the graph
@@ -352,7 +367,7 @@ def run_entry(
             ref_error = (cur.double() - ref.double()).abs().max().item()
 
     return BenchmarkResult(
-        name=entry.name,
+        name=f"{entry.name}_compiled" if compile else entry.name,
         device=str(device),
         arch=gpu,
         dtype=str(entry.dtype),

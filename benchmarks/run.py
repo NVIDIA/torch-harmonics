@@ -319,6 +319,11 @@ def main() -> int:
     )
     parser.add_argument("--regression-tol", type=float, default=0.05, metavar="F", help="slowdowns within this fraction of 1x are not flagged " "(default 0.05 = 5%%)")
     parser.add_argument("--check-outputs", action="store_true", help="run float64/CPU reference and report ref_l_inf error")
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="wrap each entry's forward in torch.compile(dynamic=False); compilation is untimed and results are named <name>_compiled",
+    )
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -327,6 +332,8 @@ def main() -> int:
     else:
         print("GPU : none (CPU only)")
     print(f"PyTorch : {torch.__version__}")
+    if args.compile:
+        print("mode    : torch.compile")
     print()
 
     reference = None
@@ -353,7 +360,16 @@ def main() -> int:
     results, skipped = [], []
     for entry in entries:
         print(f"  {entry.name} ...", end=" ", flush=True)
-        result = run_entry(entry, warmup=args.warmup, iters=args.iters, skip_reference=not args.check_outputs)
+        try:
+            result = run_entry(entry, warmup=args.warmup, iters=args.iters, skip_reference=not args.check_outputs, compile=args.compile)
+        except Exception as e:
+            # a layer torch.compile cannot handle should not end the run
+            if not args.compile:
+                raise
+            reason = f"compile failed: {type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
+            print(f"skipped ({reason})")
+            skipped.append((entry.name, reason))
+            continue
         if result is None:
             reason = f"device '{entry.device}' not available"
             print(f"skipped ({reason})")
