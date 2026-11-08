@@ -31,11 +31,10 @@
 
 import math
 import unittest
-from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, set_seed
+from testutils import compare_tensors, float64_buffers, move_as_to_mps, set_seed
 
 from torch_harmonics import GeometricRadialGrid, LegendreGaussRadialGrid, SphericalProductGrid, as_grid
 from torch_harmonics.examples import RadialPoissonDataset
@@ -370,10 +369,8 @@ class TestRadialPoissonSolver(unittest.TestCase):
         source = solver.random_bump_source(nblobs=2, dtype=torch.float32)
         expected = solver.solve(source.unsqueeze(0))
 
-        # pretend the CPU is such a device, so the move takes the MPS path here
-        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
-            solver = solver.to("cpu")
-        self.assertFalse([name for name, b in solver.named_buffers() if b.dtype == torch.float64])
+        solver = move_as_to_mps(solver)
+        self.assertFalse(float64_buffers(solver))
         # the buffers were cast to float32 at use before the move, so nothing changes
         self.assertTrue(torch.equal(solver.solve(source.unsqueeze(0)), expected))
         self.assertEqual(solver.random_bump_source(nblobs=2, dtype=torch.float32).dtype, torch.float32)

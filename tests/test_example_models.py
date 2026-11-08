@@ -40,11 +40,10 @@ accuracy tests; the grids are as small as the layers allow.
 """
 
 import unittest
-from unittest import mock
 
 import torch
 from parameterized import parameterized
-from testutils import compare_tensors
+from testutils import compare_tensors, float64_buffers, move_as_to_mps
 
 from torch_harmonics import as_grid
 from torch_harmonics.examples import ShallowWaterDataset, ShallowWaterSolver, SphereSolver
@@ -167,9 +166,7 @@ class TestExampleSolvers(unittest.TestCase):
         uspec = solver.random_initial_condition(mach=0.1, dtype=torch.float32)
         expected = solver.timestep(uspec, 2)
 
-        # pretend the CPU is such a device, so the move takes the MPS path here
-        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
-            solver = solver.to("cpu")
-        self.assertFalse([name for name, b in solver.named_buffers() if b.dtype == torch.float64])
+        solver = move_as_to_mps(solver)
+        self.assertFalse(float64_buffers(solver))
         # the buffers were cast to float32 at use before the move, so the step agrees
         torch.testing.assert_close(solver.timestep(uspec, 2), expected)
