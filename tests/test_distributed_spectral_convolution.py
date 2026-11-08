@@ -29,7 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized
@@ -86,6 +88,19 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         )
 
         return tensor_gather
+
+    def test_weight_initialization_matches_serial(self):
+        """Degree 0 is initialized differently from the others, and only the first polar rank holds it."""
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        channels = 16
+        # with ones for the random numbers the weights are the scale factors themselves
+        with mock.patch("torch.randn", side_effect=lambda *args, **kwargs: torch.ones(*args, **kwargs)):
+            conv_local = th.SpectralConvS2(grid, grid, in_channels=channels, out_channels=channels)
+            conv_dist = thd.DistributedSpectralConvS2(grid, grid, in_channels=channels, out_channels=channels)
+        expected = split_tensor_dim(conv_local.weight.detach(), dim=-1, dimsize=self.grid_size_h, dimrank=self.hrank)
+        self.assertEqual(conv_dist.weight.shape, expected.shape)
+        self.assertTrue(torch.equal(conv_dist.weight.detach(), expected))
+        self.assertAlmostEqual(conv_local.weight[0, 0, 0, 0].abs().item(), math.sqrt(2.0 / channels), places=6)
 
     @parameterized.expand(
         [

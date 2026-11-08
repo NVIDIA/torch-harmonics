@@ -186,8 +186,10 @@ class DistributedSpectralConvS2(nn.Module):
 
         # Compute scaling factor for correct initialization
         scale = math.sqrt(1.0 / (in_channels // num_groups)) * torch.ones(self.lmax_local, dtype=torch.complex64)
-        # seemingly the first weight is not really complex, so we need to account for that
-        scale[0] *= math.sqrt(2.0)
+        # seemingly the first weight is not really complex, so we need to account for that.
+        # That is degree 0, which only the first polar rank holds
+        if self.comm_rank_polar == 0:
+            scale[0] *= math.sqrt(2.0)
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
 
         if bias:
