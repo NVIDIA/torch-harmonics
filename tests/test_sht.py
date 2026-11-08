@@ -678,7 +678,7 @@ class TestSHTFloat64Weights(unittest.TestCase):
         layer = move_as_to_mps(layer)
         self.assertFalse(float64_buffers(layer), msg=f"{name} kept a float64 buffer")
         # the inputs are float32, which the weights were cast to at use anyway
-        self.assertTrue(torch.equal(layer(x), expected))
+        self.assertTrue(compare_tensors("downcast weights", layer(x), expected, atol=0, rtol=0))
 
     @parameterized.expand(_float64_sht_layers())
     def test_other_moves_keep_float64(self, name, build, shape, dtype):
