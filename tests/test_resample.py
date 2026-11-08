@@ -159,7 +159,7 @@ class TestResampleS2(unittest.TestCase):
             resample = resample.to("cpu")
         self.assertEqual((resample.lat_weights.dtype, resample.lon_weights.dtype), (torch.float32, torch.float32))
         # float32 data was interpolated with the weights cast to float32 anyway
-        self.assertTrue(torch.equal(resample(x), expected))
+        self.assertTrue(compare_tensors("downcast weights", resample(x), expected, atol=0, rtol=0))
 
     @parameterized.expand(
         [
