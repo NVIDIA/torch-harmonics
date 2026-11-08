@@ -39,7 +39,7 @@ from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.radial import split_radial_pair
 from torch_harmonics.resample import _slerp_shortest_arc
-from torch_harmonics.utils import check
+from torch_harmonics.utils import check, recast_buffers_for
 
 from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
@@ -141,7 +141,9 @@ class DistributedResampleS2(nn.Module):
         # lat_idx = np.where(self.colats_out < self.colats_in[0], 0, lat_idx)
 
         # compute the interpolation weights along the latitude
-        lat_weights = ((self.colats_out - self.colats_in[lat_idx]) / torch.diff(self.colats_in)[lat_idx]).to(torch.float32)
+        # the weights stay float64, like the SHT and quadrature weights, and are cast to the precision of
+        # the data at use; rounding them to float32 here would cap float64 data at ~1e-9
+        lat_weights = (self.colats_out - self.colats_in[lat_idx]) / torch.diff(self.colats_in)[lat_idx]
         lat_weights = lat_weights.unsqueeze(-1)
 
         # register buffers
@@ -156,7 +158,7 @@ class DistributedResampleS2(nn.Module):
         diff = self.lons_in[lon_idx_right] - self.lons_in[lon_idx_left]
         # Coincident endpoints span a full period when there is one longitude.
         diff = torch.where(diff <= 0.0, diff + 2 * math.pi, diff)
-        lon_weights = ((self.lons_out - self.lons_in[lon_idx_left]) / diff).to(torch.float32)
+        lon_weights = (self.lons_out - self.lons_in[lon_idx_left]) / diff
 
         # register buffers
         self.register_buffer("lon_idx_left", lon_idx_left, persistent=False)
@@ -165,6 +167,11 @@ class DistributedResampleS2(nn.Module):
 
         # descriptor equality covers the grid type and both extents
         self.skip_resampling = self.grid_in == self.grid_out
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
