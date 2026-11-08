@@ -118,6 +118,10 @@ class GaussianRandomFieldS2(torch.nn.Module):
         sqrt_eig = torch.as_tensor([j * (j + 1) for j in range(lmax)], dtype=torch.float64).view(lmax, 1).repeat(1, mmax)
         sqrt_eig = torch.tril(sigma * (((sqrt_eig / radius**2) + tau**2) ** (-alpha / 2.0)))
         sqrt_eig[0, 0] = 0.0
+        # The real inverse SHT drops the imaginary part at m = 0, while a coefficient of order
+        # m > 0 also stands for its conjugate at -m. Unit-variance real and imaginary parts would
+        # give E|a_lm|^2 = C_l at m = 0 but 2 C_l at m > 0, so the field would not be isotropic.
+        sqrt_eig[:, 1:] /= 2.0**0.5
         sqrt_eig = sqrt_eig.to(dtype=dtype).unsqueeze(0)
         self.register_buffer("sqrt_eig", sqrt_eig)
 

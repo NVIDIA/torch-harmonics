@@ -35,6 +35,7 @@ import os
 import unittest
 from dataclasses import dataclass
 from typing import ClassVar
+from unittest import mock
 
 import torch
 import torch.distributed as dist
@@ -106,6 +107,21 @@ def set_seed(seed=333):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
     return
+
+
+def float64_buffers(module):
+    """Names of the module's float64 buffers."""
+    return [name for name, b in module.named_buffers() if b.dtype == torch.float64]
+
+
+def move_as_to_mps(module):
+    """Move ``module`` to the CPU as if the CPU were a device without float64, such as MPS.
+
+    A module that keeps float64 weights downcasts them to float32 on such a move; any other
+    move leaves them alone.
+    """
+    with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+        return module.to("cpu")
 
 
 def disable_tf32():
