@@ -95,7 +95,9 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         degrees = torch.arange(field.isht.lmax, device=self.device, dtype=torch.float64)
         expected = (degrees * (degrees + 1) / radius**2 + tau**2).reciprocal()
         expected[0] = 0.0
-        expected = torch.tril(expected[:, None].expand(-1, field.isht.mmax)).unsqueeze(0).to(dtype)
+        expected = torch.tril(expected[:, None].expand(-1, field.isht.mmax))
+        expected[:, 1:] /= 2.0**0.5
+        expected = expected.unsqueeze(0).to(dtype)
         tolerance = 1e-13 if dtype == torch.float64 else 2e-6
         torch.testing.assert_close(field.sqrt_eig, expected, rtol=tolerance, atol=0)
         xi = torch.ones((2, field.isht.lmax, field.isht.mmax), dtype=torch.complex128 if dtype == torch.float64 else torch.complex64, device=self.device)
@@ -108,12 +110,27 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         # the field's range rather than its own value
         self.assertTrue(compare_tensors("field", actual, reference, atol=0.0, rtol=tolerance, ulps=64))
 
+    @parameterized.expand([("legendre-gauss", 24, 48), ("legendre-gauss", 24, 72), ("equiangular", 33, 66), ("lobatto", 25, 50), ("fejer1", 24, 48)])
+    def test_variance_is_independent_of_latitude(self, grid, nlat, nlon):
+        # A power spectrum C_l is rotation invariant, so the pointwise variance cannot depend on
+        # latitude. It is exact: the field is linear in the noise, so one unit per noise component,
+        # squared and summed, is the variance.
+        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=nlon), alpha=1.5, tau=3.0, sigma=1.0, dtype=torch.float64).to(self.device)
+        lmax, mmax = field.isht.lmax, field.isht.mmax
+        count = 2 * lmax * mmax
+        noise = torch.eye(count, dtype=torch.float64, device=self.device).reshape(count, lmax, mmax, 2)
+        variance = field(count, xi=torch.view_as_complex(noise)).pow(2).sum(dim=0).mean(dim=-1)
+        spread = (variance.max() - variance.min()) / variance.mean()
+        self.assertLess(float(spread), 1e-10)
+
     def test_float32_spectrum_preserves_representable_amplitudes_after_wide_intermediates(self):
         field = GaussianRandomFieldS2(as_grid("equiangular", nlat=8, nlon=16), dtype=torch.float32, alpha=1.1, tau=1e20, sigma=1.0).to(self.device)
         degree = torch.arange(field.isht.lmax, dtype=torch.float64, device=self.device)
         expected = (degree * (degree + 1) + 1e40).pow(-0.55)
         expected[0] = 0.0
-        expected = torch.tril(expected[:, None].expand(-1, field.isht.mmax)).unsqueeze(0).to(torch.float32)
+        expected = torch.tril(expected[:, None].expand(-1, field.isht.mmax))
+        expected[:, 1:] /= 2.0**0.5
+        expected = expected.unsqueeze(0).to(torch.float32)
 
         self.assertEqual(field.sqrt_eig.dtype, torch.float32)
         self.assertTrue(bool(torch.isfinite(field.sqrt_eig).all()))
