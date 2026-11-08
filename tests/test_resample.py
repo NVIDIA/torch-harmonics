@@ -147,7 +147,11 @@ class TestResampleS2(unittest.TestCase):
         grid_in, grid_out = as_grid("equiangular", nlat=9, nlon=16), as_grid("legendre-gauss", nlat=8, nlon=16)
         resample = ResampleS2(grid_in, grid_out).to(self.device)
         self.assertEqual((resample.lat_weights.dtype, resample.lon_weights.dtype), (torch.float64, torch.float64))
-        x = torch.randn(2, *grid_in.shape, device=self.device)
+
+        # the reference and the downcast result both come from the CPU, so the exact comparison
+        # sees only the downcast and not a difference between devices
+        resample = resample.to("cpu")
+        x = torch.randn(2, *grid_in.shape)
         expected = resample(x)
 
         # pretend the CPU is such a device, so the move takes the MPS path here
@@ -155,7 +159,7 @@ class TestResampleS2(unittest.TestCase):
             resample = resample.to("cpu")
         self.assertEqual((resample.lat_weights.dtype, resample.lon_weights.dtype), (torch.float32, torch.float32))
         # float32 data was interpolated with the weights cast to float32 anyway
-        self.assertTrue(torch.equal(resample(x.cpu()), expected.cpu()))
+        self.assertTrue(torch.equal(resample(x), expected))
 
     @parameterized.expand(
         [
