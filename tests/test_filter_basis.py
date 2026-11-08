@@ -31,6 +31,7 @@
 
 import math
 import unittest
+from fractions import Fraction
 
 import torch
 from parameterized import parameterized
@@ -62,6 +63,15 @@ def _eval_dense(basis, r, phi, r_cutoff):
     with torch.sparse.check_sparse_tensor_invariants(enable=False):
         psi = torch.sparse_coo_tensor(iidx.t(), vals, size=(basis.kernel_size, nr, nphi)).to_dense()
     return psi
+
+
+def _zernike_radial_exact(n, m, r):
+    """R_n^m(r) from its closed-form sum, in exact rational arithmetic."""
+    total = Fraction(0)
+    for k in range((n - m) // 2 + 1):
+        coefficient = Fraction(math.factorial(n - k), math.factorial(k) * math.factorial((n + m) // 2 - k) * math.factorial((n - m) // 2 - k))
+        total += (-1) ** k * coefficient * r ** (n - 2 * k)
+    return total
 
 
 class TestFilterBasis(unittest.TestCase):
@@ -258,11 +268,27 @@ class TestFilterBasis(unittest.TestCase):
     # ------------------------------------------------------------------
     # Zernike: R_n^m(1) = 1 for all (n, m)
     # ------------------------------------------------------------------
+    @parameterized.expand([[n, m] for n in (6, 8, 12, 16, 20) for m in range(n % 2, n + 1, 2)], skip_on_empty=True)
+    def test_zernike_radial_matches_closed_form(self, n, m, tol=1e-10):
+        """R_n^m against the closed-form sum evaluated in rational arithmetic."""
+        basis = get_filter_basis(kernel_shape=(n + 1,), basis_type="zernike")
+        nodes = [Fraction(i, 16) for i in range(17)]
+        expected = [float(_zernike_radial_exact(n, m, node)) for node in nodes]
+        r = torch.tensor([float(node) for node in nodes], dtype=torch.float64)
+        degree, order = torch.full_like(r, n, dtype=torch.int64), torch.full_like(r, m, dtype=torch.int64)
+
+        actual = basis.zernikeradial(r, degree, order)
+
+        self.assertLess((actual - torch.tensor(expected, dtype=torch.float64)).abs().max().item(), tol)
+
     @parameterized.expand(
         [
             [(3,)],
             [(4,)],
             [(5,)],
+            [(9,)],
+            [(13,)],
+            [(21,)],
         ],
         skip_on_empty=True,
     )

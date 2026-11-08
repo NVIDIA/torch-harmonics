@@ -56,12 +56,16 @@ def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
     return torch.minimum(torch.abs(x1 - x2), torch.abs(2 * math.pi - torch.abs(x1 - x2)))
 
 
-def _log_factorial(x: torch.Tensor):
-    return torch.lgamma(x + 1)
+# 170! is the largest factorial in float64; the last entry stands for everything out of range
+_FACTORIALS = torch.tensor([float(math.factorial(n)) for n in range(171)] + [math.inf], dtype=torch.float64, device="cpu")
 
 
-def _factorial(x: torch.Tensor):
-    return torch.exp(_log_factorial(x))
+def _factorial(x: torch.Tensor, dtype: torch.dtype):
+    # a table rather than exp(lgamma(x + 1)): lgamma promotes an integer tensor to float32, and
+    # even in float64 its rounding errors are amplified by the alternating Zernike sum.
+    # Negative arguments are +inf, as they are for the gamma function
+    index = torch.where(x < 0, _FACTORIALS.numel() - 1, x).clamp(max=_FACTORIALS.numel() - 1)
+    return _FACTORIALS.to(device=x.device, dtype=dtype)[index]
 
 
 class FilterBasis(metaclass=abc.ABCMeta):
@@ -474,7 +478,7 @@ class ZernikeFilterBasis(FilterBasis):
 
         for k in range(max_bound):
 
-            inc = (-1) ** k * _factorial(n - k) * r ** (n - 2 * k) / (math.factorial(k) * _factorial((n + m) // 2 - k) * _factorial((n - m) // 2 - k))
+            inc = (-1) ** k * _factorial(n - k, r.dtype) * r ** (n - 2 * k) / (math.factorial(k) * _factorial((n + m) // 2 - k, r.dtype) * _factorial((n - m) // 2 - k, r.dtype))
             out += torch.where(k < bound, inc, 0.0)
 
         return out
