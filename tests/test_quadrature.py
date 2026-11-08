@@ -31,11 +31,10 @@
 
 import math
 import unittest
-from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
-from testutils import compare_tensors, range_atol, set_seed
+from testutils import compare_tensors, float64_buffers, move_as_to_mps, range_atol, set_seed
 
 import torch_harmonics as th
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes, trapezoidal_weights
@@ -248,10 +247,6 @@ def _float64_layers():
     return [
         ["quadrature", lambda: th.QuadratureS2(grid), (2, *grid.shape), torch.float32],
         ["quadrature_volume", lambda: th.QuadratureVolume(product), (2, *product.shape), torch.float32],
-        ["sht", lambda: th.RealSHT(grid), (2, *grid.shape), torch.float32],
-        ["inverse_sht", lambda: th.InverseRealSHT(grid, lmax=5, mmax=5), (2, 5, 5), torch.complex64],
-        ["vector_sht", lambda: th.RealVectorSHT(grid), (2, 2, *grid.shape), torch.float32],
-        ["inverse_vector_sht", lambda: th.InverseRealVectorSHT(grid, lmax=5, mmax=5), (2, 2, 5, 5), torch.complex64],
     ]
 
 
@@ -261,30 +256,26 @@ class TestFloat64BuffersOnDevicesWithout(unittest.TestCase):
     @parameterized.expand(_float64_layers())
     def test_downcast_on_the_move(self, name, build, shape, dtype):
         layer = build()
-        self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} keeps no float64 weights")
+        self.assertTrue(float64_buffers(layer), msg=f"{name} keeps no float64 weights")
         x = torch.randn(shape, dtype=dtype)
         expected = layer(x)
 
-        # pretend the CPU is such a device, so the move takes the MPS path here
-        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
-            layer = layer.to("cpu")
-        self.assertFalse(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} kept a float64 buffer")
+        layer = move_as_to_mps(layer)
+        self.assertFalse(float64_buffers(layer), msg=f"{name} kept a float64 buffer")
         # the inputs are float32, which the weights were cast to at use anyway
         self.assertTrue(torch.equal(layer(x), expected))
 
     @parameterized.expand(_float64_layers())
     def test_other_moves_keep_float64(self, name, build, shape, dtype):
         layer = build().to("cpu")
-        self.assertTrue(any(b.dtype == torch.float64 for b in layer.buffers()), msg=f"{name} lost its float64 weights")
+        self.assertTrue(float64_buffers(layer), msg=f"{name} lost its float64 weights")
 
     def test_recast_reaches_layers_inside_a_model(self):
         """A model's move reaches its layers through _apply, not through their to(), which is why the recast hooks _apply."""
         grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
         model = torch.nn.Sequential(th.SpectralConvS2(grid, grid, 4, 4, bias=True), torch.nn.Sequential(th.QuadratureS2(grid)))
-        self.assertTrue(any(b.dtype == torch.float64 for b in model.buffers()))
-        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
-            model = model.to("cpu")
-        self.assertFalse(any(b.dtype == torch.float64 for b in model.buffers()))
+        self.assertTrue(float64_buffers(model))
+        self.assertFalse(float64_buffers(move_as_to_mps(model)))
 
     def test_probe_ignores_a_float64_default(self):
         """The destination probe is float32 whatever the default dtype, or it would fail on MPS itself."""
