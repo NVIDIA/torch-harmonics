@@ -38,6 +38,7 @@ import torch.nn as nn
 
 import torch_harmonics as th
 from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.utils import recast_buffers_for
 
 
 class SphereSolver(nn.Module):
@@ -93,7 +94,7 @@ class SphereSolver(nn.Module):
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
 
-        l = torch.arange(0, self.lmax).reshape(self.lmax, 1).cdouble()
+        l = torch.arange(0, self.lmax).reshape(self.lmax, 1).double()
         l = l.expand(self.lmax, self.mmax)
         # the laplace operator acting on the coefficients is given by l (l + 1)
         lap = -l * (l + 1) / self.radius**2
@@ -106,6 +107,16 @@ class SphereSolver(nn.Module):
         self.register_buffer("l", l)
         self.register_buffer("lap", lap)
         self.register_buffer("invlap", invlap)
+
+    def _apply(self, fn, recurse=True):
+        # float64 buffers cannot move to MPS; see recast_buffers_for
+        recast_buffers_for(self, fn)
+        return super()._apply(fn, recurse)
+
+    @staticmethod
+    def _cast(buf, like):
+        """A float64 buffer cast to the precision of ``like``, real or complex, which the computation runs in."""
+        return buf.to(torch.promote_types(like.real.dtype, torch.float32))
 
     def grid2spec(self, u):
         return self.sht(u)
@@ -120,11 +131,11 @@ class SphereSolver(nn.Module):
         if pde == "allen-cahn":
             ugrid = self.spec2grid(uspec)
             u3spec = self.grid2spec(ugrid**3)
-            dudtspec = self.coeff * self.lap * uspec + uspec - u3spec
+            dudtspec = self.coeff * self._cast(self.lap, uspec) * uspec + uspec - u3spec
         elif pde == "ginzburg-landau":
             ugrid = self.spec2grid(uspec)
             u3spec = self.grid2spec(ugrid**3)
-            dudtspec = uspec + (1.0 + 2.0j) * self.coeff * self.lap * uspec - (1.0 + 2.0j) * u3spec
+            dudtspec = uspec + (1.0 + 2.0j) * self.coeff * self._cast(self.lap, uspec) * uspec - (1.0 + 2.0j) * u3spec
         else:
             raise NotImplementedError(f"PDE type {pde} not implemented")
 
@@ -132,7 +143,8 @@ class SphereSolver(nn.Module):
 
     def randspec(self):
         """Generate random spectral data on the sphere."""
-        rspec = torch.randn_like(self.lap) / 4 / torch.pi
+        ctype = torch.complex128 if self.lap.dtype == torch.float64 else torch.complex64
+        rspec = torch.randn_like(self.lap, dtype=ctype) / 4 / torch.pi
         return rspec
 
     def plot_griddata(self, data, fig, cmap="twilight_shifted", vmax=None, vmin=None, projection="3d", title=None, antialiased=False):
