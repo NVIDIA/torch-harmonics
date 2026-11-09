@@ -37,8 +37,9 @@ import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
-from torch_harmonics import ResampleS2, as_grid
+from torch_harmonics import HealpixGrid, ResampleS2, as_grid
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.resample import _ring_taps
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -401,3 +402,73 @@ class TestResampleS2(unittest.TestCase):
         a, b = 2.5, -1.75
         x1, x2 = torch.randn(*shape_in, **kw), torch.randn(*shape_in, **kw)
         self.assertTrue(compare_tensors("superposition", resample(a * x1 + b * x2), a * resample(x1) + b * resample(x2), atol=1e-12, rtol=1e-12))
+
+    # -----------------------------------------------------------------------
+    # Point-by-point interpolation, for grids without a dense (nlat, nlon) layout
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _smooth_field(grid):
+        """A smooth field on any grid, flat over its points and reshaped to ``grid.shape``."""
+        theta, lam = grid.coords.to(torch.float64).unbind(-1)
+        field = torch.cos(theta) + 0.5 * torch.sin(theta) ** 2 * torch.cos(2 * lam) + 0.3 * torch.sin(theta) * torch.cos(lam)
+        return field.reshape(grid.shape)
+
+    @parameterized.expand(
+        [
+            ["bilinear", "equiangular", (32, 64), "equiangular", (64, 128)],
+            ["bilinear", "legendre-gauss", (16, 32), "equiangular", (33, 66)],
+            ["bilinear", "lobatto", (17, 34), "fejer1", (20, 41)],
+            ["bilinear-spherical", "equiangular", (32, 64), "equiangular", (64, 128)],
+            ["bilinear-spherical", "lobatto", (17, 34), "fejer1", (20, 41)],
+        ]
+    )
+    def test_point_by_point_matches_separable_path(self, mode, grid_in, shape_in, grid_out, shape_out):
+        """The taps of a ragged pair, applied to a dense pair, reproduce the separable interpolation.
+
+        This validates the indices, weights and pole handling of the point-by-point path against the
+        reference on grids where both apply. For the spherical mode the field is small, so that
+        no shortest arc wraps and the order of the two interpolations cannot matter.
+        """
+        set_seed(555)
+        grid_in, grid_out = as_grid(grid_in, nlat=shape_in[0], nlon=shape_in[1]), as_grid(grid_out, nlat=shape_out[0], nlon=shape_out[1])
+        reference = ResampleS2(grid_in, grid_out, mode=mode).to(self.device)
+        taps = ResampleS2(grid_in, grid_out, mode=mode).to(self.device)
+        # force the point-by-point path
+        taps.separable = False
+        for name, value in zip(("taps", "tap_lon_weights", "tap_lat_weights"), _ring_taps(grid_in, grid_out, taps.expand_poles)):
+            taps.register_buffer(name, value.to(self.device), persistent=False)
+
+        x = 0.2 * torch.randn(2, 3, *shape_in, dtype=torch.float64, device=self.device)
+        self.assertTrue(compare_tensors("point by point vs separable", taps(x), reference(x), atol=1e-12, rtol=1e-12))
+
+    @parameterized.expand([["bilinear"], ["bilinear-spherical"]])
+    def test_healpix_preserves_constants_and_gradients(self, mode):
+        grids = [HealpixGrid(nside=8), as_grid("equiangular", nlat=33, nlon=66), HealpixGrid(nside=16)]
+        for grid_in, grid_out in [(grids[0], grids[1]), (grids[1], grids[0]), (grids[0], grids[2])]:
+            resample = ResampleS2(grid_in, grid_out, mode=mode).to(self.device)
+            x = torch.full((2, 3, *grid_in.shape), 0.7, device=self.device, requires_grad=True)
+            y = resample(x)
+            self.assertEqual(y.shape, (2, 3, *grid_out.shape))
+            self.assertTrue(compare_tensors("constant field", y, torch.full_like(y, 0.7), atol=1e-6, rtol=1e-6))
+            y.square().sum().backward()
+            self.assertEqual(x.grad.shape, x.shape)
+            self.assertTrue(bool(torch.isfinite(x.grad).all()))
+
+    @parameterized.expand(
+        [
+            # grid_in(nside), grid_out(nside), error bound at nside 16
+            ["healpix to equiangular", lambda n: HealpixGrid(nside=n), lambda n: as_grid("equiangular", nlat=64, nlon=128), 0.008],
+            ["equiangular to healpix", lambda n: as_grid("equiangular", nlat=4 * n, nlon=8 * n), lambda n: HealpixGrid(nside=n), 0.001],
+            ["healpix to finer healpix", lambda n: HealpixGrid(nside=n), lambda n: HealpixGrid(nside=2 * n), 0.006],
+        ]
+    )
+    def test_healpix_interpolates_smooth_fields_at_second_order(self, _, make_in, make_out, bound):
+        """The error on a smooth field is small, and falls by about a factor 4 as the input is refined."""
+        errors = []
+        for nside in (8, 16):
+            grid_in, grid_out = make_in(nside), make_out(nside)
+            y = ResampleS2(grid_in, grid_out).to(self.device)(self._smooth_field(grid_in).to(self.device))
+            errors.append((y - self._smooth_field(grid_out).to(self.device)).abs().max().item())
+
+        self.assertLess(errors[1], bound)
+        self.assertLess(errors[1] / errors[0], 0.55)
