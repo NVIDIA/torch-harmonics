@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics._field_contract import check_field
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
 from torch_harmonics.radial import split_radial_pair
 from torch_harmonics.utils import recast_buffers_for
 
@@ -111,6 +111,62 @@ def _circular_mean(x: torch.Tensor, dim: int = -1, keepdim: bool = False) -> tor
     return torch.atan2(torch.sin(x).mean(dim=dim, keepdim=keepdim), torch.cos(x).mean(dim=dim, keepdim=keepdim))
 
 
+def _ring_taps(grid_in: GridS2, grid_out: GridS2, expand_poles: bool):
+    r"""
+    The four taps of the bilinear interpolation onto every point of ``grid_out``.
+
+    The same interpolation as the separable one of :class:`ResampleS2`, written per output point so
+    that it needs no dense ``(nlat, nlon)`` layout: a point at :math:`(\theta, \lambda)` takes the two
+    input rings that bracket :math:`\theta`, and on each of them the two points that bracket
+    :math:`\lambda` at that ring's own length and phase. When the output reaches beyond the outermost
+    input rings, each pole joins the input as one extra point, the mean of its adjacent ring, at flat
+    indices ``npoints_in`` (north) and ``npoints_in + 1`` (south); it is a ring of length 1.
+
+    Returns
+    -------
+    tuple
+        ``(taps, lon_weights, lat_weights)``: the flat input indices ``(lo_left, lo_right, hi_left,
+        hi_right)`` as an int64 tensor of shape ``(4, npoints_out)``, the longitude weights of the
+        lower and of the upper ring, shape ``(2, npoints_out)``, and the latitude weights, shape
+        ``(npoints_out,)``. The weights are float64.
+    """
+    colats = grid_in.colats
+    counts = grid_in.nlon_per_lat
+    offsets = grid_in.lon_offsets[:-1]
+    shifts = grid_in.lon_shifts.to(torch.float64)
+    if expand_poles:
+        npoints = int(grid_in.lon_offsets[-1])
+        colats = torch.cat([colats.new_zeros(1), colats, colats.new_full((1,), math.pi)])
+        counts = torch.cat([counts.new_ones(1), counts, counts.new_ones(1)])
+        offsets = torch.cat([offsets.new_full((1,), npoints), offsets, offsets.new_full((1,), npoints + 1)])
+        shifts = torch.cat([shifts.new_zeros(1), shifts, shifts.new_zeros(1)])
+
+    # the rings of the output: the ring of each output point, and its longitude
+    ring_out = torch.repeat_interleave(torch.arange(grid_out.nrings), grid_out.nlon_per_lat)
+    lons_out = grid_out.coords[:, 1].to(torch.float64)
+
+    # latitude: the ring below and the weight, per output ring
+    lat_idx = torch.searchsorted(colats, grid_out.colats, side="right") - 1
+    lat_idx = torch.where(grid_out.colats == colats[-1], lat_idx - 1, lat_idx)
+    lat_weights = (grid_out.colats - colats[lat_idx]) / torch.diff(colats)[lat_idx]
+    ring_lo = lat_idx[ring_out]
+    lat_weights = lat_weights[ring_out]
+
+    # longitude on one input ring, in units of that ring's pixels: j + w with j the pixel to the left
+    def along(ring):
+        n = counts[ring]
+        t = lons_out * (n.to(torch.float64) / (2.0 * math.pi)) - shifts[ring]
+        j = torch.floor(t)
+        w = t - j
+        j = j.to(torch.int64)
+        return offsets[ring] + j % n, offsets[ring] + (j + 1) % n, w
+
+    lo_left, lo_right, w_lo = along(ring_lo)
+    hi_left, hi_right, w_hi = along(ring_lo + 1)
+
+    return torch.stack([lo_left, lo_right, hi_left, hi_right]), torch.stack([w_lo, w_hi]), lat_weights
+
+
 class ResampleS2(nn.Module):
     r"""
     Resampling module for signals on the 2-sphere :math:`S^2`.
@@ -159,14 +215,24 @@ class ResampleS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : RegularGridS2
+    grid_in : RegularGridS2 or HealpixGrid
         Descriptor of the input grid; it carries the resolution as well as the
-        quadrature rule.
-    grid_out : RegularGridS2
-        Descriptor of the output grid.
+        quadrature rule. A field on a :class:`~torch_harmonics.healpix.HealpixGrid` is flat,
+        ``(..., npix)``.
+    grid_out : RegularGridS2 or HealpixGrid
+        Descriptor of the output grid. Either side may be a regular grid or a HEALPix grid.
     mode : str, optional
         Interpolation mode (``"bilinear"``, ``"bilinear-spherical"``), by default
         ``"bilinear"``.  See above for a description of each mode.
+
+    Notes
+    -----
+    If either grid is a HEALPix grid, whose rings differ in length and are staggered, each output
+    point is interpolated from four input points: on the two input rings that bracket its
+    colatitude, the two points that bracket its longitude at that ring's own length and phase. This
+    is the same bilinear interpolation, so the error on a smooth field falls at second order with
+    the resolution. In the spherical mode the longitude step comes first there, and the latitude step
+    first on a pair of regular grids; the two agree except where an arc wraps.
 
     Examples
     --------
@@ -177,6 +243,12 @@ class ResampleS2(nn.Module):
     >>> y = resample(x)
     >>> y.shape
     torch.Size([1, 128, 256])
+
+    A HEALPix field is flat, and either side may be one:
+
+    >>> healpix = th.HealpixGrid(nside=16)
+    >>> th.ResampleS2(healpix, th.as_grid("equiangular", nlat=64, nlon=128))(torch.randn(1, healpix.npoints)).shape
+    torch.Size([1, 64, 128])
     """
 
     @_rejects_legacy_signature(
@@ -186,8 +258,8 @@ class ResampleS2(nn.Module):
     )
     def __init__(
         self,
-        grid_in: RegularGridS2,
-        grid_out: RegularGridS2,
+        grid_in: GridS2,
+        grid_out: GridS2,
         mode: Optional[str] = "bilinear",
     ):
 
@@ -201,8 +273,28 @@ class ResampleS2(nn.Module):
 
         # on a pair of product grids every shell is resampled alike
         grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
-        self.grid_in = require_regular_grid(grid_in, "grid_in")
-        self.grid_out = require_regular_grid(grid_out, "grid_out")
+        self.grid_in = require_grid(grid_in, "grid_in")
+        self.grid_out = require_grid(grid_out, "grid_out")
+        # a dense (nlat, nlon) layout allows the separable interpolation below, which shares the
+        # longitude step between rows; any other pair is interpolated point by point, see _ring_taps
+        self.separable = isinstance(self.grid_in, RegularGridS2) and isinstance(self.grid_out, RegularGridS2)
+
+        # the expansion to the poles is a property of the latitudes alone
+        colats_in, colats_out = self.grid_in.colats, self.grid_out.colats
+        self.expand_poles = bool((colats_out > colats_in[-1]).any() or (colats_out < colats_in[0]).any())
+
+        if self.separable:
+            self._init_separable()
+        else:
+            taps, lon_weights, lat_weights = _ring_taps(self.grid_in, self.grid_out, self.expand_poles)
+            self.register_buffer("taps", taps, persistent=False)
+            self.register_buffer("tap_lon_weights", lon_weights, persistent=False)
+            self.register_buffer("tap_lat_weights", lat_weights, persistent=False)
+
+        # descriptor equality covers the grid type and both extents
+        self.skip_resampling = self.grid_in == self.grid_out
+
+    def _init_separable(self):
         self.nlat_in, self.nlon_in = self.grid_in.shape
         self.nlat_out, self.nlon_out = self.grid_out.shape
 
@@ -214,9 +306,8 @@ class ResampleS2(nn.Module):
 
         # in the case where some points lie outside of the range spanned by colats_in,
         # we need to expand the solution to the poles before interpolating
-        # bool(), not a 0-dim tensor: this is branched on in forward, and a tensor
-        # there is data-dependent control flow that breaks torch.compile(fullgraph=True)
-        self.expand_poles = bool((self.colats_out > self.colats_in[-1]).any() or (self.colats_out < self.colats_in[0]).any())
+        # (expand_poles is a bool, not a 0-dim tensor: it is branched on in forward, and a tensor
+        # there is data-dependent control flow that breaks torch.compile(fullgraph=True))
         if self.expand_poles:
             self.colats_in = torch.cat(
                 [
@@ -258,9 +349,6 @@ class ResampleS2(nn.Module):
         self.register_buffer("lon_idx_left", lon_idx_left, persistent=False)
         self.register_buffer("lon_idx_right", lon_idx_right, persistent=False)
         self.register_buffer("lon_weights", lon_weights, persistent=False)
-
-        # descriptor equality covers the grid type and both extents
-        self.skip_resampling = self.grid_in == self.grid_out
 
     def _apply(self, fn, recurse=True):
         # float64 buffers cannot move to MPS; see recast_buffers_for
@@ -313,6 +401,32 @@ class ResampleS2(nn.Module):
 
         return x
 
+    def _interpolate_taps(self, x: torch.Tensor):
+        # a field on a dense grid is flattened to the ring-major layout the taps address
+        lead = x.shape[: x.dim() - len(self.grid_in.shape)]
+        x = x.reshape(*lead, self.grid_in.npoints)
+
+        if self.expand_poles:
+            # each pole is one extra point, the mean of its adjacent ring (see _ring_taps)
+            offsets = self.grid_in.lon_offsets
+            north, south = x[..., offsets[0] : offsets[1]], x[..., offsets[-2] : offsets[-1]]
+            if self.mode == "bilinear":
+                poles = [north.mean(dim=-1, keepdim=True), south.mean(dim=-1, keepdim=True)]
+            else:
+                poles = [_circular_mean(north, keepdim=True), _circular_mean(south, keepdim=True)]
+            x = torch.cat([x, *poles], dim=-1)
+
+        # interpolate in the precision of x, along the two rings and then between them
+        lon, lat = self.tap_lon_weights.to(x.dtype), self.tap_lat_weights.to(x.dtype)
+        lo_left, lo_right, hi_left, hi_right = self.taps
+        if self.mode == "bilinear":
+            lerp = torch.lerp
+        else:
+            lerp = _slerp_shortest_arc
+        lower = lerp(x[..., lo_left], x[..., lo_right], lon[0])
+        upper = lerp(x[..., hi_left], x[..., hi_right], lon[1])
+        return lerp(lower, upper, lat).reshape(*lead, *self.grid_out.shape)
+
     def forward(self, x: torch.Tensor):
         """
         Resample a spherical signal onto the output grid.
@@ -333,6 +447,9 @@ class ResampleS2(nn.Module):
 
         if self.skip_resampling:
             return x
+
+        if not self.separable:
+            return self._interpolate_taps(x)
 
         if self.expand_poles:
             x = self._expand_poles(x)
