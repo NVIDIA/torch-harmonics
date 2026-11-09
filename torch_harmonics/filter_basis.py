@@ -30,6 +30,7 @@
 #
 
 import abc
+import functools
 import math
 import warnings
 from typing import Optional, Tuple, Union
@@ -60,12 +61,20 @@ def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
 _FACTORIALS = torch.tensor([float(math.factorial(n)) for n in range(171)] + [math.inf], dtype=torch.float64, device="cpu")
 
 
+@functools.lru_cache(maxsize=None)
+def _factorial_table(device: torch.device, dtype: torch.dtype):
+    # one copy per device and dtype: the table is read-only and the sum below asks for it often
+    return _FACTORIALS.to(device=device, dtype=dtype)
+
+
 def _factorial(x: torch.Tensor, dtype: torch.dtype):
     # a table rather than exp(lgamma(x + 1)): lgamma promotes an integer tensor to float32, and
     # even in float64 its rounding errors are amplified by the alternating Zernike sum.
+    # The arithmetic is at least float32: float16 overflows at 9!, which would turn 9! / 9! into inf / inf.
     # Negative arguments are +inf, as they are for the gamma function
-    index = torch.where(x < 0, _FACTORIALS.numel() - 1, x).clamp(max=_FACTORIALS.numel() - 1)
-    return _FACTORIALS.to(device=x.device, dtype=dtype)[index]
+    table = _factorial_table(x.device, torch.promote_types(dtype, torch.float32))
+    index = torch.where(x < 0, table.numel() - 1, x).clamp(max=table.numel() - 1)
+    return table[index]
 
 
 class FilterBasis(metaclass=abc.ABCMeta):

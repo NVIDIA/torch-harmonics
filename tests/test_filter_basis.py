@@ -281,6 +281,17 @@ class TestFilterBasis(unittest.TestCase):
 
         self.assertLess((actual - torch.tensor(expected, dtype=torch.float64)).abs().max().item(), tol)
 
+    @parameterized.expand([[torch.float16], [torch.bfloat16]])
+    def test_zernike_radial_in_low_precision(self, dtype, tol=5e-2):
+        """The factorials stay at least float32: 9! overflows float16, and 9! / 9! must not become inf / inf."""
+        basis = get_filter_basis(kernel_shape=(11,), basis_type="zernike")
+        for n, m in [(9, 9), (9, 1), (10, 2), (10, 0)]:
+            for node in (Fraction(1, 2), Fraction(1)):
+                r = torch.tensor([float(node)], dtype=dtype)
+                actual = basis.zernikeradial(r, torch.tensor([n]), torch.tensor([m]))
+                self.assertTrue(bool(torch.isfinite(actual).all()), msg=f"R_{n}^{m}({node}) in {dtype}")
+                self.assertLess(abs(actual.item() - float(_zernike_radial_exact(n, m, node))), tol, msg=f"R_{n}^{m}({node}) in {dtype}")
+
     @parameterized.expand(
         [
             [(3,)],
