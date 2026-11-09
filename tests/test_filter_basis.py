@@ -281,6 +281,17 @@ class TestFilterBasis(unittest.TestCase):
 
         self.assertLess((actual - torch.tensor(expected, dtype=torch.float64)).abs().max().item(), tol)
 
+    def test_zernike_radial_broadcasts_degree_and_order(self, n=6, m=2, tol=1e-10):
+        """One (n, m) pair at several radii, as one-element or zero-dimensional tensors."""
+        basis = get_filter_basis(kernel_shape=(n + 1,), basis_type="zernike")
+        nodes = [Fraction(i, 16) for i in range(17)]
+        r = torch.tensor([float(node) for node in nodes], dtype=torch.float64)
+        expected = torch.tensor([float(_zernike_radial_exact(n, m, node)) for node in nodes], dtype=torch.float64)
+        for degree, order in [(torch.tensor([n]), torch.tensor([m])), (torch.tensor(n), torch.tensor(m))]:
+            actual = basis.zernikeradial(r, degree, order)
+            self.assertEqual(actual.shape, r.shape)
+            self.assertLess((actual - expected).abs().max().item(), tol)
+
     @parameterized.expand([[4], [7], [10]])
     def test_zernike_poly_matches_closed_form(self, kernel_shape, tol=1e-10):
         """Every basis function of one call at once, with both the cosine and the sine branch, against the closed form."""

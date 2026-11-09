@@ -488,6 +488,8 @@ class ZernikeFilterBasis(FilterBasis):
         # R_n^m depends on the (n, m) pair only, and a basis has just kernel_size of them. So the
         # coefficients are computed once per distinct pair and gathered per point; computing the
         # factorials for every point made them the bulk of the DISCO filter setup
+        # n and m may be a single pair for all of r, so broadcast them to its shape first
+        n, m = n.expand(r.shape), m.expand(r.shape)
         stride = int(m.max().item()) + 1
         pairs, inverse = torch.unique((n * stride + m).reshape(-1), return_inverse=True)
         pair_n, pair_m = pairs // stride, pairs % stride
