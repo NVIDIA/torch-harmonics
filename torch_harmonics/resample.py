@@ -404,7 +404,7 @@ class ResampleS2(nn.Module):
     def _interpolate_taps(self, x: torch.Tensor):
         # a field on a dense grid is flattened to the ring-major layout the taps address
         lead = x.shape[: x.dim() - len(self.grid_in.shape)]
-        x = x.reshape(*lead, -1)
+        x = x.reshape(*lead, self.grid_in.npoints)
 
         if self.expand_poles:
             # each pole is one extra point, the mean of its adjacent ring (see _ring_taps)

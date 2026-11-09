@@ -454,6 +454,9 @@ class TestResampleS2(unittest.TestCase):
             self.assertEqual(x.grad.shape, x.shape)
             self.assertTrue(bool(torch.isfinite(x.grad).all()))
 
+            # an empty batch gives an empty field on the output grid
+            self.assertEqual(resample(x.detach()[:0]).shape, (0, 3, *grid_out.shape))
+
     @parameterized.expand(
         [
             # grid_in(nside), grid_out(nside), error bound at nside 16
