@@ -49,6 +49,12 @@ from torch_harmonics.utils import compile_if_supported, torch_compile_supported
 # reassociate that contraction (measured: up to 2).
 _CONTRACTION_ULPS = 16
 
+
+def _test_grid(name):
+    """A grid of the tests above: HEALPix, or a regular grid with nlon a multiple of 4."""
+    return HealpixGrid(nside=8) if name == "healpix" else as_grid(name, nlat=32, nlon=64)
+
+
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
     _devices.append((torch.device("cuda"),))
@@ -123,7 +129,9 @@ class TestSpectralConvS2(unittest.TestCase):
     # of n_r pixels maps onto itself, shifted by n_r / 4. The SHT of such a ring turns
     # the shift into the phase exp(-i m pi / 2) for the order m it was sampled at, and for
     # the order it aliases onto, since n_r is a multiple of 4. The weights do not depend
-    # on m, so the layer commutes with the turn, on a HEALPix grid on either side or both. (A spectral bias is not covered: it depends on m.)
+    # on m, so the layer commutes with the turn, on a HEALPix grid on either side or both.
+    # A regular grid is invariant too whenever nlon is a multiple of 4. (A spectral bias is
+    # not covered: it depends on m.)
     # -----------------------------------------------------------------------
     @parameterized.expand(
         [
@@ -131,6 +139,11 @@ class TestSpectralConvS2(unittest.TestCase):
             ["healpix", "healpix"],
             ["equiangular", "healpix"],
             ["healpix", "equiangular"],
+            ["legendre-gauss", "healpix"],
+            ["healpix", "legendre-gauss"],
+            ["lobatto", "healpix"],
+            ["healpix", "lobatto"],
+            ["equiangular", "lobatto"],
         ],
         skip_on_empty=True,
     )
@@ -139,8 +152,7 @@ class TestSpectralConvS2(unittest.TestCase):
 
         set_seed(333)
 
-        grids = {"healpix": HealpixGrid(nside=8), "equiangular": as_grid("equiangular", nlat=32, nlon=64)}
-        grid_in, grid_out = grids[grid_in], grids[grid_out]
+        grid_in, grid_out = _test_grid(grid_in), _test_grid(grid_out)
 
         def turn(x, grid):
             if isinstance(grid, HealpixGrid):
@@ -170,26 +182,27 @@ class TestSpectralConvS2(unittest.TestCase):
         )
 
     # -----------------------------------------------------------------------
-    # HEALPix: identity weights reduce the layer to its transforms
+    # Identity weights reduce the layer to its transforms
     # -----------------------------------------------------------------------
-    def test_healpix_identity_weights_reduce_to_sht_roundtrip(self, verbose=False):
-        """With all weights 1 the layer is synthesis after analysis on the HEALPix grid."""
+    @parameterized.expand([["healpix"], ["equiangular"], ["legendre-gauss"], ["lobatto"]], skip_on_empty=True)
+    def test_identity_weights_reduce_to_sht_roundtrip(self, grid, verbose=False):
+        """With the identity as weights the layer is synthesis after analysis."""
 
         set_seed(333)
 
-        grid = HealpixGrid(nside=8)
+        grid = _test_grid(grid)
         conv = SpectralConvS2(grid, grid, in_channels=3, out_channels=3).to(self.device)
         conv.eval()
         with torch.no_grad():
             conv.weight.copy_(torch.eye(3, dtype=conv.weight.dtype, device=self.device).reshape(1, 3, 3, 1).expand_as(conv.weight))
 
-        x = torch.randn(2, 3, grid.npoints, device=self.device)
+        x = torch.randn(2, 3, *grid.shape, device=self.device)
 
         with torch.no_grad():
             y = conv(x)
             expected = conv.isht(conv.sht(x))
 
-        self.assertTrue(compare_tensors("healpix identity weights", y, expected, atol=0.0, rtol=0.0, ulps=_CONTRACTION_ULPS, verbose=verbose))
+        self.assertTrue(compare_tensors("identity weights", y, expected, atol=0.0, rtol=0.0, ulps=_CONTRACTION_ULPS, verbose=verbose))
 
     # -----------------------------------------------------------------------
     # Test 4: Grouped convolution consistency
