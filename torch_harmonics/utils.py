@@ -184,6 +184,11 @@ def compile_if_supported(fn):
 _NO_FLOAT64_DEVICE_TYPES = frozenset({"mps"})
 
 
+def _float64_unsupported(device) -> bool:
+    """Whether ``device`` cannot hold a float64 tensor (MPS)."""
+    return torch.device(device).type in _NO_FLOAT64_DEVICE_TYPES
+
+
 def recast_buffers_for(module: torch.nn.Module, fn) -> None:
     """
     Downcast ``module``'s own float64 buffers to float32 if ``module._apply(fn)`` is about to move them to a device without float64.

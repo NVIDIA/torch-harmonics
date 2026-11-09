@@ -1860,3 +1860,42 @@ class TestDiscreteContinuousConvRaggedS2(unittest.TestCase):
         key_arc, vals_arc = canon(*arcs_to_coo(arcs, ring_base=ring_base, ring_size=ring_size))
         self.assertTrue(torch.equal(key_ref, key_arc))
         self.assertTrue(torch.equal(vals_ref, vals_arc))
+
+
+class TestDiscreteContinuousConvWithoutFloat64Device(unittest.TestCase):
+    """The torch reference backends on a device without float64 (MPS), where psi must be float32."""
+
+    _GRIDS = {"regular": (("equiangular", 9, 16), ("equiangular", 5, 8)), "ragged": (("healpix", 4), ("healpix", 4))}
+
+    def setUp(self):
+        set_seed(333)
+
+    def _conv(self, transpose, family):
+        grid_in, grid_out = self._GRIDS[family]
+        Conv = DiscreteContinuousConvTransposeS2 if transpose else DiscreteContinuousConvS2
+        if transpose:
+            grid_in, grid_out = grid_out, grid_in
+        return Conv(_grid(grid_in), _grid(grid_out), 3, 2, (3, 4), basis_type="piecewise linear", optimized_kernel=False)
+
+    @parameterized.expand([[False, "regular"], [True, "regular"], [False, "ragged"], [True, "ragged"]])
+    def test_reference_psi_is_float32_without_float64(self, transpose, family):
+        """prepare hands a float32 psi to a device that cannot hold float64, and keeps float64 elsewhere."""
+        conv = self._conv(transpose, family)
+        backend = RaggedReferenceBackend() if family == "ragged" else RegularReferenceBackend()
+        self.assertEqual(backend.prepare(conv, torch.device("cpu"))["psi"].dtype, torch.float64)
+        # the CPU stands in for MPS
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            psi = backend.prepare(conv, torch.device("cpu"))["psi"]
+        self.assertEqual(psi.dtype, torch.float32)
+
+    @parameterized.expand([[False, "regular"], [True, "regular"], [False, "ragged"], [True, "ragged"]])
+    @unittest.skipUnless(torch.backends.mps.is_available(), "needs an MPS device")
+    def test_conv_moves_to_mps(self, transpose, family):
+        """A layer moved to MPS selects the reference and agrees with its CPU result."""
+        conv = self._conv(transpose, family)
+        inp = _field(2, 3, conv.grid_in, torch.float32, "cpu")
+        expected = conv(inp)
+        conv = conv.to("mps")
+        self.assertTrue(conv.backend.name.endswith("-reference"))
+        out = conv(inp.to("mps")).cpu()
+        self.assertTrue(compare_tensors("mps output", out, expected, atol=1e-5, rtol=1e-4))

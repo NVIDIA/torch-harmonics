@@ -92,6 +92,7 @@ import torch
 from disco_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import BackendS2, _kernel_device_types
+from torch_harmonics.utils import _float64_unsupported
 
 from ._psi_layouts import build_arcs, build_kpacked, build_split
 from .kernels_torch.disco_ragged_torch import _disco_s2_contraction_ragged_torch, _disco_s2_transpose_contraction_ragged_torch
@@ -149,6 +150,14 @@ def _weight_contraction(x: torch.Tensor, weight: torch.Tensor, groups: int, grou
     return out.reshape(B, groups * weight.shape[1], *spatial)
 
 
+def _reference_psi_on(layer, device):
+    """The sparse psi of the torch reference, on ``device``; float32 on a device without float64 (MPS)."""
+    psi = layer._reference_psi(*layer._psi_coo())
+    if psi.dtype == torch.float64 and _float64_unsupported(device):
+        psi = psi.to(torch.float32)
+    return psi.to(device)
+
+
 class DiscoBackendS2(BackendS2):
     """
     One way of evaluating the psi contraction of a DISCO layer.
@@ -195,7 +204,7 @@ class RegularReferenceBackend(DiscoBackendS2):
         return not layer.ragged
 
     def prepare(self, layer, device):
-        return {"psi": layer._reference_psi(*layer._psi_coo()).to(device)}
+        return {"psi": _reference_psi_on(layer, device)}
 
     def contract(self, layer, x):
         return _disco_s2_contraction_regular_torch(x, layer.psi, layer.nlon_out)
@@ -385,7 +394,7 @@ class RaggedReferenceBackend(DiscoBackendS2):
         return layer.ragged
 
     def prepare(self, layer, device):
-        return {"psi": layer._reference_psi(*layer._psi_coo()).to(device)}
+        return {"psi": _reference_psi_on(layer, device)}
 
     def contract(self, layer, x):
         return _disco_s2_contraction_ragged_torch(x, layer.psi)
