@@ -35,7 +35,7 @@ import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
-from torch_harmonics import as_grid
+from torch_harmonics import HealpixGrid, as_grid
 from torch_harmonics.random_fields import GaussianRandomFieldS2
 
 _devices = [(torch.device("cpu"),)]
@@ -120,6 +120,20 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         count = 2 * lmax * mmax
         noise = torch.eye(count, dtype=torch.float64, device=self.device).reshape(count, lmax, mmax, 2)
         variance = field(count, xi=torch.view_as_complex(noise)).pow(2).sum(dim=0).mean(dim=-1)
+        spread = (variance.max() - variance.min()) / variance.mean()
+        self.assertLess(float(spread), 1e-10)
+
+    def test_healpix_samples_are_flat_and_isotropic(self):
+        # The same exact variance argument on HEALPix, whose rings differ in length: every pixel
+        # carries the same variance, and the samples are flat.
+        grid = HealpixGrid(nside=8)
+        field = GaussianRandomFieldS2(grid, alpha=1.5, tau=3.0, sigma=1.0, dtype=torch.float64).to(self.device)
+        lmax, mmax = field.isht.lmax, field.isht.mmax
+        count = 2 * lmax * mmax
+        noise = torch.eye(count, dtype=torch.float64, device=self.device).reshape(count, lmax, mmax, 2)
+        samples = field(count, xi=torch.view_as_complex(noise))
+        self.assertEqual(samples.shape, (count, grid.npoints))
+        variance = samples.pow(2).sum(dim=0)
         spread = (variance.max() - variance.min()) / variance.mean()
         self.assertLess(float(spread), 1e-10)
 
