@@ -31,6 +31,7 @@
 
 import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
@@ -100,15 +101,19 @@ class TestResampleS2(unittest.TestCase):
         [
             # Only grid pairs where output latitudes lie strictly within the input latitude range
             # (expand_poles=False), so that bilinear interpolation is exact for linear-in-θ functions.
-            [32, 64, 16, 32, "equiangular", "equiangular", 1e-5, 1e-5],
-            [32, 64, 16, 32, "equiangular", "legendre-gauss", 1e-5, 1e-5],
-            [32, 64, 16, 32, "legendre-gauss", "equiangular", 1e-5, 1e-5],
-            [32, 64, 16, 32, "legendre-gauss", "legendre-gauss", 1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto", "equiangular", 1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto", "legendre-gauss", 1e-5, 1e-5],
+            # The weights are float64 and cast at use, so float64 data is exact to rounding.
+            [32, 64, 16, 32, "equiangular", "equiangular", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "equiangular", "legendre-gauss", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "legendre-gauss", "equiangular", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "legendre-gauss", "legendre-gauss", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "equiangular", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "legendre-gauss", torch.float32, 1e-5, 1e-5],
+            [33, 64, 48, 96, "equiangular", "legendre-gauss", torch.float64, 1e-13, 1e-13],
+            [32, 64, 65, 128, "legendre-gauss", "equiangular", torch.float64, 1e-13, 1e-13],
+            [32, 64, 16, 32, "lobatto", "legendre-gauss", torch.float64, 1e-13, 1e-13],
         ]
     )
-    def test_linear_latitude_exactness(self, nlat_in, nlon_in, nlat_out, nlon_out, grid_in, grid_out, atol, rtol, verbose=False):
+    def test_linear_latitude_exactness(self, nlat_in, nlon_in, nlat_out, nlon_out, grid_in, grid_out, dtype, atol, rtol, verbose=False):
         """Bilinear interpolation is exact for f(θ,φ)=θ (linear in latitude)."""
         set_seed(333)
 
@@ -122,20 +127,39 @@ class TestResampleS2(unittest.TestCase):
         colats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
 
         # f(θ, φ) = θ — constant across longitude, linear in latitude
-        data = colats_in.float().to(self.device).unsqueeze(-1).expand(nlat_in, nlon_in).contiguous()
+        data = colats_in.to(dtype).to(self.device).unsqueeze(-1).expand(nlat_in, nlon_in).contiguous()
         data = data.unsqueeze(0).unsqueeze(0)  # (1, 1, nlat_in, nlon_in)
 
         out = resample(data)
 
-        expected = colats_out.float().to(self.device).unsqueeze(-1).expand(nlat_out, nlon_out).contiguous()
+        expected = colats_out.to(dtype).to(self.device).unsqueeze(-1).expand(nlat_out, nlon_out).contiguous()
         expected = expected.unsqueeze(0).unsqueeze(0)  # (1, 1, nlat_out, nlon_out)
 
-        # the pole value would differ if this is true
-        if resample.expand_poles:
-            out = out[..., 1:-1, :]
-            expected = expected[..., 1:-1, :]
+        # rings beyond the input range are extrapolated towards the pole values, which is not linear
+        rings = ((colats_out >= colats_in[0]) & (colats_out <= colats_in[-1])).to(self.device)
+        out = out[..., rings, :]
+        expected = expected[..., rings, :]
 
         self.assertTrue(compare_tensors("linear-in-theta", out, expected, atol=atol, rtol=rtol, verbose=verbose))
+
+    def test_float64_weights_follow_moves(self):
+        """The weights are float64 and cast at use; only a device without float64, such as MPS, downcasts them."""
+        grid_in, grid_out = as_grid("equiangular", nlat=9, nlon=16), as_grid("legendre-gauss", nlat=8, nlon=16)
+        resample = ResampleS2(grid_in, grid_out).to(self.device)
+        self.assertEqual((resample.lat_weights.dtype, resample.lon_weights.dtype), (torch.float64, torch.float64))
+
+        # the reference and the downcast result both come from the CPU, so the exact comparison
+        # sees only the downcast and not a difference between devices
+        resample = resample.to("cpu")
+        x = torch.randn(2, *grid_in.shape)
+        expected = resample(x)
+
+        # pretend the CPU is such a device, so the move takes the MPS path here
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            resample = resample.to("cpu")
+        self.assertEqual((resample.lat_weights.dtype, resample.lon_weights.dtype), (torch.float32, torch.float32))
+        # float32 data was interpolated with the weights cast to float32 anyway
+        self.assertTrue(compare_tensors("downcast weights", resample(x), expected, atol=0, rtol=0))
 
     @parameterized.expand(
         [
