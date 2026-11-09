@@ -37,9 +37,10 @@ import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
 from torch_harmonics._field_contract import check_field
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import GridS2, _rejects_legacy_signature
 from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.radial import split_radial_pair
+from torch_harmonics.sht import _require_sht_grid
 from torch_harmonics.truncation import truncate_sht
 from torch_harmonics.utils import compile_if_supported
 
@@ -105,11 +106,13 @@ class SpectralConvS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : RegularGridS2
+    grid_in : RegularGridS2 or HealpixGrid
         Descriptor of the input grid. It carries the resolution as well as the
-        quadrature rule, so no separate shape argument is needed.
-    grid_out : RegularGridS2
-        Descriptor of the output grid.
+        quadrature rule, so no separate shape argument is needed. On a
+        :class:`~torch_harmonics.healpix.HealpixGrid` the field is flat,
+        ``(batch, in_channels, npix)``.
+    grid_out : RegularGridS2 or HealpixGrid
+        Descriptor of the output grid. Either side may be a regular grid or a HEALPix grid.
     in_channels : int
         Number of input channels.
     out_channels : int
@@ -140,7 +143,9 @@ class SpectralConvS2(nn.Module):
     Notes
     -----
     The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
-    truncations.
+    truncations. HEALPix has no exact quadrature, so on a HEALPix input the analysis is
+    approximate (about 1e-2 relative error at the default band, see
+    :class:`~torch_harmonics.RealSHT`).
     """
 
     @_rejects_legacy_signature(
@@ -150,8 +155,8 @@ class SpectralConvS2(nn.Module):
     )
     def __init__(
         self,
-        grid_in: RegularGridS2,
-        grid_out: RegularGridS2,
+        grid_in: GridS2,
+        grid_out: GridS2,
         in_channels: int,
         out_channels: int,
         num_groups: Optional[int] = 1,
@@ -167,10 +172,8 @@ class SpectralConvS2(nn.Module):
         # copy inputs
         # on a pair of product grids every shell is convolved alike, see forward
         grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
-        self.grid_in = require_regular_grid(grid_in, "grid_in")
-        self.grid_out = require_regular_grid(grid_out, "grid_out")
-        self.nlat_in, self.nlon_in = self.grid_in.shape
-        self.nlat_out, self.nlon_out = self.grid_out.shape
+        self.grid_in = _require_sht_grid(grid_in)
+        self.grid_out = _require_sht_grid(grid_out)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups
@@ -219,14 +222,16 @@ class SpectralConvS2(nn.Module):
         Parameters
         ----------
         x : torch.Tensor
-            Input signal of shape ``(batch, in_channels, nlat_in, nlon_in)``, or
-            ``(batch, in_channels, nr, nlat_in, nlon_in)`` on a product grid.
+            Input signal of shape ``(batch, in_channels, *grid_in.shape)``, i.e.
+            ``(batch, in_channels, nlat_in, nlon_in)`` on a regular grid and
+            ``(batch, in_channels, npix_in)`` on a HEALPix grid, or with the radial axis in
+            front of the angular ones on a product grid.
 
         Returns
         -------
         torch.Tensor
-            Convolved signal of shape ``(batch, out_channels, nlat_out, nlon_out)``, or
-            ``(batch, out_channels, nr, nlat_out, nlon_out)`` on a product grid.
+            Convolved signal of shape ``(batch, out_channels, *grid_out.shape)``, with the
+            radial axis in front of the angular ones on a product grid.
         """
         check_field(x, self.grid_in, leading=(None, self.in_channels), radial=self.radial)
 

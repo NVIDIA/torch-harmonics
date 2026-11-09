@@ -40,7 +40,7 @@ import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, requires_torch_compile, set_seed
 
-from torch_harmonics import as_grid
+from torch_harmonics import HealpixGrid, as_grid
 from torch_harmonics.spectral_convolution import SpectralConvS2
 from torch_harmonics.utils import compile_if_supported, torch_compile_supported
 
@@ -115,6 +115,81 @@ class TestSpectralConvS2(unittest.TestCase):
                 verbose=verbose,
             )
         )
+
+    # -----------------------------------------------------------------------
+    # HEALPix: quarter-turn equivariance
+    #
+    # A HEALPix grid is invariant under a quarter turn about the polar axis: every ring
+    # of n_r pixels maps onto itself, shifted by n_r / 4. The SHT of such a ring turns
+    # the shift into the phase exp(-i m pi / 2) for the order m it was sampled at, and for
+    # the order it aliases onto, since n_r is a multiple of 4. The weights do not depend
+    # on m, so the layer commutes with the turn, on a HEALPix grid on either side or both. (A spectral bias is not covered: it depends on m.)
+    # -----------------------------------------------------------------------
+    @parameterized.expand(
+        [
+            # grid_in, grid_out
+            ["healpix", "healpix"],
+            ["equiangular", "healpix"],
+            ["healpix", "equiangular"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_healpix_quarter_turn_equivariance(self, grid_in, grid_out, verbose=False):
+        """Conv(Turn(x)) == Turn(Conv(x)) for a quarter turn about the polar axis."""
+
+        set_seed(333)
+
+        grids = {"healpix": HealpixGrid(nside=8), "equiangular": as_grid("equiangular", nlat=32, nlon=64)}
+        grid_in, grid_out = grids[grid_in], grids[grid_out]
+
+        def turn(x, grid):
+            if isinstance(grid, HealpixGrid):
+                rings = x.split(grid.nlon_per_lat.tolist(), dim=-1)
+                return torch.cat([torch.roll(r, r.shape[-1] // 4, dims=-1) for r in rings], dim=-1)
+            return torch.roll(x, grid.nlon // 4, dims=-1)
+
+        conv = SpectralConvS2(grid_in, grid_out, in_channels=4, out_channels=6, num_groups=2).to(self.device)
+        conv.eval()
+
+        x = torch.randn(2, 4, *grid_in.shape, device=self.device)
+
+        with torch.no_grad():
+            y_of_turned = conv(turn(x, grid_in))
+            turn_of_y = turn(conv(x), grid_out)
+
+        self.assertTrue(
+            compare_tensors(
+                "healpix quarter-turn equivariance",
+                y_of_turned,
+                turn_of_y,
+                atol=0.0,
+                rtol=0.0,
+                ulps=_CONTRACTION_ULPS,
+                verbose=verbose,
+            )
+        )
+
+    # -----------------------------------------------------------------------
+    # HEALPix: identity weights reduce the layer to its transforms
+    # -----------------------------------------------------------------------
+    def test_healpix_identity_weights_reduce_to_sht_roundtrip(self, verbose=False):
+        """With all weights 1 the layer is synthesis after analysis on the HEALPix grid."""
+
+        set_seed(333)
+
+        grid = HealpixGrid(nside=8)
+        conv = SpectralConvS2(grid, grid, in_channels=3, out_channels=3).to(self.device)
+        conv.eval()
+        with torch.no_grad():
+            conv.weight.copy_(torch.eye(3, dtype=conv.weight.dtype, device=self.device).reshape(1, 3, 3, 1).expand_as(conv.weight))
+
+        x = torch.randn(2, 3, grid.npoints, device=self.device)
+
+        with torch.no_grad():
+            y = conv(x)
+            expected = conv.isht(conv.sht(x))
+
+        self.assertTrue(compare_tensors("healpix identity weights", y, expected, atol=0.0, rtol=0.0, ulps=_CONTRACTION_ULPS, verbose=verbose))
 
     # -----------------------------------------------------------------------
     # Test 4: Grouped convolution consistency

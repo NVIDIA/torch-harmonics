@@ -39,6 +39,7 @@
 * `RealSHT` and `RealVectorSHT` take `iter=k` (default 0), Jacobi iterations `a <- a + A(f - S a)` that refine the analysis on grids without an exact quadrature. On HEALPix `iter=3` reaches about 1e-6, as healpy's `map2alm(..., iter=3)`.
 * New `PointSetS2.default_sht_degree`, the default `lmax` of `truncate_sht`: `max_exact_degree` on every grid that has one, `2 * nside` on HEALPix, which also declares `max_recoverable_degree` and `max_azimuthal_order`.
 * New `HealpixGrid.from_level(level)` builds the grid at refinement level `level`, i.e. `nside = 2**level`.
+* `SpectralConvS2` accepts a `HealpixGrid` as `grid_in`, `grid_out` or both, so it maps between HEALPix and regular grids as well as within either: fields are flat `(batch, channels, npix)` on a HEALPix side. The weights keep their `(num_groups, in, out, lmax)` layout and the layer stays isotropic, so it commutes with a quarter turn about the polar axis, which is a symmetry of the HEALPix grid. HEALPix analysis is approximate (see `RealSHT`), so the layer inherits that error on a HEALPix input. `DistributedSpectralConvS2` is unchanged and rejects HEALPix.
 * New `PointSetS2.is_equal_area`, `True` for HEALPix and `False` for every latitude-longitude grid.
 * New `PointSetS2.coords` gives every point's `(colat, lon)` in the order a field is stored in.
 * New `GridS2.ring_weights(dtype)` and `GridS2.point_weights(dtype)` give the quadrature weights per ring and per point, computed in the requested dtype.
