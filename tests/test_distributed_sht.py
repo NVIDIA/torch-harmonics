@@ -643,3 +643,64 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         other = cls(grid, lmax=10, mmax=10).to(self.device)
         self.assertIs(getattr(a, buffer), getattr(b, buffer))
         self.assertIsNot(getattr(a, buffer), getattr(other, buffer))
+
+    @parameterized.expand(
+        [
+            # nlat, nlon, grid, vector, inverse
+            [33, 64, "equiangular", False, False],
+            [33, 64, "legendre-gauss", False, False],
+            [33, 64, "equiangular", True, False],
+            [33, 64, "equiangular", False, True],
+            [33, 64, "legendre-gauss", False, True],
+            [33, 64, "equiangular", True, True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_sht_double_backward(self, nlat, nlon, grid, vector, inverse, verbose=False):
+        """Gradient of the penalty |dL/dx|^2 through the distributed (inverse) SHT, against the serial one.
+
+        L is a cubic of the output, so its Hessian couples output points through the transform
+        and the penalty gradient crosses both all-to-all transposes. float64, on uneven splits.
+        """
+        set_seed(333)
+        B, C = 2, 3
+        grid_desc = th.as_grid(grid, nlat=nlat, nlon=nlon)
+        sht_cls = th.RealVectorSHT if vector else th.RealSHT
+        dist_cls = thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT
+        isht_cls = th.InverseRealVectorSHT if vector else th.InverseRealSHT
+        idist_cls = thd.DistributedInverseRealVectorSHT if vector else thd.DistributedInverseRealSHT
+        sht_local = sht_cls(grid_desc).to(device=self.device, dtype=torch.float64)
+
+        inp_full = torch.randn((B, C, 2, nlat, nlon) if vector else (B, C, nlat, nlon), dtype=torch.float64, device=self.device)
+        if inverse:
+            inp_full = sht_local(inp_full).detach()
+            transform_local = isht_cls(grid_desc).to(device=self.device, dtype=torch.float64)
+            transform_dist = idist_cls(grid_desc).to(device=self.device, dtype=torch.float64)
+            gather_inp = self._gather_helper_fwd
+        else:
+            transform_local = sht_local
+            transform_dist = dist_cls(grid_desc).to(device=self.device, dtype=torch.float64)
+            gather_inp = self._gather_helper_bwd
+
+        def sq_norm(t):
+            return torch.sum(torch.view_as_real(t) ** 2) if t.is_complex() else torch.sum(t * t)
+
+        def cube(t):
+            return torch.sum(torch.view_as_real(t) ** 3) if t.is_complex() else torch.sum(t**3)
+
+        def penalty_grads(transform, x, reduce_fn):
+            (g,) = torch.autograd.grad(reduce_fn(cube(transform(x))), x, create_graph=True)
+            (h,) = torch.autograd.grad(reduce_fn(sq_norm(g)), x)
+            return g.detach(), h
+
+        def reduce_hw(t):
+            return thd.reduce_from_azimuth_region(thd.reduce_from_polar_region(t))
+
+        g_full, h_full = penalty_grads(transform_local, inp_full.clone().requires_grad_(True), lambda t: t)
+        g_local, h_local = penalty_grads(transform_dist, self._split_helper(inp_full).clone().requires_grad_(True), reduce_hw)
+
+        verbose = verbose and self.world_rank == 0
+        ok = compare_tensors("gradients", gather_inp(g_local, transform_dist), g_full, atol=0.0, rtol=0.0, ulps=8, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
+        ok = compare_tensors("penalty grad", gather_inp(h_local, transform_dist), h_full, atol=0.0, rtol=0.0, ulps=8, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "penalty grad")

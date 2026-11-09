@@ -770,3 +770,66 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 th.as_grid("equiangular", nlat=32, nlon=64), th.as_grid("equiangular", nlat=32, nlon=64), 1, 1, kernel_shape=(3, 3), polar_mode="halo"
             )
         self.assertIn("halo-exchange", str(ctx.exception))
+
+    @parameterized.expand(
+        [
+            # nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, basis_type, transpose, fused, polar_mode
+            [33, 64, 33, 64, (3), "piecewise linear", False, False, "halo-exchange"],
+            [33, 64, 33, 64, (3), "piecewise linear", False, True, "halo-exchange"],
+            [33, 64, 17, 32, (3, 4), "harmonic", False, False, "halo-exchange"],
+            [33, 64, 17, 32, (3, 4), "harmonic", False, True, "halo-exchange"],
+            [33, 64, 33, 64, (3), "piecewise linear", False, False, "reduce-scatter"],
+            [33, 64, 33, 64, (3), "piecewise linear", False, True, "reduce-scatter"],
+            [17, 32, 33, 64, (3), "piecewise linear", True, False, None],
+            [33, 64, 33, 64, (3, 4), "harmonic", True, False, None],
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_disco_conv_double_backward(self, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, basis_type, transpose, fused, polar_mode, verbose=False):
+        """Gradient of the penalty |dL/dx|^2 through the distributed convolution, against the serial one.
+
+        L is a cubic of the output, so its Hessian couples output points through the
+        convolution and the penalty gradient crosses every halo, reduce-scatter and
+        all-to-all the layer communicates through. float64, on uneven latitude splits.
+        """
+        set_seed(333)
+        B, C = 2, 4
+        disco_args = dict(
+            in_channels=C,
+            out_channels=C,
+            basis_type=basis_type,
+            kernel_shape=kernel_shape,
+            grid_in=th.as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
+            bias=False,
+        )
+        if transpose:
+            conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=torch.float64, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=torch.float64, device=self.device)
+        else:
+            conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=torch.float64, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args, fused=fused, polar_mode=polar_mode).to(dtype=torch.float64, device=self.device)
+        with torch.no_grad():
+            conv_dist.weight.copy_(conv_local.weight)
+
+        def penalty_grads(conv, x, reduce_fn):
+            (g,) = torch.autograd.grad(reduce_fn(torch.sum(conv(x) ** 3)), x, create_graph=True)
+            hx, hw = torch.autograd.grad(reduce_fn(torch.sum(g * g)), (x, conv.weight))
+            return g.detach(), hx, hw
+
+        def reduce_hw(t):
+            return thd.reduce_from_azimuth_region(thd.reduce_from_polar_region(t))
+
+        inp_full = torch.randn((B, C, nlat_in, nlon_in), dtype=torch.float64, device=self.device)
+        g_full, hx_full, hw_full = penalty_grads(conv_local, inp_full.clone().requires_grad_(True), lambda t: t)
+        g_local, hx_local, hw_local = penalty_grads(conv_dist, self._split_helper(inp_full).clone().requires_grad_(True), reduce_hw)
+
+        verbose = verbose and self.world_rank == 0
+        ulps = _ulps(torch.float64)
+        ok = compare_tensors("gradients", self._gather_helper_bwd(g_local, conv_dist), g_full, atol=0.0, rtol=0.0, ulps=ulps, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
+        ok = compare_tensors("penalty input grad", self._gather_helper_bwd(hx_local, conv_dist), hx_full, atol=0.0, rtol=0.0, ulps=ulps, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "penalty input grad")
+        pg_ulps = param_grad_ulps(B * max(nlat_in * nlon_in, nlat_out * nlon_out), torch.float64)
+        ok = compare_tensors("penalty weight grad", self._allreduce_param_grad(hw_local), hw_full, atol=0.0, rtol=0.0, ulps=pg_ulps, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "penalty weight grad")

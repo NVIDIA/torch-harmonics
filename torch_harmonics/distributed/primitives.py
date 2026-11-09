@@ -333,10 +333,7 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
             return go, None, None
 
         dims = ctx.dims
-        dim0_split_sizes = ctx.dim0_split_sizes
-        gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=azimuth_group())
-        gi = torch.cat(gilist, dim=dims[0]).contiguous()
-        return gi, None, None
+        return _DistributeTransposeAzimuth.apply(go, (dims[1], dims[0]), ctx.dim0_split_sizes), None, None
 
 
 class _DistributeTransposePolar(torch.autograd.Function):
@@ -369,10 +366,7 @@ class _DistributeTransposePolar(torch.autograd.Function):
             return go, None, None
 
         dims = ctx.dims
-        dim0_split_sizes = ctx.dim0_split_sizes
-        gilist, _, _ = _transpose(go, dims[1], dims[0], dim0_split_sizes, group=polar_group())
-        gi = torch.cat(gilist, dim=dims[0]).contiguous()
-        return gi, None, None
+        return _DistributeTransposePolar.apply(go, (dims[1], dims[0]), ctx.dim0_split_sizes), None, None
 
 
 # we need those additional primitives for distributed matrix multiplications
@@ -578,7 +572,7 @@ class _CopyToPolarRegion(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_polar():
-            return _reduce(grad_output, group=polar_group())
+            return _ReduceFromPolarRegion.apply(grad_output)
         else:
             return grad_output
 
@@ -599,7 +593,7 @@ class _CopyToAzimuthRegion(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_azimuth():
-            return _reduce(grad_output, group=azimuth_group())
+            return _ReduceFromAzimuthRegion.apply(grad_output)
         else:
             return grad_output
 
@@ -626,7 +620,7 @@ class _ScatterToPolarRegion(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_polar():
-            return _gather(grad_output, ctx.dim, ctx.split_shapes, polar_group()), None
+            return _GatherFromPolarRegion.apply(grad_output, ctx.dim, ctx.split_shapes), None
         else:
             return grad_output, None
 
@@ -651,7 +645,7 @@ class _GatherFromPolarRegion(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_polar():
-            return _split(grad_output, ctx.dim, group=polar_group()), None, None
+            return _ScatterToPolarRegion.apply(grad_output, ctx.dim), None, None
         else:
             return grad_output, None, None
 
@@ -674,7 +668,7 @@ class _ReduceFromPolarRegion(torch.autograd.Function):
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
-        return grad_output
+        return _CopyToPolarRegion.apply(grad_output)
 
 
 class _ReduceFromAzimuthRegion(torch.autograd.Function):
@@ -695,7 +689,7 @@ class _ReduceFromAzimuthRegion(torch.autograd.Function):
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
-        return grad_output
+        return _CopyToAzimuthRegion.apply(grad_output)
 
 
 class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
@@ -720,7 +714,7 @@ class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_polar():
-            return _gather(grad_output, ctx.dim, ctx.split_shapes, polar_group()), None
+            return _GatherFromCopyToPolarRegion.apply(grad_output, ctx.dim, ctx.split_shapes), None
         else:
             return grad_output, None
 
@@ -749,7 +743,7 @@ class _ReduceFromScatterToAzimuthRegion(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_azimuth():
-            return _gather(grad_output, ctx.dim, ctx.split_shapes, azimuth_group()), None
+            return _GatherFromCopyToAzimuthRegion.apply(grad_output, ctx.dim, ctx.split_shapes), None
         else:
             return grad_output, None
 
@@ -774,7 +768,36 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_polar():
-            return _reduce_scatter(grad_output, ctx.dim, use_fp32=True, group=polar_group()), None, None
+            return _ReduceFromScatterToPolarRegion.apply(grad_output, ctx.dim), None, None
+        else:
+            return grad_output, None, None
+
+
+class _GatherFromCopyToAzimuthRegion(torch.autograd.Function):
+    """All-gather along ``dim_`` across azimuth ranks; reduce-scatter in the backward pass.
+
+    The adjoint of :class:`_ReduceFromScatterToAzimuthRegion`, which uses it as its backward.
+    """
+
+    @staticmethod
+    @_custom_fwd(device_type="cuda")
+    def forward(input_, dim_, shapes_):
+        if is_distributed_azimuth():
+            return _gather(input_, dim_, shapes_, group=azimuth_group())
+        else:
+            return input_
+
+    @staticmethod
+    @_custom_setup_context(device_type="cuda")
+    def setup_context(ctx, inputs, output):
+        _, dim_, _ = inputs
+        ctx.dim = dim_
+
+    @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
+    def backward(ctx, grad_output):
+        if is_distributed_azimuth():
+            return _ReduceFromScatterToAzimuthRegion.apply(grad_output, ctx.dim), None, None
         else:
             return grad_output, None, None
 
@@ -1193,7 +1216,7 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
         # neighbour holds the gradient it owes us for the rows we lent it: exactly the adjoint
         # of the gather performed in the forward.
         # Gradients for r_lat and lat_dim are None (not tensors / non-differentiable).
-        return _halo_reduce(dout, ctx.r_lat, ctx.H, ctx.lat_dim), None, None
+        return _PolarHaloReduceFn.apply(dout, ctx.r_lat, ctx.H, ctx.lat_dim), None, None
 
 
 class _PolarHaloReduceFn(torch.autograd.Function):
@@ -1234,7 +1257,7 @@ class _PolarHaloReduceFn(torch.autograd.Function):
             return dout, None, None, None
 
         # Gradients for r_lat, H and lat_dim are None (not tensors / non-differentiable).
-        return _halo_gather(dout, ctx.r_lat, ctx.lat_dim), None, None, None
+        return _PolarHaloExchangeFn.apply(dout, ctx.r_lat, ctx.lat_dim), None, None, None
 
 
 @torch.compiler.disable()

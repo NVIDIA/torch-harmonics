@@ -33,6 +33,7 @@ import unittest
 
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from parameterized import parameterized
 from testutils import (
     all_gather_tensors,
@@ -48,7 +49,11 @@ from testutils import (
 import torch_harmonics.distributed as thd
 from torch_harmonics.distributed import (
     compute_split_shapes,
+    copy_to_azimuth_region,
+    copy_to_polar_region,
+    distributed_transpose_azimuth,
     distributed_transpose_polar,
+    gather_from_copy_to_polar_region,
     gather_from_polar_region,
     polar_halo_exchange,
     polar_halo_reduce,
@@ -779,3 +784,292 @@ class TestPolarHalo(unittest.TestCase):
         self.assertTrue(reduce_success(ok, self.device), "halo top rows after a zero-width exchange")
         ok = compare_tensors("halo bottom after zero halo", got[:, :, -r_lat_next:, :], expected_bot, atol=0.0, rtol=0.0, verbose=False)
         self.assertTrue(reduce_success(ok, self.device), "halo bottom rows after a zero-width exchange")
+
+
+# Error budget in ULPs of the largest reference entry for the double-backward tests: a few
+# small matmuls and the cross-rank sums, reassociated against the serial reference (measured:
+# 2.7 on grids up to 4x2).
+_DOUBLE_BACKWARD_ULPS = 8
+
+_DOUBLE_BACKWARD_SHAPES = [
+    # B, C, H,  W   ── H=9 and W=13 split unevenly over 2 and 4 ranks, W=10 over 4
+    [2, 3, 9, 10],
+    [1, 2, 8, 13],
+]
+
+
+def _grad_and_penalty_grad(x, loss_fn, reduce_fn=lambda t: t):
+    """First-order gradient g = dL/dx and the gradient of the penalty |g|^2, which is 2 H g."""
+    (g,) = torch.autograd.grad(loss_fn(x), x, create_graph=True)
+    (h,) = torch.autograd.grad(reduce_fn(torch.sum(g * g)), x)
+    return g.detach(), h
+
+
+def _mix_lat(m, x):
+    """Multiply the latitude axis (dim -2) of ``x`` by the matrix ``m``."""
+    return torch.einsum("ij,...jw->...iw", m, x)
+
+
+def _stencil(xh, w, nlat_out):
+    """Latitude stencil out[i] = sum_k w[k] * xh[i + k] over a halo-padded ``xh``."""
+    return sum(w[k] * xh.narrow(-2, k, nlat_out) for k in range(len(w)))
+
+
+def _stencil_transpose(x, w, r_lat):
+    """Adjoint of :func:`_stencil`: scatter w[k] * x[i] into row i + k of a tensor 2 * r_lat rows longer."""
+    return sum(F.pad(w[k] * x, (0, 0, k, 2 * r_lat - k)) for k in range(len(w)))
+
+
+class TestDoubleBackward(unittest.TestCase):
+    """Second-order gradients through the communication primitives.
+
+    Each test differentiates a loss built on one primitive twice: the gradient penalty
+    d/dx |dL/dx|^2 (a Hessian-vector product) is compared with the same computation on the
+    full tensor without communication, in float64. A backward that runs a raw collective
+    hands back a gradient with no graph, so the penalty then either raises or silently drops
+    the cross-rank terms, while the first-order gradient stays exact. Every loss mixes entries
+    with a matrix before a cubic: an elementwise loss has a diagonal Hessian and hides the
+    dropped terms.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        setup_class_from_context(cls, _DIST_CTX)
+
+    def _shard_lat(self, t):
+        return split_tensor_dim(t, dim=-2, dimsize=thd.polar_group_size(), dimrank=self.hrank)
+
+    def _shard_lon(self, t, group_size, rank):
+        return split_tensor_dim(t, dim=-1, dimsize=group_size, dimrank=rank)
+
+    def _check(self, name, x_full, local, loss_serial, loss_dist, reduce_fn, verbose):
+        """Compare dL/dx and d/dx |dL/dx|^2 of ``loss_dist`` on ``local(x_full)`` with ``local`` of the serial ones."""
+        g_ref, h_ref = _grad_and_penalty_grad(x_full.clone().requires_grad_(True), loss_serial)
+        g, h = _grad_and_penalty_grad(local(x_full).clone().requires_grad_(True), loss_dist, reduce_fn)
+
+        verbose = verbose and self.world_rank == 0
+        ok = compare_tensors(f"{name} grad", g, local(g_ref), atol=0.0, rtol=0.0, ulps=_DOUBLE_BACKWARD_ULPS, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), f"{name}: first-order gradient does not match the serial one")
+        ok = compare_tensors(f"{name} penalty grad", h, local(h_ref), atol=0.0, rtol=0.0, ulps=_DOUBLE_BACKWARD_ULPS, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), f"{name}: second-order gradient does not match the serial one")
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_copy_to_polar_region(self, B, C, H, W, verbose=False):
+        """Replicated input, a different latitude mix on every polar rank, summed by the reduce."""
+        set_seed(333)
+        size = thd.polar_group_size()
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        a = torch.randn(size, H, H, device=self.device, dtype=torch.float64) / H**0.5
+
+        def loss_serial(x):
+            return sum(torch.sum(_mix_lat(a[r], x) ** 3) for r in range(size))
+
+        def loss_dist(x):
+            return reduce_from_polar_region(torch.sum(_mix_lat(a[self.hrank], copy_to_polar_region(x)) ** 3))
+
+        self._check("copy_to_polar_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_copy_to_azimuth_region(self, B, C, H, W, verbose=False):
+        """Replicated input, a different longitude mix on every azimuth rank, summed by the reduce."""
+        set_seed(333)
+        size = thd.azimuth_group_size()
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        a = torch.randn(size, W, W, device=self.device, dtype=torch.float64) / W**0.5
+
+        def loss_serial(x):
+            return sum(torch.sum((x @ a[r]) ** 3) for r in range(size))
+
+        def loss_dist(x):
+            return reduce_from_azimuth_region(torch.sum((copy_to_azimuth_region(x) @ a[self.wrank]) ** 3))
+
+        self._check("copy_to_azimuth_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_reduce_from_polar_region(self, B, C, H, W, verbose=False):
+        """Every polar rank holds one term of a sum, which is mixed after the reduce."""
+        set_seed(333)
+        size = thd.polar_group_size()
+        x = torch.randn(size, B, C, H, W, device=self.device, dtype=torch.float64)
+        m = torch.randn(H, H, device=self.device, dtype=torch.float64) / H**0.5
+
+        def loss_serial(x):
+            return torch.sum(_mix_lat(m, x.sum(dim=0)) ** 3)
+
+        def loss_dist(x):
+            return torch.sum(_mix_lat(m, reduce_from_polar_region(x)) ** 3)
+
+        self._check("reduce_from_polar_region", x, lambda t: t[self.hrank], loss_serial, loss_dist, reduce_from_polar_region, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_reduce_from_azimuth_region(self, B, C, H, W, verbose=False):
+        """Every azimuth rank holds one term of a sum, which is mixed after the reduce."""
+        set_seed(333)
+        size = thd.azimuth_group_size()
+        x = torch.randn(size, B, C, H, W, device=self.device, dtype=torch.float64)
+        n = torch.randn(W, W, device=self.device, dtype=torch.float64) / W**0.5
+
+        def loss_serial(x):
+            return torch.sum((x.sum(dim=0) @ n) ** 3)
+
+        def loss_dist(x):
+            return torch.sum((reduce_from_azimuth_region(x) @ n) ** 3)
+
+        self._check("reduce_from_azimuth_region", x, lambda t: t[self.wrank], loss_serial, loss_dist, reduce_from_azimuth_region, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_scatter_to_polar_region(self, B, C, H, W, verbose=False):
+        """Replicated input mixed in latitude, scattered along latitude and mixed in longitude."""
+        set_seed(333)
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        m = torch.randn(H, H, device=self.device, dtype=torch.float64) / H**0.5
+        n = torch.randn(W, W, device=self.device, dtype=torch.float64) / W**0.5
+
+        def loss_serial(x):
+            return torch.sum((_mix_lat(m, x) @ n) ** 3)
+
+        def loss_dist(x):
+            return reduce_from_polar_region(torch.sum((scatter_to_polar_region(_mix_lat(m, x), -2) @ n) ** 3))
+
+        self._check("scatter_to_polar_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_gather_from_polar_region(self, B, C, H, W, verbose=False):
+        """Latitude-sharded input, gathered and mixed in latitude."""
+        set_seed(333)
+        shapes = compute_split_shapes(H, thd.polar_group_size())
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        m = torch.randn(H, H, device=self.device, dtype=torch.float64) / H**0.5
+
+        def loss_serial(x):
+            return torch.sum(_mix_lat(m, x) ** 3)
+
+        def loss_dist(x):
+            return torch.sum(_mix_lat(m, gather_from_polar_region(x, -2, shapes)) ** 3)
+
+        self._check("gather_from_polar_region", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_gather_from_copy_to_polar_region(self, B, C, H, W, verbose=False):
+        """Latitude-sharded input, gathered, and a differently weighted partial loss on every polar rank."""
+        set_seed(333)
+        size = thd.polar_group_size()
+        shapes = compute_split_shapes(H, size)
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        m = torch.randn(H, H, device=self.device, dtype=torch.float64) / H**0.5
+        c = torch.rand(size, device=self.device, dtype=torch.float64) + 0.5
+
+        def loss_serial(x):
+            return c.sum() * torch.sum(_mix_lat(m, x) ** 3)
+
+        def loss_dist(x):
+            return reduce_from_polar_region(c[self.hrank] * torch.sum(_mix_lat(m, gather_from_copy_to_polar_region(x, -2, shapes)) ** 3))
+
+        self._check("gather_from_copy_to_polar_region", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_reduce_from_scatter_to_polar_region(self, B, C, H, W, verbose=False):
+        """Every polar rank holds one term of a sum, reduce-scattered along latitude and mixed in longitude."""
+        set_seed(333)
+        size = thd.polar_group_size()
+        x = torch.randn(size, B, C, H, W, device=self.device, dtype=torch.float64)
+        n = torch.randn(W, W, device=self.device, dtype=torch.float64) / W**0.5
+
+        def loss_serial(x):
+            return torch.sum((x.sum(dim=0) @ n) ** 3)
+
+        def loss_dist(x):
+            return reduce_from_polar_region(torch.sum((reduce_from_scatter_to_polar_region(x, -2) @ n) ** 3))
+
+        self._check("reduce_from_scatter_to_polar_region", x, lambda t: t[self.hrank], loss_serial, loss_dist, reduce_from_polar_region, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_reduce_from_scatter_to_azimuth_region(self, B, C, H, W, verbose=False):
+        """Every azimuth rank holds one term of a sum, reduce-scattered along longitude and mixed in latitude."""
+        set_seed(333)
+        size = thd.azimuth_group_size()
+        x = torch.randn(size, B, C, H, W, device=self.device, dtype=torch.float64)
+        m = torch.randn(H, H, device=self.device, dtype=torch.float64) / H**0.5
+
+        def loss_serial(x):
+            return torch.sum(_mix_lat(m, x.sum(dim=0)) ** 3)
+
+        def loss_dist(x):
+            return reduce_from_azimuth_region(torch.sum(_mix_lat(m, reduce_from_scatter_to_azimuth_region(x, -1)) ** 3))
+
+        self._check("reduce_from_scatter_to_azimuth_region", x, lambda t: t[self.wrank], loss_serial, loss_dist, reduce_from_azimuth_region, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_distributed_transpose_polar(self, B, C, H, W, verbose=False):
+        """Longitude-sharded input, transposed to latitude-sharded and mixed in longitude."""
+        set_seed(333)
+        size, rank = thd.polar_group_size(), self.hrank
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        n = torch.randn(W, W, device=self.device, dtype=torch.float64) / W**0.5
+
+        def loss_serial(x):
+            return torch.sum((x @ n) ** 3)
+
+        def loss_dist(x):
+            return reduce_from_polar_region(torch.sum((distributed_transpose_polar(x, (2, 3), compute_split_shapes(W, size)) @ n) ** 3))
+
+        self._check("distributed_transpose_polar", x, lambda t: self._shard_lon(t, size, rank), loss_serial, loss_dist, reduce_from_polar_region, verbose)
+
+    @parameterized.expand(_DOUBLE_BACKWARD_SHAPES, skip_on_empty=True)
+    def test_distributed_transpose_azimuth(self, B, C, H, W, verbose=False):
+        """Longitude-sharded input, transposed to latitude-sharded and mixed in longitude."""
+        set_seed(333)
+        size, rank = thd.azimuth_group_size(), self.wrank
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        n = torch.randn(W, W, device=self.device, dtype=torch.float64) / W**0.5
+
+        def loss_serial(x):
+            return torch.sum((x @ n) ** 3)
+
+        def loss_dist(x):
+            return reduce_from_azimuth_region(torch.sum((distributed_transpose_azimuth(x, (2, 3), compute_split_shapes(W, size)) @ n) ** 3))
+
+        self._check("distributed_transpose_azimuth", x, lambda t: self._shard_lon(t, size, rank), loss_serial, loss_dist, reduce_from_azimuth_region, verbose)
+
+    @parameterized.expand([shape + [r_lat] for shape in _DOUBLE_BACKWARD_SHAPES for r_lat in (1, 2)], skip_on_empty=True)
+    def test_polar_halo_exchange(self, B, C, H, W, r_lat, verbose=False):
+        """Latitude-sharded input, a latitude stencil over the borrowed halo rows, mixed in longitude."""
+        set_seed(333)
+        shapes = compute_split_shapes(H, thd.polar_group_size())
+        if len(shapes) == 1:
+            self.skipTest("halo exchange is an identity on a single polar rank")
+        if r_lat > min(shapes):
+            self.skipTest(f"halo {r_lat} exceeds the smallest local latitude count {min(shapes)}")
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        w = torch.randn(2 * r_lat + 1, device=self.device, dtype=torch.float64)
+        n = torch.randn(W, W, device=self.device, dtype=torch.float64) / W**0.5
+
+        def loss_serial(x):
+            return torch.sum((_stencil(F.pad(x, (0, 0, r_lat, r_lat)), w, H) @ n) ** 3)
+
+        def loss_dist(x):
+            return reduce_from_polar_region(torch.sum((_stencil(polar_halo_exchange(x, r_lat), w, x.shape[-2]) @ n) ** 3))
+
+        self._check("polar_halo_exchange", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, verbose)
+
+    @parameterized.expand([shape + [r_lat] for shape in _DOUBLE_BACKWARD_SHAPES for r_lat in (1, 2)], skip_on_empty=True)
+    def test_polar_halo_reduce(self, B, C, H, W, r_lat, verbose=False):
+        """Latitude-sharded input, a transposed latitude stencil writing into the halo rows, mixed in longitude."""
+        set_seed(333)
+        shapes = compute_split_shapes(H, thd.polar_group_size())
+        if len(shapes) == 1:
+            self.skipTest("halo reduce is an identity on a single polar rank")
+        if r_lat > min(shapes):
+            self.skipTest(f"halo {r_lat} exceeds the smallest local latitude count {min(shapes)}")
+        x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
+        w = torch.randn(2 * r_lat + 1, device=self.device, dtype=torch.float64)
+        n = torch.randn(W, W, device=self.device, dtype=torch.float64) / W**0.5
+
+        def loss_serial(x):
+            return torch.sum((_stencil_transpose(x, w, r_lat).narrow(-2, r_lat, H) @ n) ** 3)
+
+        def loss_dist(x):
+            y = polar_halo_reduce(_stencil_transpose(x, w, r_lat), r_lat, x.shape[-2])
+            return reduce_from_polar_region(torch.sum((y @ n) ** 3))
+
+        self._check("polar_halo_reduce", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, verbose)
