@@ -110,16 +110,28 @@ class TestGaussianRandomFieldS2(unittest.TestCase):
         # the field's range rather than its own value
         self.assertTrue(compare_tensors("field", actual, reference, atol=0.0, rtol=tolerance, ulps=64))
 
-    @parameterized.expand([("legendre-gauss", 24, 48), ("legendre-gauss", 24, 72), ("equiangular", 33, 66), ("lobatto", 25, 50), ("fejer1", 24, 48)])
-    def test_variance_is_independent_of_latitude(self, grid, nlat, nlon):
+    @parameterized.expand(
+        [
+            ("legendre-gauss", dict(nlat=24, nlon=48)),
+            ("legendre-gauss", dict(nlat=24, nlon=72)),
+            ("equiangular", dict(nlat=33, nlon=66)),
+            ("lobatto", dict(nlat=25, nlon=50)),
+            ("fejer1", dict(nlat=24, nlon=48)),
+            ("healpix", dict(nside=8)),
+        ]
+    )
+    def test_variance_is_independent_of_position(self, grid, params):
         # A power spectrum C_l is rotation invariant, so the pointwise variance cannot depend on
-        # latitude. It is exact: the field is linear in the noise, so one unit per noise component,
-        # squared and summed, is the variance.
-        field = GaussianRandomFieldS2(as_grid(grid, nlat=nlat, nlon=nlon), alpha=1.5, tau=3.0, sigma=1.0, dtype=torch.float64).to(self.device)
+        # position. It is exact: the field is linear in the noise, so one unit per noise component,
+        # squared and summed, is the variance. On HEALPix the rings differ in length.
+        grid = as_grid(grid, **params)
+        field = GaussianRandomFieldS2(grid, alpha=1.5, tau=3.0, sigma=1.0, dtype=torch.float64).to(self.device)
         lmax, mmax = field.isht.lmax, field.isht.mmax
         count = 2 * lmax * mmax
         noise = torch.eye(count, dtype=torch.float64, device=self.device).reshape(count, lmax, mmax, 2)
-        variance = field(count, xi=torch.view_as_complex(noise)).pow(2).sum(dim=0).mean(dim=-1)
+        samples = field(count, xi=torch.view_as_complex(noise))
+        self.assertEqual(samples.shape, (count, *grid.shape))
+        variance = samples.pow(2).sum(dim=0)
         spread = (variance.max() - variance.min()) / variance.mean()
         self.assertLess(float(spread), 1e-10)
 
