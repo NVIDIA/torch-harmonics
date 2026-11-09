@@ -281,6 +281,27 @@ class TestFilterBasis(unittest.TestCase):
 
         self.assertLess((actual - torch.tensor(expected, dtype=torch.float64)).abs().max().item(), tol)
 
+    @parameterized.expand([[4], [7], [10]])
+    def test_zernike_poly_matches_closed_form(self, kernel_shape, tol=1e-10):
+        """Every basis function of one call at once, with both the cosine and the sine branch, against the closed form."""
+        basis = get_filter_basis(kernel_shape=(kernel_shape,), basis_type="zernike")
+        generator = torch.Generator().manual_seed(333)
+        npoints = 20
+        r = torch.rand(npoints, dtype=torch.float64, generator=generator)
+        phi = 2 * math.pi * torch.rand(npoints, dtype=torch.float64, generator=generator)
+        # one entry per (basis function, point), as compute_support_vals lays them out
+        n = torch.tensor([i for i in range(kernel_shape) for _ in range(i + 1) for _ in range(npoints)])
+        l = torch.tensor([j for i in range(kernel_shape) for j in range(i + 1) for _ in range(npoints)])
+        r, phi = r.repeat(basis.kernel_size), phi.repeat(basis.kernel_size)
+        actual = basis.zernikepoly(r, phi, n, l)
+
+        expected = []
+        for ni, li, ri, pi in zip(n.tolist(), l.tolist(), r.tolist(), phi.tolist()):
+            mi = 2 * li - ni
+            radial = float(_zernike_radial_exact(ni, abs(mi), Fraction(ri)))
+            expected.append(radial * (math.sin(mi * pi) if mi < 0 else math.cos(mi * pi)))
+        self.assertLess((actual - torch.tensor(expected, dtype=torch.float64)).abs().max().item(), tol)
+
     @parameterized.expand([[torch.float16], [torch.bfloat16]])
     def test_zernike_radial_in_low_precision(self, dtype, tol=5e-2):
         """The factorials stay at least float32: 9! overflows float16, and 9! / 9! must not become inf / inf."""
