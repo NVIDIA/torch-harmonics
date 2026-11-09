@@ -30,6 +30,7 @@
 #
 
 import abc
+import functools
 import math
 import warnings
 from typing import Optional, Tuple, Union
@@ -56,12 +57,24 @@ def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
     return torch.minimum(torch.abs(x1 - x2), torch.abs(2 * math.pi - torch.abs(x1 - x2)))
 
 
-def _log_factorial(x: torch.Tensor):
-    return torch.lgamma(x + 1)
+# 170! is the largest factorial in float64; the last entry stands for everything out of range
+_FACTORIALS = torch.tensor([float(math.factorial(n)) for n in range(171)] + [math.inf], dtype=torch.float64, device="cpu")
 
 
-def _factorial(x: torch.Tensor):
-    return torch.exp(_log_factorial(x))
+@functools.lru_cache(maxsize=None)
+def _factorial_table(device: torch.device, dtype: torch.dtype):
+    # one copy per device and dtype: the table is read-only and the sum below asks for it often
+    return _FACTORIALS.to(device=device, dtype=dtype)
+
+
+def _factorial(x: torch.Tensor, dtype: torch.dtype):
+    # a table rather than exp(lgamma(x + 1)): lgamma promotes an integer tensor to float32, and
+    # even in float64 its rounding errors are amplified by the alternating Zernike sum.
+    # The arithmetic is at least float32: float16 overflows at 9!, which would turn 9! / 9! into inf / inf.
+    # Negative arguments are +inf, as they are for the gamma function
+    table = _factorial_table(x.device, torch.promote_types(dtype, torch.float32))
+    index = torch.where(x < 0, table.numel() - 1, x).clamp(max=table.numel() - 1)
+    return table[index]
 
 
 class FilterBasis(metaclass=abc.ABCMeta):
@@ -474,7 +487,7 @@ class ZernikeFilterBasis(FilterBasis):
 
         for k in range(max_bound):
 
-            inc = (-1) ** k * _factorial(n - k) * r ** (n - 2 * k) / (math.factorial(k) * _factorial((n + m) // 2 - k) * _factorial((n - m) // 2 - k))
+            inc = (-1) ** k * _factorial(n - k, r.dtype) * r ** (n - 2 * k) / (math.factorial(k) * _factorial((n + m) // 2 - k, r.dtype) * _factorial((n - m) // 2 - k, r.dtype))
             out += torch.where(k < bound, inc, 0.0)
 
         return out
