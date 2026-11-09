@@ -134,8 +134,18 @@ class SpectralConvS2(nn.Module):
     >>> y.shape
     torch.Size([4, 32, 128, 256])
 
+    Either side may be a HEALPix grid, whose fields are flat; here HEALPix is decoded
+    onto a latitude-longitude grid:
+
+    >>> healpix = th.HealpixGrid(nside=16)
+    >>> conv = th.SpectralConvS2(healpix, grid, in_channels=16, out_channels=32)
+    >>> conv(torch.randn(4, 16, healpix.npoints)).shape
+    torch.Size([4, 32, 128, 256])
+
     Raises
     ------
+    TypeError
+        If a grid is neither a regular grid nor a HEALPix grid.
     AssertionError
         If ``in_channels`` or ``out_channels`` is not divisible by
         ``num_groups``.
