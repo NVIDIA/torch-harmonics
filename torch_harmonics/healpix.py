@@ -84,7 +84,7 @@ from typing import ClassVar, Optional, Tuple
 import torch
 
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.grid import GridS2, GridShardS2, _as_int, _grid_quad_weights
+from torch_harmonics.grid import GridS2, GridShardS2, _as_int
 
 __all__ = ["HealpixGrid", "HealpixGridShardS2", "healpix_ring_structure", "healpix_ring_weights"]
 
@@ -682,8 +682,23 @@ class HealpixGridShardS2(GridShardS2):
 
         Sums to :math:`4\pi` only across all ranks.
         """
-        return _grid_quad_weights(self.grid)[self.pixel_offset : self.pixel_offset + self.npoints]
+        # built from this rank's rings alone: slicing the global weights would keep the whole
+        # 12 nside^2 tensor alive on every rank. The same per-ring factor as the grid's, so the
+        # values are bitwise those of the global weights
+        counts = self.nlon_per_lat
+        weights = self.grid.colat_weights[self.ring_offset : self.ring_offset + self.nrings]
+        per_point = weights * (2.0 * torch.pi / counts.to(weights.dtype))
+        return torch.repeat_interleave(per_point, counts)
 
     def lons(self, ilat: int) -> torch.Tensor:
-        """Longitudes of the pixels of this rank's ``ilat``-th ring."""
-        return self.grid.lons(self.ring_offset + ilat)
+        """
+        Longitudes of the pixels of this rank's ``ilat``-th ring, counted from the end if negative.
+
+        Raises
+        ------
+        ValueError
+            If ``ilat`` is outside this rank's rings.
+        """
+        if not -self.nrings <= ilat < self.nrings:
+            raise ValueError(f"ilat must be in [0, {self.nrings}), got {ilat}")
+        return self.grid.lons(self.ring_offset + ilat % self.nrings)

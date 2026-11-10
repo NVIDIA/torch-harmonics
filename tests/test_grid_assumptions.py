@@ -2076,10 +2076,15 @@ class TestHealpixGrid(unittest.TestCase):
             ("quad_weights", lambda s: s.quad_weights, g.quad_weights),
         ]:
             self.assertTrue(compare_tensors(name, torch.cat([local(s) for s in shards]), expected, atol=0.0, rtol=0.0, verbose=verbose))
-        # a ring of a shard is the ring of the grid
+        # a ring of a shard is the ring of the grid, counted from the end as on the grid
         for s in shards:
-            for k in {0, s.nrings - 1}:
-                self.assertTrue(compare_tensors("lons", s.lons(k), g.lons(s.ring_offset + k), atol=0.0, rtol=0.0, verbose=verbose))
+            for k in {0, s.nrings - 1, -1, -s.nrings}:
+                expected = g.lons(s.ring_offset + k % s.nrings)
+                self.assertTrue(compare_tensors("lons", s.lons(k), expected, atol=0.0, rtol=0.0, verbose=verbose))
+            # outside the shard's own rings is an error, never a neighbour's ring
+            for k in (s.nrings, -s.nrings - 1):
+                with self.assertRaises(ValueError):
+                    s.lons(k)
         total = sum(s.quad_weights.sum().item() for s in shards)
         self.assertAlmostEqual(total, 4.0 * math.pi, places=10)
 
@@ -2105,6 +2110,16 @@ class TestHealpixGrid(unittest.TestCase):
         self.assertEqual(g.shard(polar=(0, 7)).ring_shapes, (1,) * 7)
         with self.assertRaises(ValueError):
             g.shard(polar=(0, 8))
+
+    def test_a_shard_holds_only_its_own_weights(self):
+        """
+        The local weights are built from the local rings, not sliced out of the global ones: a
+        slice would keep the whole ``12 nside^2`` tensor alive on every rank, 1.5 GiB at nside 4096.
+        """
+        g = HealpixGrid(nside=8)
+        for r in range(4):
+            w = g.shard(polar=(r, 4)).quad_weights
+            self.assertEqual(w.untyped_storage().nbytes(), w.numel() * w.element_size())
 
     def test_the_trivial_shard_is_the_whole_grid(self):
         g = HealpixGrid(nside=4)
