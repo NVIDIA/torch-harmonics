@@ -56,6 +56,7 @@ coefficient support of an SHT.
    :nosignatures:
 
    HealpixGrid
+   HealpixGridShardS2
    healpix_ring_weights
 ```
 
