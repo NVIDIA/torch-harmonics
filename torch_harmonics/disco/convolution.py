@@ -790,6 +790,11 @@ class DiscreteContinuousConv(BackendSelectionMixin, nn.Module, metaclass=abc.ABC
         """
         return self.weight.device
 
+    @property
+    def dtype(self) -> torch.dtype:
+        """Dtype of the module's parameters."""
+        return self.weight.dtype
+
     def _shard_key(self) -> tuple:
         """What identifies this layer's block of psi beyond its grids and support: nothing on a serial layer."""
         return ()

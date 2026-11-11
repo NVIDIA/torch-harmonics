@@ -1879,14 +1879,23 @@ class TestDiscreteContinuousConvWithoutFloat64Device(unittest.TestCase):
 
     @parameterized.expand([[False, "regular"], [True, "regular"], [False, "ragged"], [True, "ragged"]])
     def test_reference_psi_is_float32_without_float64(self, transpose, family):
-        """prepare hands a float32 psi to a device that cannot hold float64, and keeps float64 elsewhere."""
+        """prepare hands a float32 psi to a device that cannot hold float64, as the layer is float32."""
         conv = self._conv(transpose, family)
         backend = RaggedReferenceBackend() if family == "ragged" else RegularReferenceBackend()
-        self.assertEqual(backend.prepare(conv, torch.device("cpu"))["psi"].dtype, torch.float64)
         # the CPU stands in for MPS
         with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
             psi = backend.prepare(conv, torch.device("cpu"))["psi"]
         self.assertEqual(psi.dtype, torch.float32)
+
+    @parameterized.expand([[False, "regular"], [True, "regular"], [False, "ragged"], [True, "ragged"]])
+    def test_reference_psi_follows_layer_dtype(self, transpose, family):
+        """The reference psi is float64 for a float64 layer and float32 again after .float()."""
+        conv = self._conv(transpose, family).double()
+        self.assertTrue(conv.backend.name.endswith("-reference"))
+        self.assertEqual(conv.psi.dtype, torch.float64)
+        conv = conv.float()
+        self.assertTrue(conv.backend.name.endswith("-reference"))
+        self.assertEqual(conv.psi.dtype, torch.float32)
 
     @parameterized.expand([[False, "regular"], [True, "regular"], [False, "ragged"], [True, "ragged"]])
     @unittest.skipUnless(torch.backends.mps.is_available(), "needs an MPS device")
