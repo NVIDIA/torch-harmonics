@@ -407,6 +407,108 @@ class TestSpectralConvS2(unittest.TestCase):
         )
 
     # -----------------------------------------------------------------------
+    # Test 8b: Spectral truncation (lmax, mmax, lmmax)
+    #
+    # The layer must act as the masked spectral operator
+    #   v_hat[l, m] = mask[l, m] * sum_i K[l] (u_hat[l, m] + I * b[l, m])
+    # with mask[l, m] = (m < mmax) & (m <= l < lmax) & (l - m < lmmax). The reference
+    # does not use the layer's truncated transforms: it analyses with an SHT at a full
+    # bound lfull >= lmax, applies the mask and the zero-padded weight by hand, and
+    # synthesises with the full inverse SHT, all in float64. Agreement in space also
+    # pins the output spectrum to the mask, which is checked explicitly on the
+    # exact (Gauss) output grid.
+    # -----------------------------------------------------------------------
+    @parameterized.expand(
+        [
+            # grid_in, grid_out, lfull, lmax, mmax, lmmax, bias
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, 20, None, None, False],  # triangular, only lmax
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, None, 12, None, False],  # triangular, only mmax
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, 24, 12, None, False],  # rectangular
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, 24, 12, 12, True],  # rhomboidal
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, 32, 16, 10, True],  # lmmax clipped by lmax
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, None, None, 8, True],  # default bounds + lmmax
+            [("equiangular", 33, 64), ("legendre-gauss", 24, 48), 17, 16, 8, 6, True],  # different grids
+            [("legendre-gauss", 24, 48), ("equiangular", 41, 80), 24, 24, 10, None, False],  # upsampling
+        ],
+        skip_on_empty=True,
+    )
+    def test_spectral_truncation(self, grid_in, grid_out, lfull, lmax, mmax, lmmax, bias, verbose=False):
+        """The truncated layer equals the full transforms with the (lmax, mmax, lmmax) mask applied by hand."""
+        from torch_harmonics import InverseRealSHT, RealSHT
+        from torch_harmonics.integration import QuadratureS2
+
+        set_seed(333)
+
+        in_channels, out_channels, num_groups = 4, 6, 2
+        gin = as_grid(grid_in[0], nlat=grid_in[1], nlon=grid_in[2])
+        gout = as_grid(grid_out[0], nlat=grid_out[1], nlon=grid_out[2])
+
+        conv = SpectralConvS2(gin, gout, in_channels, out_channels, num_groups=num_groups, bias=bias, lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
+        conv.eval()
+
+        # resolved bounds: an omitted bound follows the other one, both omitted is the triangular default
+        exp_lmax = lmax if lmax is not None else (mmax if mmax is not None else lfull)
+        exp_mmax = mmax if mmax is not None else exp_lmax
+        self.assertEqual((conv.lmax, conv.mmax, conv.lmmax), (exp_lmax, exp_mmax, lmmax))
+        self.assertEqual(conv.sht.grid_out, conv.isht.grid_in)
+        self.assertEqual(conv.weight.shape[-1], exp_lmax)
+
+        if bias:
+            with torch.no_grad():
+                conv.spectral_bias.copy_(torch.randn_like(conv.spectral_bias))
+
+        # mask over the full (lfull, lfull) coefficient array
+        l = torch.arange(lfull, device=self.device).reshape(-1, 1)
+        m = torch.arange(lfull, device=self.device).reshape(1, -1)
+        mask = (m < exp_mmax) & (m <= l) & (l < exp_lmax)
+        if lmmax is not None:
+            mask = mask & (l - m < lmmax)
+
+        x = torch.randn(2, in_channels, *gin.shape, device=self.device)
+        with torch.no_grad():
+            y = conv(x)
+
+            # float64 reference from the untruncated transforms
+            sht_full = RealSHT(gin, lmax=lfull, mmax=lfull).to(self.device).double()
+            isht_full = InverseRealSHT(gout, lmax=lfull, mmax=lfull).to(self.device).double()
+            xd = x.double()
+            u = sht_full(xd)
+            if bias:
+                integral = QuadratureS2(gin, normalize=False).to(self.device).double()(xd)
+                b = torch.zeros(1, in_channels, lfull, lfull, dtype=torch.complex128, device=self.device)
+                b[..., :exp_lmax, :exp_mmax] = conv.spectral_bias.to(torch.complex128)
+                u = u + integral.reshape(*integral.shape, 1, 1) * b
+            u = u * mask
+            w = torch.zeros(*conv.weight.shape[:-1], lfull, dtype=torch.complex128, device=self.device)
+            w[..., :exp_lmax] = conv.weight.to(torch.complex128)
+            u = u.reshape(u.shape[0], num_groups, in_channels // num_groups, lfull, lfull)
+            v = torch.einsum("bgilm,giol->bgolm", u, w).reshape(u.shape[0], out_channels, lfull, lfull)
+            y_ref = isht_full(v)
+
+        self.assertTrue(compare_tensors("truncated spectral conv output", y, y_ref.float(), atol=1e-5, rtol=0.0, ulps=64, verbose=verbose))
+
+        # the output spectrum lives on the mask. Only checkable where analysis is exact on the output grid
+        if gout.grid_type == "legendre-gauss":
+            with torch.no_grad():
+                spec = RealSHT(gout, lmax=lfull, mmax=lfull).to(self.device).double()(y.double())
+            outside = spec.abs() * (~mask)
+            self.assertTrue(compare_tensors("output spectrum outside the support", outside, torch.zeros_like(outside), atol=1e-5, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # grid, nlat, nlon, lmax, mmax, lmmax
+            ["legendre-gauss", 32, 64, 40, None, None],  # lmax alone sets mmax above max_azimuthal_order
+            ["legendre-gauss", 32, 64, 16, 20, None],  # mmax > lmax
+            ["legendre-gauss", 32, 64, 16, 8, 0],  # lmmax must be positive
+        ],
+        skip_on_empty=True,
+    )
+    def test_spectral_truncation_rejects_invalid_bounds(self, grid, nlat, nlon, lmax, mmax, lmmax):
+        g = as_grid(grid, nlat=nlat, nlon=nlon)
+        with self.assertRaises(ValueError):
+            SpectralConvS2(g, g, 2, 2, lmax=lmax, mmax=mmax, lmmax=lmmax)
+
+    # -----------------------------------------------------------------------
     # Test 9: Spectral bias
     #
     # With bias=True the layer computes:

@@ -41,7 +41,7 @@ from torch_harmonics.grid import GridS2, _rejects_legacy_signature
 from torch_harmonics.integration import QuadratureS2
 from torch_harmonics.radial import split_radial_pair
 from torch_harmonics.sht import _require_sht_grid
-from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.truncation import _truncate_spectral_conv
 from torch_harmonics.utils import compile_if_supported
 
 
@@ -122,6 +122,13 @@ class SpectralConvS2(nn.Module):
     bias : bool, optional
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral, by default ``False``.
+    lmax : int, optional
+        Maximum spherical harmonic degree (non-inclusive) of the spectral support.
+    mmax : int, optional
+        Maximum azimuthal order (non-inclusive) of the spectral support.
+    lmmax : int, optional
+        Maximum degree-minus-order bandwidth (non-inclusive): only modes with
+        ``l - m < lmmax`` are retained. ``None`` leaves it unrestricted.
 
     Examples
     --------
@@ -152,10 +159,17 @@ class SpectralConvS2(nn.Module):
 
     Notes
     -----
-    The SHT truncation ``lmax``/``mmax`` is the minimum of the input and output
-    truncations. HEALPix has no exact quadrature, so on a HEALPix input the analysis is
-    approximate (about 1e-2 relative error at the default band, see
-    :class:`~torch_harmonics.RealSHT`).
+    With neither ``lmax`` nor ``mmax`` given, the spectral support is triangular,
+    :math:`l_{\max} = m_{\max}`, the smallest default degree and order bound of the
+    input and output grids. Otherwise ``lmax``, ``mmax`` and ``lmmax`` resolve as in
+    :func:`~torch_harmonics.truncate_sht`, which also covers rectangular
+    (``mmax < lmax``) and rhomboidal (``lmmax``) supports. A mode :math:`(l, m)` is
+    retained when :math:`m < m_{\max}`, :math:`m \le l < l_{\max}` and
+    :math:`l - m < lm_{\max}`; every other mode is zero in the output. The weight
+    holds one entry per degree, ``lmax`` in all, and ``spectral_bias`` entries outside
+    the support have no effect. HEALPix has no exact quadrature, so on a HEALPix
+    input the analysis is approximate (about 1e-2 relative error at the default
+    band, see :class:`~torch_harmonics.RealSHT`).
     """
 
     @_rejects_legacy_signature(
@@ -171,6 +185,9 @@ class SpectralConvS2(nn.Module):
         out_channels: int,
         num_groups: Optional[int] = 1,
         bias: Optional[bool] = False,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        lmmax: Optional[int] = None,
     ):
         super().__init__()
 
@@ -188,19 +205,13 @@ class SpectralConvS2(nn.Module):
         self.out_channels = out_channels
         self.num_groups = num_groups
 
-        # compute truncation
-        trunc_in = truncate_sht(self.grid_in)
-        trunc_out = truncate_sht(self.grid_out)
-
-        # compute lmax and lmin
-        lmax = min(trunc_in.lmax, trunc_out.lmax)
-        mmax = min(trunc_in.mmax, trunc_out.mmax)
-        self.lmax = min(lmax, mmax)
-        self.mmax = self.lmax
+        # resolve the spectral support shared by the forward and inverse SHT
+        trunc = _truncate_spectral_conv(self.grid_in, self.grid_out, lmax, mmax, lmmax)
+        self.lmax, self.mmax, self.lmmax = trunc.lmax, trunc.mmax, trunc.lmmax
 
         # set up sht layers
-        self.sht = RealSHT(self.grid_in, lmax=self.lmax, mmax=self.mmax)
-        self.isht = InverseRealSHT(self.grid_out, lmax=self.lmax, mmax=self.mmax)
+        self.sht = RealSHT(self.grid_in, lmax=self.lmax, mmax=self.mmax, lmmax=self.lmmax)
+        self.isht = InverseRealSHT(self.grid_out, lmax=self.lmax, mmax=self.mmax, lmmax=self.lmmax)
 
         # weight shape
         weight_shape = [num_groups, in_channels // num_groups, out_channels // num_groups, self.lmax]
@@ -217,7 +228,7 @@ class SpectralConvS2(nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, num_groups={self.num_groups}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, num_groups={self.num_groups}"
 
     @compile_if_supported
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:

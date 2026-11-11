@@ -213,6 +213,31 @@ def truncate_sht(grid: GridS2, lmax: Optional[int] = None, mmax: Optional[int] =
     return SpectralGrid(lmax, mmax, lmmax)
 
 
+def _truncate_spectral_conv(grid_in: GridS2, grid_out: GridS2, lmax: Optional[int] = None, mmax: Optional[int] = None, lmmax: Optional[int] = None) -> SpectralGrid:
+    r"""
+    Resolve the spectral support shared by the forward and inverse SHT of a spectral convolution.
+
+    With neither ``lmax`` nor ``mmax`` given, the support is triangular and as large as both
+    grids allow: :math:`l_{\max} = m_{\max}` is the smallest of the default degree and order
+    bounds of ``grid_in`` and ``grid_out``. Otherwise the bounds resolve as in
+    :func:`truncate_sht`, and are checked against both grids. ``lmmax`` is passed through in
+    either case.
+
+    The forward transform still validates ``lmax`` against the recoverable degree of
+    ``grid_in`` when it is built.
+    """
+    if lmax is None and mmax is None:
+        trunc_in = truncate_sht(grid_in)
+        trunc_out = truncate_sht(grid_out)
+        lmax = min(trunc_in.lmax, trunc_in.mmax, trunc_out.lmax, trunc_out.mmax)
+        return SpectralGrid(lmax, lmax, lmmax)
+
+    trunc = truncate_sht(grid_in, lmax, mmax, lmmax)
+    # an explicit bound resolves the same on either grid; this only adds the output grid's checks
+    truncate_sht(grid_out, lmax, mmax, lmmax)
+    return trunc
+
+
 def _validate_forward_sht_degree(grid: GridS2, lmax: int) -> None:
     """Validate latitude recovery for forward SHT analysis."""
     max_degree = grid.max_recoverable_degree
