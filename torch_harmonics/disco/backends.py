@@ -91,8 +91,7 @@ from typing import TYPE_CHECKING
 import torch
 from disco_helpers import optimized_kernels_is_available
 
-from torch_harmonics._backend import BackendS2, _kernel_device_types
-from torch_harmonics.attention.backends import _reference_weights_dtype as _reference_state_dtype
+from torch_harmonics._backend import BackendS2, _kernel_device_types, _reference_state_dtype
 
 from ._psi_layouts import build_arcs, build_kpacked, build_split
 from .kernels_torch.disco_ragged_torch import _disco_s2_contraction_ragged_torch, _disco_s2_transpose_contraction_ragged_torch
