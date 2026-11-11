@@ -29,7 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import contextlib
 import unittest
+from unittest import mock
 
 import torch
 import torch.distributed as dist
@@ -48,6 +50,7 @@ from testutils import (
 )
 
 import torch_harmonics.distributed as thd
+import torch_harmonics.distributed.primitives as _primitives
 from torch_harmonics.distributed import (
     compute_split_shapes,
     copy_to_azimuth_region,
@@ -806,14 +809,50 @@ _DOUBLE_BACKWARD_CASES = [shape + [dtype] for shape in _DOUBLE_BACKWARD_SHAPES f
 _DOUBLE_BACKWARD_HALO_CASES = [shape + [r_lat, dtype] for shape in _DOUBLE_BACKWARD_SHAPES for r_lat in (1, 2) for dtype in _DOUBLE_BACKWARD_DTYPES]
 
 
-def _grad_and_penalty_grad(x, loss_fn, reduce_fn, device_type, dtype):
+# every autograd Function of the primitives: each backward applies its adjoint, so wrapping their
+# forwards sees the communication of the forward and of both backward passes
+_PRIMITIVE_FUNCTIONS = sorted(
+    (obj for obj in vars(_primitives).values() if isinstance(obj, type) and issubclass(obj, torch.autograd.Function) and obj is not torch.autograd.Function),
+    key=lambda f: f.__name__,
+)
+
+
+@contextlib.contextmanager
+def _record_primitive_dtypes():
+    """
+    Record ``(phase, input dtype, output dtype)`` for every call of a primitive's autograd Function.
+
+    Yields the list of calls and a dict whose ``"phase"`` the caller sets before each pass.
+    """
+    calls, state = [], {"phase": None}
+
+    def wrap(forward):
+        def recorded(x, *args):
+            out = forward(x, *args)
+            calls.append((state["phase"], x.dtype, out.dtype))
+            return out
+
+        return staticmethod(recorded)
+
+    with contextlib.ExitStack() as stack:
+        for fn in _PRIMITIVE_FUNCTIONS:
+            stack.enter_context(mock.patch.object(fn, "forward", wrap(fn.forward)))
+        yield calls, state
+
+
+def _grad_and_penalty_grad(x, loss_fn, reduce_fn, device_type, dtype, state=None):
     """First-order gradient g = dL/dx and the gradient of the penalty |g|^2, which is 2 H g.
 
-    The loss is evaluated under ``maybe_autocast``, and both gradients outside it.
+    The loss is evaluated under ``maybe_autocast``, and both gradients outside it. ``state``,
+    from :func:`_record_primitive_dtypes`, labels the primitive calls of each pass.
     """
+    state = {} if state is None else state
+    state["phase"] = "forward"
     with maybe_autocast(device_type, dtype):
         loss = loss_fn(x)
+    state["phase"] = "first backward"
     (g,) = torch.autograd.grad(loss, x, create_graph=True)
+    state["phase"] = "second backward"
     (h,) = torch.autograd.grad(reduce_fn(torch.sum(g * g)), x)
     return g.detach(), h
 
@@ -844,9 +883,11 @@ class TestDoubleBackward(unittest.TestCase):
     before a tanh: an elementwise loss has a diagonal Hessian and hides the dropped terms, and
     the bounded tanh keeps the second-order gradients within fp16 range.
 
-    Each test runs in float64, and in fp32 under autocast to fp16 and bf16. A local matmul
-    precedes every primitive, so under autocast the collectives move fp16/bf16 tensors in both
-    passes, as they do inside the layers.
+    Each test runs in float64, and in fp32 under autocast to fp16 and bf16: inputs and weights
+    stay fp32, and only ``maybe_autocast`` lowers the precision. A local matmul precedes every
+    primitive, so under autocast the collectives move fp16/bf16 tensors in the forward and in
+    both backward passes, as they do inside the layers. ``_check`` asserts this, that no
+    primitive changes the dtype, and that both gradients come back in the input's dtype.
     """
 
     @classmethod
@@ -859,14 +900,41 @@ class TestDoubleBackward(unittest.TestCase):
     def _shard_lon(self, t, group_size, rank):
         return split_tensor_dim(t, dim=-1, dimsize=group_size, dimrank=rank)
 
-    def _randn(self, *shape, dtype):
-        """Inputs and weights in float64 for the float64 cases, in fp32 for the autocast ones."""
-        return torch.randn(*shape, device=self.device, dtype=torch.float64 if dtype == torch.float64 else torch.float32)
+    def _randn(self, *shape, case_dtype):
+        """
+        Inputs and weights of a case: float64 for the float64 case, and float32 for the fp16 and
+        bf16 cases, which run under autocast. No tensor is created in fp16 or bf16.
+        """
+        return torch.randn(*shape, device=self.device, dtype=torch.float64 if case_dtype == torch.float64 else torch.float32)
 
-    def _check(self, name, x_full, local, loss_serial, loss_dist, reduce_fn, dtype, verbose):
-        """Compare dL/dx and d/dx |dL/dx|^2 of ``loss_dist`` on ``local(x_full)`` with ``local`` of the serial ones."""
+    def _check(self, name, x_full, local, loss_serial, loss_dist, reduce_fn, dtype, group_size, verbose):
+        """
+        Compare dL/dx and d/dx |dL/dx|^2 of ``loss_dist`` on ``local(x_full)`` with ``local`` of the serial ones,
+        and check the dtypes through both backward passes.
+
+        ``group_size`` is the size of the group the primitive communicates over; on a single rank
+        the backwards skip communication, so there are no backward calls to check.
+        """
         g_ref, h_ref = _grad_and_penalty_grad(x_full.clone().requires_grad_(True), loss_serial, lambda t: t, self.device.type, dtype)
-        g, h = _grad_and_penalty_grad(local(x_full).clone().requires_grad_(True), loss_dist, reduce_fn, self.device.type, dtype)
+        x = local(x_full).clone().requires_grad_(True)
+        with _record_primitive_dtypes() as (calls, state):
+            g, h = _grad_and_penalty_grad(x, loss_dist, reduce_fn, self.device.type, dtype, state)
+
+        # the gradients come back in the dtype of the input, whatever ran under autocast
+        self.assertEqual(g.dtype, x.dtype, f"{name}: first-order gradient dtype")
+        self.assertEqual(h.dtype, x.dtype, f"{name}: second-order gradient dtype")
+        # no primitive changes the dtype, in the forward or in either backward
+        for phase, dt_in, dt_out in calls:
+            self.assertEqual(dt_out, dt_in, f"{name}: a primitive call in the {phase} pass returned {dt_out} for a {dt_in} input")
+        # under autocast the matmul before the primitive hands it the low-precision dtype, so the
+        # collectives move fp16/bf16 in the forward and, through the adjoints, in both backwards;
+        # only the reductions of the scalar losses, which autocast keeps in fp32, move fp32
+        allowed = {torch.float64} if dtype == torch.float64 else {dtype, torch.float32}
+        phases = ("forward", "first backward", "second backward") if group_size > 1 else ("forward",)
+        for phase in phases:
+            seen = {dt_in for p, dt_in, _ in calls if p == phase}
+            self.assertTrue(seen <= allowed, f"{name}: the {phase} pass moved {seen}, expected only {allowed}")
+            self.assertIn(dtype, seen, f"{name}: no primitive call in the {phase} pass ran in {dtype}")
 
         verbose = verbose and self.world_rank == 0
         ok = compare_tensors(f"{name} grad", g, local(g_ref), atol=0.0, rtol=0.0, ulps=_DOUBLE_BACKWARD_ULPS, eps_dtype=dtype, verbose=verbose)
@@ -879,9 +947,9 @@ class TestDoubleBackward(unittest.TestCase):
         """Replicated input, a different latitude mix on every polar rank, summed by the reduce."""
         set_seed(333)
         size = thd.polar_group_size()
-        x = self._randn(B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        a = self._randn(size, H, H, dtype=dtype) / H**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        a = self._randn(size, H, H, case_dtype=dtype) / H**0.5
 
         def loss_serial(x):
             return sum(torch.sum(torch.tanh(_mix_lat(a[r], x @ p))) for r in range(size))
@@ -889,16 +957,16 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_polar_region(torch.sum(torch.tanh(_mix_lat(a[self.hrank], copy_to_polar_region(x @ p)))))
 
-        self._check("copy_to_polar_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, dtype, verbose)
+        self._check("copy_to_polar_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, dtype, thd.polar_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_copy_to_azimuth_region(self, B, C, H, W, dtype, verbose=False):
         """Replicated input, a different longitude mix on every azimuth rank, summed by the reduce."""
         set_seed(333)
         size = thd.azimuth_group_size()
-        x = self._randn(B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        a = self._randn(size, W, W, dtype=dtype) / W**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        a = self._randn(size, W, W, case_dtype=dtype) / W**0.5
 
         def loss_serial(x):
             return sum(torch.sum(torch.tanh(((x @ p) @ a[r]))) for r in range(size))
@@ -906,16 +974,16 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_azimuth_region(torch.sum(torch.tanh((copy_to_azimuth_region(x @ p) @ a[self.wrank]))))
 
-        self._check("copy_to_azimuth_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, dtype, verbose)
+        self._check("copy_to_azimuth_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, dtype, thd.azimuth_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_reduce_from_polar_region(self, B, C, H, W, dtype, verbose=False):
         """Every polar rank holds one term of a sum, which is mixed after the reduce."""
         set_seed(333)
         size = thd.polar_group_size()
-        x = self._randn(size, B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        m = self._randn(H, H, dtype=dtype) / H**0.5
+        x = self._randn(size, B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        m = self._randn(H, H, case_dtype=dtype) / H**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh(_mix_lat(m, (x @ p).sum(dim=0))))
@@ -923,16 +991,16 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return torch.sum(torch.tanh(_mix_lat(m, reduce_from_polar_region(x @ p))))
 
-        self._check("reduce_from_polar_region", x, lambda t: t[self.hrank], loss_serial, loss_dist, reduce_from_polar_region, dtype, verbose)
+        self._check("reduce_from_polar_region", x, lambda t: t[self.hrank], loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_reduce_from_azimuth_region(self, B, C, H, W, dtype, verbose=False):
         """Every azimuth rank holds one term of a sum, which is mixed after the reduce."""
         set_seed(333)
         size = thd.azimuth_group_size()
-        x = self._randn(size, B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        n = self._randn(W, W, dtype=dtype) / W**0.5
+        x = self._randn(size, B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        n = self._randn(W, W, case_dtype=dtype) / W**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh(((x @ p).sum(dim=0) @ n)))
@@ -940,15 +1008,15 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return torch.sum(torch.tanh((reduce_from_azimuth_region(x @ p) @ n)))
 
-        self._check("reduce_from_azimuth_region", x, lambda t: t[self.wrank], loss_serial, loss_dist, reduce_from_azimuth_region, dtype, verbose)
+        self._check("reduce_from_azimuth_region", x, lambda t: t[self.wrank], loss_serial, loss_dist, reduce_from_azimuth_region, dtype, thd.azimuth_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_scatter_to_polar_region(self, B, C, H, W, dtype, verbose=False):
         """Replicated input mixed in latitude, scattered along latitude and mixed in longitude."""
         set_seed(333)
-        x = self._randn(B, C, H, W, dtype=dtype)
-        m = self._randn(H, H, dtype=dtype) / H**0.5
-        n = self._randn(W, W, dtype=dtype) / W**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        m = self._randn(H, H, case_dtype=dtype) / H**0.5
+        n = self._randn(W, W, case_dtype=dtype) / W**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh((_mix_lat(m, x) @ n)))
@@ -956,16 +1024,16 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_polar_region(torch.sum(torch.tanh((scatter_to_polar_region(_mix_lat(m, x), -2) @ n))))
 
-        self._check("scatter_to_polar_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, dtype, verbose)
+        self._check("scatter_to_polar_region", x, lambda t: t, loss_serial, loss_dist, lambda t: t, dtype, thd.polar_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_gather_from_polar_region(self, B, C, H, W, dtype, verbose=False):
         """Latitude-sharded input, gathered and mixed in latitude."""
         set_seed(333)
         shapes = compute_split_shapes(H, thd.polar_group_size())
-        x = self._randn(B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        m = self._randn(H, H, dtype=dtype) / H**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        m = self._randn(H, H, case_dtype=dtype) / H**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh(_mix_lat(m, x @ p)))
@@ -973,7 +1041,7 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return torch.sum(torch.tanh(_mix_lat(m, gather_from_polar_region(x @ p, -2, shapes))))
 
-        self._check("gather_from_polar_region", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, verbose)
+        self._check("gather_from_polar_region", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_gather_from_copy_to_polar_region(self, B, C, H, W, dtype, verbose=False):
@@ -981,9 +1049,9 @@ class TestDoubleBackward(unittest.TestCase):
         set_seed(333)
         size = thd.polar_group_size()
         shapes = compute_split_shapes(H, size)
-        x = self._randn(B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        m = self._randn(H, H, dtype=dtype) / H**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        m = self._randn(H, H, case_dtype=dtype) / H**0.5
         c = torch.rand(size, device=self.device, dtype=x.dtype) + 0.5
 
         def loss_serial(x):
@@ -992,16 +1060,16 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_polar_region(c[self.hrank] * torch.sum(torch.tanh(_mix_lat(m, gather_from_copy_to_polar_region(x @ p, -2, shapes)))))
 
-        self._check("gather_from_copy_to_polar_region", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, verbose)
+        self._check("gather_from_copy_to_polar_region", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_reduce_from_scatter_to_polar_region(self, B, C, H, W, dtype, verbose=False):
         """Every polar rank holds one term of a sum, reduce-scattered along latitude and mixed in longitude."""
         set_seed(333)
         size = thd.polar_group_size()
-        x = self._randn(size, B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        n = self._randn(W, W, dtype=dtype) / W**0.5
+        x = self._randn(size, B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        n = self._randn(W, W, case_dtype=dtype) / W**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh(((x @ p).sum(dim=0) @ n)))
@@ -1009,16 +1077,16 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_polar_region(torch.sum(torch.tanh((reduce_from_scatter_to_polar_region(x @ p, -2) @ n))))
 
-        self._check("reduce_from_scatter_to_polar_region", x, lambda t: t[self.hrank], loss_serial, loss_dist, reduce_from_polar_region, dtype, verbose)
+        self._check("reduce_from_scatter_to_polar_region", x, lambda t: t[self.hrank], loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_reduce_from_scatter_to_azimuth_region(self, B, C, H, W, dtype, verbose=False):
         """Every azimuth rank holds one term of a sum, reduce-scattered along longitude and mixed in latitude."""
         set_seed(333)
         size = thd.azimuth_group_size()
-        x = self._randn(size, B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        m = self._randn(H, H, dtype=dtype) / H**0.5
+        x = self._randn(size, B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        m = self._randn(H, H, case_dtype=dtype) / H**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh(_mix_lat(m, (x @ p).sum(dim=0))))
@@ -1026,16 +1094,18 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_azimuth_region(torch.sum(torch.tanh(_mix_lat(m, reduce_from_scatter_to_azimuth_region(x @ p, -1)))))
 
-        self._check("reduce_from_scatter_to_azimuth_region", x, lambda t: t[self.wrank], loss_serial, loss_dist, reduce_from_azimuth_region, dtype, verbose)
+        self._check(
+            "reduce_from_scatter_to_azimuth_region", x, lambda t: t[self.wrank], loss_serial, loss_dist, reduce_from_azimuth_region, dtype, thd.azimuth_group_size(), verbose
+        )
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_distributed_transpose_polar(self, B, C, H, W, dtype, verbose=False):
         """Longitude-sharded input mixed in latitude, transposed to latitude-sharded and mixed in longitude."""
         set_seed(333)
         size, rank = thd.polar_group_size(), self.hrank
-        x = self._randn(B, C, H, W, dtype=dtype)
-        m = self._randn(H, H, dtype=dtype) / H**0.5
-        n = self._randn(W, W, dtype=dtype) / W**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        m = self._randn(H, H, case_dtype=dtype) / H**0.5
+        n = self._randn(W, W, case_dtype=dtype) / W**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh((_mix_lat(m, x) @ n)))
@@ -1043,16 +1113,18 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_polar_region(torch.sum(torch.tanh((distributed_transpose_polar(_mix_lat(m, x), (2, 3), compute_split_shapes(W, size)) @ n))))
 
-        self._check("distributed_transpose_polar", x, lambda t: self._shard_lon(t, size, rank), loss_serial, loss_dist, reduce_from_polar_region, dtype, verbose)
+        self._check(
+            "distributed_transpose_polar", x, lambda t: self._shard_lon(t, size, rank), loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose
+        )
 
     @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
     def test_distributed_transpose_azimuth(self, B, C, H, W, dtype, verbose=False):
         """Longitude-sharded input mixed in latitude, transposed to latitude-sharded and mixed in longitude."""
         set_seed(333)
         size, rank = thd.azimuth_group_size(), self.wrank
-        x = self._randn(B, C, H, W, dtype=dtype)
-        m = self._randn(H, H, dtype=dtype) / H**0.5
-        n = self._randn(W, W, dtype=dtype) / W**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        m = self._randn(H, H, case_dtype=dtype) / H**0.5
+        n = self._randn(W, W, case_dtype=dtype) / W**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh((_mix_lat(m, x) @ n)))
@@ -1060,7 +1132,17 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_azimuth_region(torch.sum(torch.tanh((distributed_transpose_azimuth(_mix_lat(m, x), (2, 3), compute_split_shapes(W, size)) @ n))))
 
-        self._check("distributed_transpose_azimuth", x, lambda t: self._shard_lon(t, size, rank), loss_serial, loss_dist, reduce_from_azimuth_region, dtype, verbose)
+        self._check(
+            "distributed_transpose_azimuth",
+            x,
+            lambda t: self._shard_lon(t, size, rank),
+            loss_serial,
+            loss_dist,
+            reduce_from_azimuth_region,
+            dtype,
+            thd.azimuth_group_size(),
+            verbose,
+        )
 
     @parameterized.expand(_DOUBLE_BACKWARD_HALO_CASES, skip_on_empty=True)
     def test_polar_halo_exchange(self, B, C, H, W, r_lat, dtype, verbose=False):
@@ -1071,10 +1153,10 @@ class TestDoubleBackward(unittest.TestCase):
             self.skipTest("halo exchange is an identity on a single polar rank")
         if r_lat > min(shapes):
             self.skipTest(f"halo {r_lat} exceeds the smallest local latitude count {min(shapes)}")
-        x = self._randn(B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        w = self._randn(2 * r_lat + 1, dtype=dtype)
-        n = self._randn(W, W, dtype=dtype) / W**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        w = self._randn(2 * r_lat + 1, case_dtype=dtype)
+        n = self._randn(W, W, case_dtype=dtype) / W**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh((_stencil(F.pad(x @ p, (0, 0, r_lat, r_lat)), w, H) @ n)))
@@ -1082,7 +1164,7 @@ class TestDoubleBackward(unittest.TestCase):
         def loss_dist(x):
             return reduce_from_polar_region(torch.sum(torch.tanh((_stencil(polar_halo_exchange(x @ p, r_lat), w, x.shape[-2]) @ n))))
 
-        self._check("polar_halo_exchange", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, verbose)
+        self._check("polar_halo_exchange", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose)
 
     @parameterized.expand(_DOUBLE_BACKWARD_HALO_CASES, skip_on_empty=True)
     def test_polar_halo_reduce(self, B, C, H, W, r_lat, dtype, verbose=False):
@@ -1093,10 +1175,10 @@ class TestDoubleBackward(unittest.TestCase):
             self.skipTest("halo reduce is an identity on a single polar rank")
         if r_lat > min(shapes):
             self.skipTest(f"halo {r_lat} exceeds the smallest local latitude count {min(shapes)}")
-        x = self._randn(B, C, H, W, dtype=dtype)
-        p = self._randn(W, W, dtype=dtype) / W**0.5
-        w = self._randn(2 * r_lat + 1, dtype=dtype)
-        n = self._randn(W, W, dtype=dtype) / W**0.5
+        x = self._randn(B, C, H, W, case_dtype=dtype)
+        p = self._randn(W, W, case_dtype=dtype) / W**0.5
+        w = self._randn(2 * r_lat + 1, case_dtype=dtype)
+        n = self._randn(W, W, case_dtype=dtype) / W**0.5
 
         def loss_serial(x):
             return torch.sum(torch.tanh((_stencil_transpose(x @ p, w, r_lat).narrow(-2, r_lat, H) @ n)))
@@ -1105,4 +1187,4 @@ class TestDoubleBackward(unittest.TestCase):
             y = polar_halo_reduce(_stencil_transpose(x @ p, w, r_lat), r_lat, x.shape[-2])
             return reduce_from_polar_region(torch.sum(torch.tanh((y @ n))))
 
-        self._check("polar_halo_reduce", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, verbose)
+        self._check("polar_halo_reduce", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose)

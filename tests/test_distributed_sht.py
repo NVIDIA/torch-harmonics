@@ -661,6 +661,10 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         L is a cubic of the output, so its Hessian couples output points through the transform
         and the penalty gradient crosses both all-to-all transposes. float64, on uneven splits.
+
+        No fp16/bf16 autocast cases: the layers that use the SHTs (e.g. SpectralConvS2) run
+        them with autocast disabled, and no SHT test covers autocast. The communication
+        under autocast is covered by the primitive tests in test_distributed_primitives.py.
         """
         set_seed(333)
         B, C = 2, 3
