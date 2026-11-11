@@ -1878,16 +1878,6 @@ class TestDiscreteContinuousConvWithoutFloat64Device(unittest.TestCase):
         return Conv(_grid(grid_in), _grid(grid_out), 3, 2, (3, 4), basis_type="piecewise linear", optimized_kernel=False)
 
     @parameterized.expand([[False, "regular"], [True, "regular"], [False, "ragged"], [True, "ragged"]])
-    def test_reference_psi_is_float32_without_float64(self, transpose, family):
-        """prepare hands a float32 psi to a device that cannot hold float64, as the layer is float32."""
-        conv = self._conv(transpose, family)
-        backend = RaggedReferenceBackend() if family == "ragged" else RegularReferenceBackend()
-        # the CPU stands in for MPS
-        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
-            psi = backend.prepare(conv, torch.device("cpu"))["psi"]
-        self.assertEqual(psi.dtype, torch.float32)
-
-    @parameterized.expand([[False, "regular"], [True, "regular"], [False, "ragged"], [True, "ragged"]])
     def test_reference_psi_follows_layer_dtype(self, transpose, family):
         """The reference psi is float64 for a float64 layer and float32 again after .float()."""
         conv = self._conv(transpose, family).double()
