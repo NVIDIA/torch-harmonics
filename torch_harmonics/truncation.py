@@ -224,7 +224,8 @@ def _truncate_spectral_conv(grid_in: GridS2, grid_out: GridS2, lmax: Optional[in
     either case.
 
     The forward transform still validates ``lmax`` against the recoverable degree of
-    ``grid_in`` when it is built.
+    ``grid_in`` when it is built. Unlike a transform, a convolution needs at least one
+    mode, so ``lmax = 0`` or ``mmax = 0`` is rejected.
     """
     if lmax is None and mmax is None:
         trunc_in = truncate_sht(grid_in)
@@ -235,6 +236,8 @@ def _truncate_spectral_conv(grid_in: GridS2, grid_out: GridS2, lmax: Optional[in
     trunc = truncate_sht(grid_in, lmax, mmax, lmmax)
     # an explicit bound resolves the same on either grid; this only adds the output grid's checks
     truncate_sht(grid_out, lmax, mmax, lmmax)
+    if trunc.lmax == 0 or trunc.mmax == 0:
+        raise ValueError(f"a spectral convolution needs at least one mode, got lmax={trunc.lmax}, mmax={trunc.mmax}")
     return trunc
 
 

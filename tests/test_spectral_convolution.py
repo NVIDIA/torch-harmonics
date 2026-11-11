@@ -500,6 +500,8 @@ class TestSpectralConvS2(unittest.TestCase):
             ["legendre-gauss", 32, 64, 40, None, None],  # lmax alone sets mmax above max_azimuthal_order
             ["legendre-gauss", 32, 64, 16, 20, None],  # mmax > lmax
             ["legendre-gauss", 32, 64, 16, 8, 0],  # lmmax must be positive
+            ["legendre-gauss", 32, 64, 0, None, None],  # no degrees
+            ["legendre-gauss", 32, 64, 16, 0, None],  # no orders
         ],
         skip_on_empty=True,
     )

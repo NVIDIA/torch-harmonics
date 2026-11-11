@@ -228,15 +228,19 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         trunc = dict(lmax=lmax, mmax=mmax, lmmax=lmmax)
 
         conv_local = th.SpectralConvS2(gin, gout, in_channels=C, out_channels=C, num_groups=num_groups, bias=bias, **trunc).to(self.device)
+        # a nonzero bias so its support is exercised too. Drawn before the distributed layer is
+        # built: that draws only the local l slice of its weight, so with an uneven l split the
+        # ranks leave the generator in different states, and a bias drawn afterwards would differ
+        if bias:
+            with torch.no_grad():
+                conv_local.spectral_bias.copy_(torch.randn_like(conv_local.spectral_bias))
         conv_dist = thd.DistributedSpectralConvS2(gin, gout, in_channels=C, out_channels=C, num_groups=num_groups, bias=bias, **trunc).to(self.device)
 
         self.assertEqual((conv_dist.lmax, conv_dist.mmax, conv_dist.lmmax), (conv_local.lmax, conv_local.mmax, conv_local.lmmax))
         self.assertEqual(conv_dist.sht.grid_out, conv_local.sht.grid_out)
 
-        # copy weights: split along l; a nonzero bias so its support is exercised too
+        # copy weights: split along l
         with torch.no_grad():
-            if bias:
-                conv_local.spectral_bias.copy_(torch.randn_like(conv_local.spectral_bias))
             weight_split = split_tensor_dim(conv_local.weight.clone(), dim=-1, dimsize=self.grid_size_h, dimrank=self.hrank)
             conv_dist.weight.copy_(weight_split)
             if bias:
