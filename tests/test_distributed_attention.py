@@ -699,3 +699,33 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         # 3. q_shape == v_shape != k_shape: value carries out_shape instead of in_shape.
         with self.assertRaisesRegex(RuntimeError, "Expected"):
             attn(q_local, k_local, q_local)
+
+    @parameterized.expand(
+        [
+            # nlat_in, nlon_in, nlat_out, nlon_out
+            [32, 64, 32, 64],
+            [16, 32, 32, 64],
+        ],
+        skip_on_empty=True,
+    )
+    def test_double_backward_raises(self, nlat_in, nlon_in, nlat_out, nlon_out):
+        """Under create_graph=True the ring backward refuses to run, rather than return gradients that cannot be differentiated."""
+        set_seed(333)
+        B, C = 1, 4
+        attn = thd.DistributedNeighborhoodAttentionS2(
+            in_channels=C,
+            grid_in=th.as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
+            num_heads=1,
+        ).to(self.device)
+        if self._refuses_device(attn):
+            return
+
+        q = torch.randn(B, C, attn.nlat_out_local, attn.nlon_out_local, device=self.device, requires_grad=True)
+        k = torch.randn(B, C, attn.nlat_in_local, attn.nlon_in_local, device=self.device, requires_grad=True)
+        out = attn(q, k, k)
+
+        # first order is unaffected
+        torch.autograd.grad(torch.sum(out**2), (q, k), retain_graph=True)
+        with self.assertRaisesRegex(RuntimeError, "does not support double backward"):
+            torch.autograd.grad(torch.sum(out**2), (q, k), create_graph=True)

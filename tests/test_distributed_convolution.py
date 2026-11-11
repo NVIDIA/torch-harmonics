@@ -71,6 +71,21 @@ _SLOW_DISCO_SHAPES = frozenset(
 # shared state
 _DIST_CTX = {}
 
+_DOUBLE_BACKWARD_SHAPES = [
+    # nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, basis_type, transpose, fused, polar_mode
+    [33, 64, 33, 64, (3), "piecewise linear", False, False, "halo-exchange"],
+    [33, 64, 33, 64, (3), "piecewise linear", False, True, "halo-exchange"],
+    [33, 64, 17, 32, (3, 4), "harmonic", False, False, "halo-exchange"],
+    [33, 64, 17, 32, (3, 4), "harmonic", False, True, "halo-exchange"],
+    [33, 64, 33, 64, (3), "piecewise linear", False, False, "reduce-scatter"],
+    [33, 64, 33, 64, (3), "piecewise linear", False, True, "reduce-scatter"],
+    [17, 32, 33, 64, (3), "piecewise linear", True, False, None],
+    [33, 64, 33, 64, (3, 4), "harmonic", True, False, None],
+]
+
+# float64, and fp16/bf16 under autocast of an fp32 layer
+_DOUBLE_BACKWARD_CASES = [shape + [dtype] for shape in _DOUBLE_BACKWARD_SHAPES for dtype in (torch.float64, torch.float16, torch.bfloat16)]
+
 
 def _ulps(dtype):
     """
@@ -770,3 +785,67 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
                 th.as_grid("equiangular", nlat=32, nlon=64), th.as_grid("equiangular", nlat=32, nlon=64), 1, 1, kernel_shape=(3, 3), polar_mode="halo"
             )
         self.assertIn("halo-exchange", str(ctx.exception))
+
+    @parameterized.expand(_DOUBLE_BACKWARD_CASES, skip_on_empty=True)
+    def test_distributed_disco_conv_double_backward(self, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, basis_type, transpose, fused, polar_mode, dtype, verbose=False):
+        """Gradient of the penalty |dL/dx|^2 through the distributed convolution, against the serial one.
+
+        L is a sum of tanh of the output, so its Hessian couples output points through the
+        convolution and the penalty gradient crosses every halo, reduce-scatter and
+        all-to-all the layer communicates through. The bounded tanh keeps the second-order
+        gradients within fp16 range; a cubic overflows the penalty weight gradient there. On uneven latitude splits, in float64,
+        and for fp16 and bf16 with an fp32 layer and input under ``maybe_autocast``, as the
+        first-order autocast tests run. The loss is evaluated under autocast and both
+        gradients outside it, and the gradients must come back in the dtype of the input
+        and of the weight.
+        """
+        set_seed(333)
+        B, C = 2, 4
+        # the layer and the input stay fp32 for the autocast cases; only maybe_autocast lowers the precision
+        module_dtype = torch.float64 if dtype == torch.float64 else torch.float32
+        disco_args = dict(
+            in_channels=C,
+            out_channels=C,
+            basis_type=basis_type,
+            kernel_shape=kernel_shape,
+            grid_in=th.as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
+            grid_out=th.as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
+            bias=False,
+        )
+        if transpose:
+            conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
+        else:
+            conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=module_dtype, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args, fused=fused, polar_mode=polar_mode).to(dtype=module_dtype, device=self.device)
+        with torch.no_grad():
+            conv_dist.weight.copy_(conv_local.weight)
+
+        def penalty_grads(conv, x, reduce_fn):
+            with maybe_autocast(self.device.type, dtype):
+                loss = reduce_fn(torch.sum(torch.tanh(conv(x))))
+            (g,) = torch.autograd.grad(loss, x, create_graph=True)
+            hx, hw = torch.autograd.grad(reduce_fn(torch.sum(g * g)), (x, conv.weight))
+            return g.detach(), hx, hw
+
+        def reduce_hw(t):
+            return thd.reduce_from_azimuth_region(thd.reduce_from_polar_region(t))
+
+        inp_full = torch.randn((B, C, nlat_in, nlon_in), dtype=module_dtype, device=self.device)
+        g_full, hx_full, hw_full = penalty_grads(conv_local, inp_full.clone().requires_grad_(True), lambda t: t)
+        g_local, hx_local, hw_local = penalty_grads(conv_dist, self._split_helper(inp_full).clone().requires_grad_(True), reduce_hw)
+
+        # the gradients come back in the dtype of what they are taken with respect to
+        for name, t in (("gradients", g_local), ("penalty input grad", hx_local)):
+            self.assertEqual(t.dtype, module_dtype, f"{name} dtype")
+        self.assertEqual(hw_local.dtype, conv_dist.weight.dtype, "penalty weight grad dtype")
+
+        verbose = verbose and self.world_rank == 0
+        ulps = _ulps(dtype)
+        ok = compare_tensors("gradients", self._gather_helper_bwd(g_local, conv_dist), g_full, atol=0.0, rtol=0.0, ulps=ulps, eps_dtype=dtype, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
+        ok = compare_tensors("penalty input grad", self._gather_helper_bwd(hx_local, conv_dist), hx_full, atol=0.0, rtol=0.0, ulps=ulps, eps_dtype=dtype, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "penalty input grad")
+        pg_ulps = param_grad_ulps(B * max(nlat_in * nlon_in, nlat_out * nlon_out), dtype)
+        ok = compare_tensors("penalty weight grad", self._allreduce_param_grad(hw_local), hw_full, atol=0.0, rtol=0.0, ulps=pg_ulps, eps_dtype=dtype, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "penalty weight grad")
