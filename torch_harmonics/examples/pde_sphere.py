@@ -94,7 +94,7 @@ class SphereSolver(nn.Module):
         self.lmax = self.sht.lmax
         self.mmax = self.sht.mmax
 
-        l = torch.arange(0, self.lmax).reshape(self.lmax, 1).double()
+        l = torch.arange(0, self.lmax, dtype=torch.float64).reshape(self.lmax, 1)
         l = l.expand(self.lmax, self.mmax)
         # the laplace operator acting on the coefficients is given by l (l + 1)
         lap = -l * (l + 1) / self.radius**2
