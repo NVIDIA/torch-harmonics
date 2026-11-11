@@ -177,10 +177,14 @@ class TestDistributedDiscreteContinuousConvolution(unittest.TestCase):
         — independently, so this works for any (h, w) grid layout and
         doesn't implicitly assume the world group equals h × w.
 
-        Returns a clone (allreduce is in-place) so the caller doesn't
-        mutate ``conv_dist.weight.grad`` and friends.
+        Returns a contiguous clone: allreduce is in-place, so the caller's
+        ``conv_dist.weight.grad`` and friends must not be mutated, and NCCL
+        rejects non-contiguous tensors. A gradient from ``torch.autograd.grad``
+        keeps the layout of the backward that produced it (the transpose
+        convolution's weight gradient is a permuted view); only ``.grad`` is
+        laid out like the parameter.
         """
-        out = tensor.clone()
+        out = tensor.contiguous().clone()
         if self.grid_size_h > 1:
             dist.all_reduce(out, group=self.h_group)
         if self.grid_size_w > 1:
