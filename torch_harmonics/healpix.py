@@ -77,15 +77,16 @@ References
 """
 
 import numbers
+from bisect import bisect_left
 from dataclasses import dataclass
 from typing import ClassVar, Optional, Tuple
 
 import torch
 
 from torch_harmonics.cache import lru_cache
-from torch_harmonics.grid import GridS2, _as_int
+from torch_harmonics.grid import GridS2, GridShardS2, _as_int
 
-__all__ = ["HealpixGrid", "healpix_ring_structure", "healpix_ring_weights"]
+__all__ = ["HealpixGrid", "HealpixGridShardS2", "healpix_ring_structure", "healpix_ring_weights"]
 
 
 @lru_cache(typed=True, copy=True)
@@ -492,12 +493,42 @@ class HealpixGrid(GridS2):
 
     # -- decomposition -------------------------------------------------------
 
-    def shard(self, polar: Optional[Tuple[int, int]] = (0, 1), azimuth: Optional[Tuple[int, int]] = (0, 1)) -> "GridS2":
-        raise NotImplementedError(
-            "HEALPix does not decompose as a product of a latitude range and a longitude range: rings differ "
-            "in length, so there is no global nlon to split azimuthally. A ragged decomposition should split "
-            "the flat pixel range, which GridShardS2 does not yet describe."
-        )
+    @classmethod
+    def shard_class(cls) -> type:
+        return HealpixGridShardS2
+
+    def shard(self, polar: Tuple[int, int] = (0, 1), azimuth: Tuple[int, int] = (0, 1)) -> "HealpixGridShardS2":
+        """
+        Return the piece of this grid held by one rank of a latitude decomposition.
+
+        The rings are split into contiguous bands of about equal pixel count, see
+        :class:`HealpixGridShardS2`. There is no azimuthal split: rings differ in length
+        and carry different phases, so there is no global ``nlon`` to divide.
+
+        Parameters
+        ----------
+        polar : tuple of int, optional
+            ``(rank, size)`` along latitude, by default ``(0, 1)``.
+        azimuth : tuple of int, optional
+            ``(rank, size)`` along longitude. Only ``size == 1`` is supported; it is accepted so
+            that code written for a :class:`~torch_harmonics.grid.RegularGridS2` decomposition,
+            which passes both, runs unchanged on a one-dimensional communicator layout.
+
+        Returns
+        -------
+        HealpixGridShardS2
+            The local piece, which knows the global grid it came from.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``azimuth`` splits the rings.
+        """
+        if tuple(azimuth)[1] != 1:
+            raise NotImplementedError(
+                f"HEALPix decomposes along latitude only; got an azimuthal split of size {azimuth[1]}. Rings differ in length, so there is no global nlon to divide."
+            )
+        return HealpixGridShardS2(grid=self, polar_rank=polar[0], polar_size=polar[1])
 
     # -- construction --------------------------------------------------------
 
@@ -518,3 +549,156 @@ class HealpixGrid(GridS2):
         if level < 0:
             raise ValueError(f"level must be non-negative, got {level}")
         return cls(nside=1 << level)
+
+
+@lru_cache(typed=True)
+def _ring_cuts(nside: int, size: int) -> Tuple[int, ...]:
+    """
+    Ring indices at which a ``size``-way latitude split of a HEALPix grid cuts, ``size + 1`` of them.
+
+    Rank ``r`` owns the rings ``cuts[r]:cuts[r + 1]``. Each cut is the ring boundary nearest the
+    point where the cumulative pixel count reaches ``r / size`` of the total, so every rank holds
+    the same number of pixels up to half a ring, at most ``2 * nside``. Every rank holds at least one ring.
+    """
+    offsets = HealpixGrid(nside=nside).lon_offsets.tolist()
+    nrings = len(offsets) - 1
+    cuts = [0]
+    for rank in range(1, size):
+        target = offsets[-1] * rank / size
+        above = bisect_left(offsets, target)
+        below = max(above - 1, 0)
+        cut = below if target - offsets[below] <= offsets[above] - target else above
+        # at least one ring for this rank, and for each of the ranks after it
+        cuts.append(min(max(cut, cuts[-1] + 1), nrings - (size - rank)))
+    cuts.append(nrings)
+    return tuple(cuts)
+
+
+@dataclass(frozen=True, eq=False)
+class HealpixGridShardS2(GridShardS2):
+    r"""
+    One rank's piece of a :class:`HealpixGrid` under a latitude decomposition.
+
+    The local piece is a contiguous band of rings, which in RING order is a contiguous slice
+    of the flat pixel axis, so a local field is ``(..., npoints)``. The bands are cut so that
+    every rank holds about the same number of **pixels**, not rings: rings grow from 4 pixels
+    at the poles to :math:`4 N` at the equator, and equal ring counts would leave a polar rank
+    with a fraction of an equatorial rank's pixels. Polar ranks therefore hold more, shorter rings.
+
+    Parameters
+    ----------
+    grid : HealpixGrid
+        The global grid this is a piece of.
+    polar_rank, polar_size : int
+        Position and extent of the decomposition along latitude. ``polar_size`` cannot exceed
+        the number of rings.
+    """
+
+    polar_rank: int = 0
+    polar_size: int = 1
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not isinstance(self.grid, HealpixGrid):
+            raise ValueError(f"grid must be a HealpixGrid, got {type(self.grid).__name__}")
+        for field in ("polar_rank", "polar_size"):
+            _as_int(self, field)
+        if self.polar_size < 1:
+            raise ValueError(f"polar_size must be at least 1, got {self.polar_size}")
+        if not 0 <= self.polar_rank < self.polar_size:
+            raise ValueError(f"polar_rank must lie in [0, {self.polar_size}), got {self.polar_rank}")
+        if self.polar_size > self.grid.nrings:
+            raise ValueError(f"cannot split {self.grid.nrings} rings over {self.polar_size} ranks")
+
+    def __repr__(self) -> str:
+        return f"HealpixGridShardS2({self.grid!r}, polar={self.polar_rank}/{self.polar_size})"
+
+    # -- local extent --------------------------------------------------------
+
+    @property
+    def ring_cuts(self) -> Tuple[int, ...]:
+        """Ring indices bounding every rank's band, ``polar_size + 1`` of them."""
+        return _ring_cuts(self.grid.nside, self.polar_size)
+
+    @property
+    def ring_shapes(self) -> Tuple[int, ...]:
+        """Ring counts held by every polar rank, ordered by rank."""
+        cuts = self.ring_cuts
+        return tuple(b - a for a, b in zip(cuts, cuts[1:]))
+
+    @property
+    def pixel_shapes(self) -> Tuple[int, ...]:
+        """Pixel counts held by every polar rank, ordered by rank; the sizes to split a flat field by."""
+        offsets = self.grid.lon_offsets.tolist()
+        cuts = self.ring_cuts
+        return tuple(offsets[b] - offsets[a] for a, b in zip(cuts, cuts[1:]))
+
+    @property
+    def nrings(self) -> int:
+        """Number of rings on this rank."""
+        return self.ring_shapes[self.polar_rank]
+
+    @property
+    def ring_offset(self) -> int:
+        """Index of this rank's first ring within the global grid."""
+        return self.ring_cuts[self.polar_rank]
+
+    @property
+    def npoints(self) -> int:
+        """Number of pixels on this rank."""
+        return self.pixel_shapes[self.polar_rank]
+
+    @property
+    def pixel_offset(self) -> int:
+        """Index of this rank's first pixel within the global flat field."""
+        return int(self.grid.lon_offsets[self.ring_offset])
+
+    @property
+    def shape(self) -> Tuple[int]:
+        """Local field shape ``(npoints,)``."""
+        return (self.npoints,)
+
+    # -- local geometry ------------------------------------------------------
+
+    @property
+    def colats(self) -> torch.Tensor:
+        """This rank's slice of the global ring colatitudes, shape ``(nrings,)``."""
+        return self.grid.colats[self.ring_offset : self.ring_offset + self.nrings]
+
+    @property
+    def lats(self) -> torch.Tensor:
+        r"""This rank's slice of the global ring latitudes :math:`\pi/2 - \theta`, shape ``(nrings,)``."""
+        return torch.pi / 2 - self.colats
+
+    @property
+    def nlon_per_lat(self) -> torch.Tensor:
+        """Pixels in each of this rank's rings, shape ``(nrings,)``."""
+        return self.grid.nlon_per_lat[self.ring_offset : self.ring_offset + self.nrings]
+
+    @property
+    def quad_weights(self) -> torch.Tensor:
+        r"""
+        This rank's per-pixel solid-angle weights, shape ``(npoints,)``.
+
+        Sums to :math:`4\pi` only across all ranks.
+        """
+        # built from this rank's rings alone: slicing the global weights would keep the whole
+        # 12 nside^2 tensor alive on every rank. The same per-ring factor as the grid's, so the
+        # values are bitwise those of the global weights
+        counts = self.nlon_per_lat
+        weights = self.grid.colat_weights[self.ring_offset : self.ring_offset + self.nrings]
+        per_point = weights * (2.0 * torch.pi / counts.to(weights.dtype))
+        return torch.repeat_interleave(per_point, counts)
+
+    def lons(self, ilat: int) -> torch.Tensor:
+        """
+        Longitudes of the pixels of this rank's ``ilat``-th ring, counted from the end if negative.
+
+        Raises
+        ------
+        ValueError
+            If ``ilat`` is outside this rank's rings.
+        """
+        if not -self.nrings <= ilat < self.nrings:
+            raise ValueError(f"ilat must be in [0, {self.nrings}), got {ilat}")
+        return self.grid.lons(self.ring_offset + ilat % self.nrings)

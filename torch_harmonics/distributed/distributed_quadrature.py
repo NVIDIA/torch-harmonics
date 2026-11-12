@@ -34,7 +34,7 @@ from typing import Optional
 import torch
 
 from torch_harmonics._field_contract import check_field
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import GridS2, RegularGridShardS2, _rejects_legacy_signature, require_grid
 from torch_harmonics.radial import SphericalProductGrid, split_radial
 from torch_harmonics.utils import recast_buffers_for
 
@@ -46,7 +46,9 @@ class DistributedQuadratureS2(torch.nn.Module):
     r"""
     Distributed scalar quadrature on :math:`S^2` for integrating spherical fields on a
     latitude/longitude grid, with data and weights split across polar and
-    azimuth communicator groups.
+    azimuth communicator groups. On a :class:`~torch_harmonics.healpix.HealpixGrid` the flat
+    pixel axis is split into bands of rings along the polar group, and the azimuth group must
+    have size 1.
 
     .. seealso::
         :class:`torch_harmonics.QuadratureS2`
@@ -55,8 +57,10 @@ class DistributedQuadratureS2(torch.nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
-        Descriptor of the *global* grid to integrate on. It carries both the
+    grid : GridS2
+        Descriptor of the *global* grid to integrate on, a
+        :class:`~torch_harmonics.grid.RegularGridS2` or a
+        :class:`~torch_harmonics.healpix.HealpixGrid`. It carries both the
         resolution and the quadrature rule; the local shard is derived from it.
     normalize : bool, optional
         If ``True``, divides weights by ``4π`` to return an average instead of
@@ -74,12 +78,12 @@ class DistributedQuadratureS2(torch.nn.Module):
         'img_shape, grid="equiangular", normalize=False',
         grid="img_shape",
     )
-    def __init__(self, grid: RegularGridS2, normalize: Optional[bool] = False):
+    def __init__(self, grid: GridS2, normalize: Optional[bool] = False):
         super().__init__()
 
         # copy input; on a product grid each shell is integrated alike, the radial axis kept
         grid, self.radial = split_radial(grid)
-        self.grid = require_regular_grid(grid)
+        self.grid = require_grid(grid)
         self.normalize = normalize
 
         # get the comms grid:
@@ -94,8 +98,12 @@ class DistributedQuadratureS2(torch.nn.Module):
             polar=(self.comm_rank_polar, self.comm_size_polar),
             azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
         )
-        self.lat_shapes = list(self.shard.lat_shapes)
-        self.lon_shapes = list(self.shard.lon_shapes)
+        if isinstance(self.shard, RegularGridShardS2):
+            self.lat_shapes = list(self.shard.lat_shapes)
+            self.lon_shapes = list(self.shard.lon_shapes)
+        else:
+            # a ragged grid splits its flat pixel axis, in bands of whole rings
+            self.pixel_shapes = list(self.shard.pixel_shapes)
 
         # the shard builds its own weights, so the per-ring longitudinal factor is written
         # once, in the grid module, and this class cannot drift from its serial

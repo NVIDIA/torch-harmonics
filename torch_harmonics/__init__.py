@@ -59,7 +59,7 @@ from .grid import (
     require_point_set,
     require_regular_grid,
 )
-from .healpix import HealpixGrid
+from .healpix import HealpixGrid, HealpixGridShardS2
 from .integration import QuadratureS2, QuadratureVolume
 from .neighborhood import NeighborhoodArcsS2, precompute_neighborhood_arcs_s2, precompute_neighborhood_csr_s2
 from .radial import GeometricRadialGrid, LegendreGaussRadialGrid, RadialGrid, SphericalProductGrid, as_radial_grid, radial_grid_types
