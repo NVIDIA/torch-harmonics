@@ -87,6 +87,21 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         return tensor_gather
 
     def _gather_helper_bwd(self, tensor, transform_dist):
+        """Gather a spatial field: ``(nlat, nlon)`` blocks on a regular grid, bands of the pixel axis on HEALPix."""
+        if isinstance(transform_dist.grid, th.HealpixGrid):
+            return gather_tensor_hw(
+                tensor,
+                hdim=-1,
+                wdim=-1,
+                hshapes=transform_dist.pixel_shapes,
+                wshapes=[],
+                hsize=self.grid_size_h,
+                wsize=1,
+                hrank=self.hrank,
+                wrank=self.wrank,
+                hgroup=self.h_group,
+                wgroup=self.w_group,
+            )
 
         tensor_gather = gather_tensor_hw(
             tensor,
@@ -103,6 +118,12 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         )
 
         return tensor_gather
+
+    def _split_spatial(self, tensor, transform_dist):
+        """This rank's piece of a spatial field: its ``(nlat, nlon)`` block, or on HEALPix its band of rings, a slice of the pixel axis."""
+        if isinstance(transform_dist.grid, th.HealpixGrid):
+            return torch.split(tensor, transform_dist.pixel_shapes, dim=-1)[self.hrank].contiguous()
+        return self._split_helper(tensor)
 
     @parameterized.expand(
         [
@@ -319,28 +340,23 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         skip_on_empty=True,
     )
     def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
-        self._check_distributed_sht(nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax, lmmax, dtype, verbose)
+        self._check_distributed_sht(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose)
 
-    def _check_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
+    def _check_distributed_sht(self, grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True, iter=0):
+        """The distributed forward SHT on ``grid``, a grid descriptor, against the serial one: output and input gradient."""
 
         set_seed(333)
         mmax = lmax if mmax is None else mmax
 
-        B, C, H, W = batch_size, num_chan, nlat, nlon
+        B, C = batch_size, num_chan
 
         # set up handles
-        if vector:
-            forward_transform_local = th.RealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            forward_transform_dist = thd.DistributedRealVectorSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-        else:
-            forward_transform_local = th.RealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            forward_transform_dist = thd.DistributedRealSHT(th.as_grid(grid, nlat=H, nlon=W), lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+        local_cls, dist_cls = (th.RealVectorSHT, thd.DistributedRealVectorSHT) if vector else (th.RealSHT, thd.DistributedRealSHT)
+        forward_transform_local = local_cls(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, iter=iter).to(device=self.device, dtype=dtype)
+        forward_transform_dist = dist_cls(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, iter=iter).to(device=self.device, dtype=dtype)
 
-        # create tensors
-        if vector:
-            inp_full = torch.randn((B, C, 2, H, W), dtype=dtype, device=self.device)
-        else:
-            inp_full = torch.randn((B, C, H, W), dtype=dtype, device=self.device)
+        # create tensors: (B, C, *grid.shape), (B, C, 2, *grid.shape) for a vector field
+        inp_full = torch.randn((B, C, *((2,) if vector else ()), *grid.shape), dtype=dtype, device=self.device)
 
         # local transform
         # FWD pass
@@ -358,7 +374,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # distributed transform
         # FWD pass
-        inp_local = self._split_helper(inp_full.detach().clone())
+        inp_local = self._split_spatial(inp_full.detach().clone(), forward_transform_dist)
         inp_local.requires_grad = True
         out_local = forward_transform_dist(inp_local)
 
@@ -455,13 +471,17 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         skip_on_empty=True,
     )
     def test_distributed_isht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
+        self._check_distributed_isht(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose)
+
+    def _check_distributed_isht(self, grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
+        """The distributed inverse SHT on ``grid``, a grid descriptor, against the serial one: output and input gradient."""
 
         set_seed(333)
         mmax = lmax if mmax is None else mmax
 
-        B, C, H, W = batch_size, num_chan, nlat, nlon
+        B, C = batch_size, num_chan
 
-        grid_desc = th.as_grid(grid, nlat=H, nlon=W)
+        grid_desc = grid
         oversized = lmax is not None and lmax > grid_desc.max_recoverable_degree
 
         if vector:
@@ -475,10 +495,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         # create tensors
         if forward_transform_local is not None:
-            if vector:
-                dummy_full = torch.randn((B, C, 2, H, W), dtype=dtype, device=self.device)
-            else:
-                dummy_full = torch.randn((B, C, H, W), dtype=dtype, device=self.device)
+            dummy_full = torch.randn((B, C, *((2,) if vector else ()), *grid_desc.shape), dtype=dtype, device=self.device)
             inp_full = forward_transform_local(dummy_full)
         else:
             # This is an inverse-only upsampling case; generate coefficients directly
@@ -518,7 +535,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         out_local = backward_transform_dist(inp_local)
 
         # BWD pass
-        ograd_local = self._split_helper(ograd_full)
+        ograd_local = self._split_spatial(ograd_full, backward_transform_dist)
         out_local = backward_transform_dist(inp_local)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
@@ -673,25 +690,28 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         them with autocast disabled, and no SHT test covers autocast. The communication
         under autocast is covered by the primitive tests in test_distributed_primitives.py.
         """
+        self._check_distributed_sht_double_backward(th.as_grid(grid, nlat=nlat, nlon=nlon), vector, inverse, verbose)
+
+    def _check_distributed_sht_double_backward(self, grid, vector, inverse, verbose=False):
+        """The penalty gradient through the distributed (inverse) SHT on ``grid``, a grid descriptor, against the serial one."""
         set_seed(333)
         B, C = 2, 3
-        grid_desc = th.as_grid(grid, nlat=nlat, nlon=nlon)
         sht_cls = th.RealVectorSHT if vector else th.RealSHT
         dist_cls = thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT
         isht_cls = th.InverseRealVectorSHT if vector else th.InverseRealSHT
         idist_cls = thd.DistributedInverseRealVectorSHT if vector else thd.DistributedInverseRealSHT
-        sht_local = sht_cls(grid_desc).to(device=self.device, dtype=torch.float64)
+        sht_local = sht_cls(grid).to(device=self.device, dtype=torch.float64)
 
-        inp_full = torch.randn((B, C, 2, nlat, nlon) if vector else (B, C, nlat, nlon), dtype=torch.float64, device=self.device)
+        inp_full = torch.randn((B, C, *((2,) if vector else ()), *grid.shape), dtype=torch.float64, device=self.device)
         if inverse:
             inp_full = sht_local(inp_full).detach()
-            transform_local = isht_cls(grid_desc).to(device=self.device, dtype=torch.float64)
-            transform_dist = idist_cls(grid_desc).to(device=self.device, dtype=torch.float64)
-            gather_inp = self._gather_helper_fwd
+            transform_local = isht_cls(grid).to(device=self.device, dtype=torch.float64)
+            transform_dist = idist_cls(grid).to(device=self.device, dtype=torch.float64)
+            inp_local, gather_inp = self._split_helper(inp_full), self._gather_helper_fwd
         else:
             transform_local = sht_local
-            transform_dist = dist_cls(grid_desc).to(device=self.device, dtype=torch.float64)
-            gather_inp = self._gather_helper_bwd
+            transform_dist = dist_cls(grid).to(device=self.device, dtype=torch.float64)
+            inp_local, gather_inp = self._split_spatial(inp_full, transform_dist), self._gather_helper_bwd
 
         def sq_norm(t):
             return torch.sum(torch.view_as_real(t) ** 2) if t.is_complex() else torch.sum(t * t)
@@ -708,7 +728,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             return thd.reduce_from_azimuth_region(thd.reduce_from_polar_region(t))
 
         g_full, h_full = penalty_grads(transform_local, inp_full.clone().requires_grad_(True), lambda t: t)
-        g_local, h_local = penalty_grads(transform_dist, self._split_helper(inp_full).clone().requires_grad_(True), reduce_hw)
+        g_local, h_local = penalty_grads(transform_dist, inp_local.clone().requires_grad_(True), reduce_hw)
 
         verbose = verbose and self.world_rank == 0
         ok = compare_tensors("gradients", gather_inp(g_local, transform_dist), g_full, atol=0.0, rtol=0.0, ulps=8, verbose=verbose)
@@ -717,140 +737,88 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         self.assertTrue(reduce_success(ok, self.device), "penalty grad")
 
     # -- HEALPix -------------------------------------------------------------------------
-
-    def _split_pixels(self, tensor, transform_dist):
-        """This rank's band of rings of a flat HEALPix field, a slice of the pixel axis."""
-        return torch.split(tensor, transform_dist.pixel_shapes, dim=-1)[self.hrank].contiguous()
-
-    def _gather_pixels(self, tensor, transform_dist):
-        return gather_tensor_hw(
-            tensor,
-            hdim=-1,
-            wdim=-1,
-            hshapes=transform_dist.pixel_shapes,
-            wshapes=[],
-            hsize=self.grid_size_h,
-            wsize=1,
-            hrank=self.hrank,
-            wrank=self.wrank,
-            hgroup=self.h_group,
-            wgroup=self.w_group,
-        )
+    # The same checks as above on a HealpixGrid, row for row in the same order with nside in
+    # place of nlat, nlon and the grid name. The rings are split into bands of about equal pixel
+    # counts, so the synthesis reduce-scatter runs on ring counts that are not the natural
+    # split. HEALPix has no azimuth split, so these skip on an azimuth group of more than one
+    # rank. The float32 tolerances are those of the regular rows, see the note above them.
 
     @parameterized.expand(
         [
-            # nside, vector, inverse, lmax, lmmax, iter
-            (nside, vector, inverse, lmax, lmmax, iter)
-            for nside, lmax, lmmax, iter in [(4, None, None, 0), (8, None, None, 0), (8, 24, None, 0), (8, None, 5, 0), (8, None, None, 2)]
-            for vector in (False, True)
-            for inverse in (False, True)
-            if not (inverse and iter)
+            # nside, lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, iter
+            # lmax automatically determined, 2 * nside
+            [4, None, 2, 3, False, 1e-5, 1e-6],
+            [8, None, 2, 3, False, 1e-5, 1e-6],
+            [8, None, 2, 3, True, 1e-5, 1e-6],
+            # fewer channels than the polar group size, see the regular rows
+            [8, None, 1, 1, False, 1e-5, 1e-5],
+            [8, None, 1, 1, True, 1e-5, 1e-5],
+            # downsampling, and the largest degree HEALPix accepts, 3 * nside
+            [8, 8, 2, 3, False, 1e-5, 1e-6],
+            [8, 24, 2, 3, False, 1e-5, 1e-6],
+            [8, 24, 2, 3, True, 1e-5, 1e-6],
+            # asymmetric truncation
+            [8, 16, 1, 4, False, 1e-5, 1e-6, 9, None],
+            [8, 16, 1, 4, False, 1e-5, 1e-6, None, 5],
+            [8, 16, 1, 4, True, 1e-5, 1e-6, 9, 5],
+            # float64
+            [8, None, 2, 3, False, 1e-12, 1e-12, None, None, torch.float64],
+            [8, 24, 2, 3, True, 1e-12, 1e-12, None, None, torch.float64],
+            # Jacobi iterations, each a distributed synthesis and analysis more
+            [8, None, 2, 3, False, 1e-12, 1e-12, None, None, torch.float64, 2],
+            [8, None, 2, 3, True, 1e-12, 1e-12, None, None, torch.float64, 2],
         ],
         skip_on_empty=True,
     )
-    def test_distributed_sht_healpix(self, nside, vector, inverse, lmax, lmmax, iter, verbose=False):
-        """
-        The distributed (inverse) SHT on HEALPix against the serial one, output and gradient.
-
-        The rings are split into bands of about equal pixel counts, so the synthesis reduce-scatter
-        runs on uneven ring counts that are not the natural split. float64.
-        """
+    def test_distributed_sht_healpix(self, nside, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, iter=0, verbose=True):
         if self.grid_size_w > 1:
             self.skipTest("HEALPix decomposes along latitude only")
+        self._check_distributed_sht(th.HealpixGrid(nside=nside), lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose, iter=iter)
 
-        set_seed(333)
-        B, C = 2, 3
-        dtype = torch.float64
-        grid = th.HealpixGrid(nside=nside)
-        if inverse:
-            cls_local = th.InverseRealVectorSHT if vector else th.InverseRealSHT
-            cls_dist = thd.DistributedInverseRealVectorSHT if vector else thd.DistributedInverseRealSHT
-            kwargs = {}
-        else:
-            cls_local = th.RealVectorSHT if vector else th.RealSHT
-            cls_dist = thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT
-            kwargs = {"iter": iter}
-        transform_local = cls_local(grid, lmax=lmax, lmmax=lmmax, **kwargs).to(device=self.device, dtype=dtype)
-        transform_dist = cls_dist(grid, lmax=lmax, lmmax=lmmax, **kwargs).to(device=self.device, dtype=dtype)
-        self.assertEqual(sum(transform_dist.pixel_shapes), grid.npoints)
-        self.assertEqual(sum(transform_dist.lat_shapes), grid.nrings)
+    @parameterized.expand(
+        [
+            # nside, lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype
+            [4, None, 2, 3, False, 1e-5, 1e-6],
+            [8, None, 2, 3, False, 1e-5, 1e-6],
+            [8, None, 2, 3, True, 1e-5, 1e-6],
+            [8, None, 1, 1, False, 1e-5, 1e-5],
+            [8, None, 1, 1, True, 1e-5, 1e-5],
+            [8, 8, 2, 3, False, 1e-5, 1e-6],
+            [8, 24, 2, 3, False, 1e-5, 1e-6],
+            [8, 24, 2, 3, True, 1e-5, 1e-6],
+            [8, 16, 1, 4, False, 1e-5, 1e-6, 9, None],
+            [8, 16, 1, 4, False, 1e-5, 1e-6, None, 5],
+            [8, 16, 1, 4, True, 1e-5, 1e-6, 9, 5],
+            [8, None, 2, 3, False, 1e-12, 1e-12, None, None, torch.float64],
+            [8, 24, 2, 3, True, 1e-12, 1e-12, None, None, torch.float64],
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_isht_healpix(self, nside, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
+        if self.grid_size_w > 1:
+            self.skipTest("HEALPix decomposes along latitude only")
+        self._check_distributed_isht(th.HealpixGrid(nside=nside), lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose)
 
-        lead = (B, C, 2) if vector else (B, C)
-        if inverse:
-            sht = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            inp_full = sht(torch.randn((*lead, grid.npoints), dtype=dtype, device=self.device)).detach()
-            split, gather_out, gather_inp = self._split_helper, self._gather_pixels, self._gather_helper_fwd
-        else:
-            inp_full = torch.randn((*lead, grid.npoints), dtype=dtype, device=self.device)
-            split, gather_out, gather_inp = lambda t: self._split_pixels(t, transform_dist), self._gather_helper_fwd, self._gather_pixels
-
-        inp_full.requires_grad = True
-        out_full = transform_local(inp_full)
-        with torch.no_grad():
-            ograd_full = torch.randn_like(out_full)
-        out_full.backward(ograd_full)
-        igrad_full = inp_full.grad.clone()
-
-        inp_local = split(inp_full.detach().clone())
-        inp_local.requires_grad = True
-        out_local = transform_dist(inp_local)
-        ograd_local = self._split_pixels(ograd_full, transform_dist) if inverse else self._split_helper(ograd_full)
-        out_local.backward(ograd_local)
-        igrad_local = inp_local.grad.clone()
-
-        verbose = verbose and self.world_rank == 0
-        ok = compare_tensors("output", gather_out(out_local, transform_dist), out_full, atol=1e-12, rtol=1e-12, verbose=verbose)
-        self.assertTrue(reduce_success(ok, self.device), "output")
-        ok = compare_tensors("gradients", gather_inp(igrad_local, transform_dist), igrad_full, atol=1e-12, rtol=1e-12, verbose=verbose)
-        self.assertTrue(reduce_success(ok, self.device), "gradients")
-
-    @parameterized.expand([[False, False], [True, False], [False, True], [True, True]], skip_on_empty=True)
-    def test_distributed_sht_healpix_double_backward(self, vector, inverse, verbose=False):
+    @parameterized.expand(
+        [
+            # nside, vector, inverse
+            [8, False, False],
+            [8, True, False],
+            [8, False, True],
+            [8, True, True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_sht_healpix_double_backward(self, nside, vector, inverse, verbose=False):
         """
-        The penalty gradient |dL/dx|^2 through the distributed (inverse) SHT on HEALPix, against the serial one.
+        The penalty gradient through the distributed (inverse) SHT on HEALPix, see test_distributed_sht_double_backward.
 
         The synthesis reduce-scatter splits the rings by pixel count, not evenly, and its adjoint
         is an all-gather whose own adjoint must scatter back by the same shapes.
         """
         if self.grid_size_w > 1:
             self.skipTest("HEALPix decomposes along latitude only")
-
-        set_seed(333)
-        B, C = 2, 3
-        dtype = torch.float64
-        grid = th.HealpixGrid(nside=8)
-        sht_local = (th.RealVectorSHT if vector else th.RealSHT)(grid).to(device=self.device, dtype=dtype)
-        lead = (B, C, 2) if vector else (B, C)
-        inp_full = torch.randn((*lead, grid.npoints), dtype=dtype, device=self.device)
-        if inverse:
-            inp_full = sht_local(inp_full).detach()
-            transform_local = (th.InverseRealVectorSHT if vector else th.InverseRealSHT)(grid).to(device=self.device, dtype=dtype)
-            transform_dist = (thd.DistributedInverseRealVectorSHT if vector else thd.DistributedInverseRealSHT)(grid).to(device=self.device, dtype=dtype)
-            inp_local, gather_inp = self._split_helper(inp_full), self._gather_helper_fwd
-        else:
-            transform_local = sht_local
-            transform_dist = (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid).to(device=self.device, dtype=dtype)
-            inp_local, gather_inp = self._split_pixels(inp_full, transform_dist), self._gather_pixels
-
-        def sq_norm(t):
-            return torch.sum(torch.view_as_real(t) ** 2) if t.is_complex() else torch.sum(t * t)
-
-        def cube(t):
-            return torch.sum(torch.view_as_real(t) ** 3) if t.is_complex() else torch.sum(t**3)
-
-        def penalty_grads(transform, x, reduce_fn):
-            (g,) = torch.autograd.grad(reduce_fn(cube(transform(x))), x, create_graph=True)
-            (h,) = torch.autograd.grad(reduce_fn(sq_norm(g)), x)
-            return g.detach(), h
-
-        g_full, h_full = penalty_grads(transform_local, inp_full.clone().requires_grad_(True), lambda t: t)
-        g_local, h_local = penalty_grads(transform_dist, inp_local.clone().requires_grad_(True), thd.reduce_from_polar_region)
-
-        verbose = verbose and self.world_rank == 0
-        ok = compare_tensors("gradients", gather_inp(g_local, transform_dist), g_full, atol=1e-12, rtol=1e-12, verbose=verbose)
-        self.assertTrue(reduce_success(ok, self.device), "gradients")
-        ok = compare_tensors("penalty grad", gather_inp(h_local, transform_dist), h_full, atol=1e-12, rtol=1e-12, verbose=verbose)
-        self.assertTrue(reduce_success(ok, self.device), "penalty grad")
+        self._check_distributed_sht_double_backward(th.HealpixGrid(nside=nside), vector, inverse, verbose)
 
     @parameterized.expand([[name] for name in ("DistributedRealSHT", "DistributedInverseRealSHT", "DistributedRealVectorSHT", "DistributedInverseRealVectorSHT")])
     def test_healpix_refuses_an_azimuthal_decomposition(self, cls_name):
