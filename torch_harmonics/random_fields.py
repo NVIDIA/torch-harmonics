@@ -31,9 +31,9 @@
 
 import torch
 
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import GridS2, _rejects_legacy_signature
 
-from .sht import InverseRealSHT
+from .sht import InverseRealSHT, _require_sht_grid
 
 
 class GaussianRandomFieldS2(torch.nn.Module):
@@ -59,10 +59,12 @@ class GaussianRandomFieldS2(torch.nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
-        Descriptor of the grid the field is sampled on. It carries both extents, so
+    grid : RegularGridS2 or HealpixGrid
+        Descriptor of the grid the field is sampled on. It carries the extents, so
         the longitudinal resolution is whatever the grid says rather than being
-        assumed to be twice the latitudinal one.
+        assumed to be twice the latitudinal one. On a
+        :class:`~torch_harmonics.healpix.HealpixGrid` the samples are flat,
+        ``(N, npix)``.
     alpha : float, optional
         Spectral exponent (smoothness).  Must be > 1 when ``sigma`` is not
         given.  Default ``2.0``.
@@ -87,18 +89,23 @@ class GaussianRandomFieldS2(torch.nn.Module):
     >>> samples = grf(4)          # 4 independent realisations
     >>> samples.shape
     torch.Size([4, 128, 256])
+
+    On a HEALPix grid the samples are flat:
+
+    >>> grf = GaussianRandomFieldS2(th.HealpixGrid(nside=16), alpha=2.5, tau=5.0)
+    >>> grf(4).shape
+    torch.Size([4, 3072])
     """
 
     @_rejects_legacy_signature(
         'nlat, alpha=2.0, tau=3.0, sigma=None, radius=1.0, grid="equiangular", dtype=torch.float32',
         grid=("nlat", None),
     )
-    def __init__(self, grid: RegularGridS2, alpha=2.0, tau=3.0, sigma=None, radius=1.0, dtype=torch.float32):
+    def __init__(self, grid: GridS2, alpha=2.0, tau=3.0, sigma=None, radius=1.0, dtype=torch.float32):
         super().__init__()
 
-        # both extents come from the descriptor; nlon is no longer assumed to be 2*nlat
-        self.grid = require_regular_grid(grid)
-        self.nlat, self.nlon = self.grid.shape
+        # the inverse SHT takes a regular grid or a HEALPix grid, and so does this
+        self.grid = _require_sht_grid(grid)
 
         # Default value of sigma if None is given.
         if sigma is None:
@@ -118,6 +125,10 @@ class GaussianRandomFieldS2(torch.nn.Module):
         sqrt_eig = torch.as_tensor([j * (j + 1) for j in range(lmax)], dtype=torch.float64).view(lmax, 1).repeat(1, mmax)
         sqrt_eig = torch.tril(sigma * (((sqrt_eig / radius**2) + tau**2) ** (-alpha / 2.0)))
         sqrt_eig[0, 0] = 0.0
+        # The real inverse SHT drops the imaginary part at m = 0, while a coefficient of order
+        # m > 0 also stands for its conjugate at -m. Unit-variance real and imaginary parts would
+        # give E|a_lm|^2 = C_l at m = 0 but 2 C_l at m > 0, so the field would not be isotropic.
+        sqrt_eig[:, 1:] /= 2.0**0.5
         sqrt_eig = sqrt_eig.to(dtype=dtype).unsqueeze(0)
         self.register_buffer("sqrt_eig", sqrt_eig)
 

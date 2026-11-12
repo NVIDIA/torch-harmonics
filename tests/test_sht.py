@@ -41,7 +41,7 @@ import numpy as np
 import torch
 from parameterized import parameterized, parameterized_class
 from scipy.special import gammaln, lpmv
-from testutils import compare_tensors, range_atol, requires_torch_compile, set_seed
+from testutils import compare_tensors, float64_buffers, move_as_to_mps, range_atol, requires_torch_compile, set_seed
 from torch.autograd import gradcheck
 
 import torch_harmonics as th
@@ -655,6 +655,37 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         the scalar test does not reach.
         """
         _check_compile(self, nlat, nlon, grid, lmax, dtype, vector=True, verbose=verbose)
+
+
+def _float64_sht_layers():
+    grid = th.as_grid("legendre-gauss", nlat=8, nlon=16)
+    return [
+        ["sht", lambda: th.RealSHT(grid), (2, *grid.shape), torch.float32],
+        ["inverse_sht", lambda: th.InverseRealSHT(grid, lmax=5, mmax=5), (2, 5, 5), torch.complex64],
+        ["vector_sht", lambda: th.RealVectorSHT(grid), (2, 2, *grid.shape), torch.float32],
+        ["inverse_vector_sht", lambda: th.InverseRealVectorSHT(grid, lmax=5, mmax=5), (2, 2, 5, 5), torch.complex64],
+    ]
+
+
+class TestSHTFloat64Weights(unittest.TestCase):
+    """The SHTs keep their weights in float64 and downcast them when moved to a device without float64, such as MPS."""
+
+    @parameterized.expand(_float64_sht_layers())
+    def test_downcast_on_the_move(self, name, build, shape, dtype):
+        layer = build()
+        self.assertTrue(float64_buffers(layer), msg=f"{name} keeps no float64 weights")
+        x = torch.randn(shape, dtype=dtype)
+        expected = layer(x)
+
+        layer = move_as_to_mps(layer)
+        self.assertFalse(float64_buffers(layer), msg=f"{name} kept a float64 buffer")
+        # the inputs are float32, which the weights were cast to at use anyway
+        self.assertTrue(compare_tensors("downcast weights", layer(x), expected, atol=0, rtol=0))
+
+    @parameterized.expand(_float64_sht_layers())
+    def test_other_moves_keep_float64(self, name, build, shape, dtype):
+        layer = build().to("cpu")
+        self.assertTrue(float64_buffers(layer), msg=f"{name} lost its float64 weights")
 
 
 @parameterized_class(("device"), _devices)

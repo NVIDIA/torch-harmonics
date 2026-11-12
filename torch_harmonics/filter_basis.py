@@ -30,6 +30,7 @@
 #
 
 import abc
+import functools
 import math
 import warnings
 from typing import Optional, Tuple, Union
@@ -56,12 +57,24 @@ def _circle_dist(x1: torch.Tensor, x2: torch.Tensor):
     return torch.minimum(torch.abs(x1 - x2), torch.abs(2 * math.pi - torch.abs(x1 - x2)))
 
 
-def _log_factorial(x: torch.Tensor):
-    return torch.lgamma(x + 1)
+# 170! is the largest factorial in float64; the last entry stands for everything out of range
+_FACTORIALS = torch.tensor([float(math.factorial(n)) for n in range(171)] + [math.inf], dtype=torch.float64, device="cpu")
 
 
-def _factorial(x: torch.Tensor):
-    return torch.exp(_log_factorial(x))
+@functools.lru_cache(maxsize=None)
+def _factorial_table(device: torch.device, dtype: torch.dtype):
+    # one copy per device and dtype: the table is read-only and the sum below asks for it often
+    return _FACTORIALS.to(device=device, dtype=dtype)
+
+
+def _factorial(x: torch.Tensor, dtype: torch.dtype):
+    # a table rather than exp(lgamma(x + 1)): lgamma promotes an integer tensor to float32, and
+    # even in float64 its rounding errors are amplified by the alternating Zernike sum.
+    # The arithmetic is at least float32: float16 overflows at 9!, which would turn 9! / 9! into inf / inf.
+    # Negative arguments are +inf, as they are for the gamma function
+    table = _factorial_table(x.device, torch.promote_types(dtype, torch.float32))
+    index = torch.where(x < 0, table.numel() - 1, x).clamp(max=table.numel() - 1)
+    return table[index]
 
 
 class FilterBasis(metaclass=abc.ABCMeta):
@@ -469,20 +482,38 @@ class ZernikeFilterBasis(FilterBasis):
     def zernikeradial(self, r: torch.Tensor, n: torch.Tensor, m: torch.Tensor):
 
         out = torch.zeros_like(r)
-        bound = (n - m) // 2 + 1
-        max_bound = bound.max().item()
+        if r.numel() == 0:
+            return out
 
-        for k in range(max_bound):
+        # R_n^m depends on the (n, m) pair only, and a basis has just kernel_size of them. So the
+        # coefficients are computed once per distinct pair and gathered per point; computing the
+        # factorials for every point made them the bulk of the DISCO filter setup
+        # n and m may be a single pair for all of r, so broadcast them to its shape first
+        n, m = n.expand(r.shape), m.expand(r.shape)
+        stride = int(m.max().item()) + 1
+        pairs, inverse = torch.unique((n * stride + m).reshape(-1), return_inverse=True)
+        pair_n, pair_m = pairs // stride, pairs % stride
+        bound = (pair_n - pair_m) // 2 + 1
+        inverse = inverse.reshape(r.shape)
 
-            inc = (-1) ** k * _factorial(n - k) * r ** (n - 2 * k) / (math.factorial(k) * _factorial((n + m) // 2 - k) * _factorial((n - m) // 2 - k))
-            out += torch.where(k < bound, inc, 0.0)
+        for k in range(int(bound.max().item())):
+
+            coefficient = (
+                (-1) ** k
+                * _factorial(pair_n - k, r.dtype)
+                / (math.factorial(k) * _factorial((pair_n + pair_m) // 2 - k, r.dtype) * _factorial((pair_n - pair_m) // 2 - k, r.dtype))
+            )
+            inc = coefficient[inverse] * r ** (n - 2 * k)
+            out += torch.where((k < bound)[inverse], inc, 0.0)
 
         return out
 
     def zernikepoly(self, r: torch.Tensor, phi: torch.Tensor, n: torch.Tensor, l: torch.Tensor):
 
         m = 2 * l - n
-        return torch.where(m < 0, self.zernikeradial(r, n, -m) * torch.sin(m * phi), self.zernikeradial(r, n, m) * torch.cos(m * phi))
+        # the radial part depends on |m| only, so a single evaluation serves both branches
+        radial = self.zernikeradial(r, n, m.abs())
+        return torch.where(m < 0, radial * torch.sin(m * phi), radial * torch.cos(m * phi))
 
     def compute_support_vals(self, r: torch.Tensor, phi: torch.Tensor, r_cutoff: float, width: float = 0.25):
 

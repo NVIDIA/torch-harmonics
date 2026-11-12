@@ -38,7 +38,7 @@ import torch.nn as nn
 from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.radial import split_radial_pair
-from torch_harmonics.truncation import truncate_sht
+from torch_harmonics.truncation import _truncate_spectral_conv
 from torch_harmonics.utils import compile_if_supported
 
 from .distributed_quadrature import DistributedQuadratureS2
@@ -105,6 +105,13 @@ class DistributedSpectralConvS2(nn.Module):
         If ``True``, adds a learnable spectral bias computed from the spatial
         integral (replicated across process groups as needed), by default
         ``False``.
+    lmax : int, optional
+        Maximum spherical harmonic degree (non-inclusive) of the spectral support.
+    mmax : int, optional
+        Maximum azimuthal order (non-inclusive) of the spectral support.
+    lmmax : int, optional
+        Maximum degree-minus-order bandwidth (non-inclusive): only modes with
+        ``l - m < lmmax`` are retained. ``None`` leaves it unrestricted.
 
     Raises
     ------
@@ -119,8 +126,10 @@ class DistributedSpectralConvS2(nn.Module):
 
     Notes
     -----
-    The layer truncates ``lmax``/``mmax`` to the distributed SHT limits, and
-    stores only this rank's local ``lmax`` slice of the spectral weights.
+    ``lmax``, ``mmax`` and ``lmmax`` resolve exactly as in
+    :class:`~torch_harmonics.SpectralConvS2`, so a serial and a distributed layer
+    built with the same arguments share their spectral support. The layer stores
+    only this rank's local ``lmax`` slice of the spectral weights.
     """
 
     @_rejects_legacy_signature(
@@ -136,6 +145,9 @@ class DistributedSpectralConvS2(nn.Module):
         out_channels: int,
         num_groups: Optional[int] = 1,
         bias: Optional[bool] = False,
+        lmax: Optional[int] = None,
+        mmax: Optional[int] = None,
+        lmmax: Optional[int] = None,
     ):
         super().__init__()
 
@@ -161,19 +173,13 @@ class DistributedSpectralConvS2(nn.Module):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # compute truncation
-        trunc_in = truncate_sht(self.grid_in)
-        trunc_out = truncate_sht(self.grid_out)
-
-        # compute lmax and lmin
-        lmax = min(trunc_in.lmax, trunc_out.lmax)
-        mmax = min(trunc_in.mmax, trunc_out.mmax)
-        self.lmax = min(lmax, mmax)
-        self.mmax = self.lmax
+        # resolve the spectral support shared by the forward and inverse SHT
+        trunc = _truncate_spectral_conv(self.grid_in, self.grid_out, lmax, mmax, lmmax)
+        self.lmax, self.mmax, self.lmmax = trunc.lmax, trunc.mmax, trunc.lmmax
 
         # set up sht layers
-        self.sht = DistributedRealSHT(self.grid_in, lmax=self.lmax, mmax=self.mmax)
-        self.isht = DistributedInverseRealSHT(self.grid_out, lmax=self.lmax, mmax=self.mmax)
+        self.sht = DistributedRealSHT(self.grid_in, lmax=self.lmax, mmax=self.mmax, lmmax=self.lmmax)
+        self.isht = DistributedInverseRealSHT(self.grid_out, lmax=self.lmax, mmax=self.mmax, lmmax=self.lmmax)
 
         # extract sht parameters
         self.l_shapes = self.isht.l_shapes
@@ -186,8 +192,10 @@ class DistributedSpectralConvS2(nn.Module):
 
         # Compute scaling factor for correct initialization
         scale = math.sqrt(1.0 / (in_channels // num_groups)) * torch.ones(self.lmax_local, dtype=torch.complex64)
-        # seemingly the first weight is not really complex, so we need to account for that
-        scale[0] *= math.sqrt(2.0)
+        # seemingly the first weight is not really complex, so we need to account for that.
+        # That is degree 0, which only the first polar rank holds
+        if self.comm_rank_polar == 0:
+            scale[0] *= math.sqrt(2.0)
         self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
 
         if bias:
@@ -196,7 +204,7 @@ class DistributedSpectralConvS2(nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, num_groups={self.num_groups}"
+        return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.in_channels}, out_channels={self.out_channels}, lmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, num_groups={self.num_groups}"
 
     @compile_if_supported
     def _contract_lwise(self, ac: torch.Tensor, bc: torch.Tensor) -> torch.Tensor:

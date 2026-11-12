@@ -29,7 +29,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized
@@ -86,6 +88,19 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         )
 
         return tensor_gather
+
+    def test_weight_initialization_matches_serial(self):
+        """Degree 0 is initialized differently from the others, and only the first polar rank holds it."""
+        grid = th.as_grid("legendre-gauss", nlat=32, nlon=64)
+        channels = 16
+        # with ones for the random numbers the weights are the scale factors themselves
+        with mock.patch("torch.randn", side_effect=lambda *args, **kwargs: torch.ones(*args, **kwargs)):
+            conv_local = th.SpectralConvS2(grid, grid, in_channels=channels, out_channels=channels)
+            conv_dist = thd.DistributedSpectralConvS2(grid, grid, in_channels=channels, out_channels=channels)
+        expected = split_tensor_dim(conv_local.weight.detach(), dim=-1, dimsize=self.grid_size_h, dimrank=self.hrank)
+        self.assertEqual(conv_dist.weight.shape, expected.shape)
+        self.assertTrue(torch.equal(conv_dist.weight.detach(), expected))
+        self.assertAlmostEqual(conv_local.weight[0, 0, 0, 0].abs().item(), math.sqrt(2.0 / channels), places=6)
 
     @parameterized.expand(
         [
@@ -190,3 +205,70 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         )
         ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
+
+    @parameterized.expand(
+        [
+            # in_shape, out_shape, grid_in, grid_out, lmax, mmax, lmmax, bias
+            [(64, 128), (64, 128), "legendre-gauss", "legendre-gauss", 40, None, None, False],  # triangular, only lmax
+            [(64, 128), (64, 128), "legendre-gauss", "legendre-gauss", 48, 20, None, True],  # rectangular
+            [(64, 128), (64, 128), "legendre-gauss", "legendre-gauss", 48, 20, 20, True],  # rhomboidal
+            [(65, 128), (33, 64), "equiangular", "equiangular", 17, 9, 5, True],  # downsampling, odd bounds
+            [(33, 64), (64, 128), "equiangular", "legendre-gauss", None, None, 7, False],  # default bounds + lmmax
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_spectral_conv_truncation(self, in_shape, out_shape, grid_in, grid_out, lmax, mmax, lmmax, bias, verbose=True):
+        """Serial and distributed layers built with the same (lmax, mmax, lmmax) agree."""
+
+        set_seed(333)
+
+        B, C, num_groups = 2, 4, 2
+        gin = th.as_grid(grid_in, nlat=in_shape[0], nlon=in_shape[1])
+        gout = th.as_grid(grid_out, nlat=out_shape[0], nlon=out_shape[1])
+        trunc = dict(lmax=lmax, mmax=mmax, lmmax=lmmax)
+
+        conv_local = th.SpectralConvS2(gin, gout, in_channels=C, out_channels=C, num_groups=num_groups, bias=bias, **trunc).to(self.device)
+        # a nonzero bias so its support is exercised too. Drawn before the distributed layer is
+        # built: that draws only the local l slice of its weight, so with an uneven l split the
+        # ranks leave the generator in different states, and a bias drawn afterwards would differ
+        if bias:
+            with torch.no_grad():
+                conv_local.spectral_bias.copy_(torch.randn_like(conv_local.spectral_bias))
+        conv_dist = thd.DistributedSpectralConvS2(gin, gout, in_channels=C, out_channels=C, num_groups=num_groups, bias=bias, **trunc).to(self.device)
+
+        self.assertEqual((conv_dist.lmax, conv_dist.mmax, conv_dist.lmmax), (conv_local.lmax, conv_local.mmax, conv_local.lmmax))
+        self.assertEqual(conv_dist.sht.grid_out, conv_local.sht.grid_out)
+
+        # copy weights: split along l
+        with torch.no_grad():
+            weight_split = split_tensor_dim(conv_local.weight.clone(), dim=-1, dimsize=self.grid_size_h, dimrank=self.hrank)
+            conv_dist.weight.copy_(weight_split)
+            if bias:
+                bias_split = split_tensor_hw(conv_local.spectral_bias.clone(), hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
+                conv_dist.spectral_bias.copy_(bias_split)
+
+        # reseed: the ranks drew different amounts of random numbers above, see test_distributed_spectral_conv
+        set_seed(333)
+        inp_full = torch.randn((B, C, in_shape[0], in_shape[1]), dtype=torch.float32, device=self.device)
+
+        inp_full.requires_grad = True
+        out_full = conv_local(inp_full)
+        ograd_full = torch.randn_like(out_full)
+        out_full.backward(ograd_full)
+        igrad_full = inp_full.grad.clone()
+
+        inp_local = self._split_helper(inp_full.detach().clone())
+        inp_local.requires_grad = True
+        out_local = conv_dist(inp_local)
+        out_local.backward(self._split_helper(ograd_full))
+        igrad_local = inp_local.grad.clone()
+
+        verbose = verbose and self.world_rank == 0
+
+        out_gather_full = self._gather_helper(out_local, conv_dist.isht.lat_shapes, conv_dist.isht.lon_shapes)
+        ok = compare_tensors("output", out_gather_full, out_full, atol=1e-6, rtol=1e-6, verbose=verbose, ulps=8)
+        self.assertTrue(reduce_success(ok, self.device), "output")
+
+        igrad_gather_full = self._gather_helper(igrad_local, conv_dist.sht.lat_shapes, conv_dist.sht.lon_shapes)
+        ok = compare_tensors("input gradients", igrad_gather_full, igrad_full, atol=1e-6, rtol=1e-6, verbose=verbose, ulps=8)
+        self.assertTrue(reduce_success(ok, self.device), "input gradients")

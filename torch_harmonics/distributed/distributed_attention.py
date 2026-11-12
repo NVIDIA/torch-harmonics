@@ -135,6 +135,15 @@ def _stat_per_head(stat: torch.Tensor) -> torch.Tensor:
     return stat.permute(0, 2, 3, 1).unsqueeze(-1)
 
 
+def _refuse_double_backward():
+    """Raise under ``create_graph=True``: the ring backward runs attention kernels that autograd cannot differentiate."""
+    if torch.is_grad_enabled() and not torch.compiler.is_compiling():
+        raise RuntimeError(
+            "DistributedNeighborhoodAttentionS2 does not support double backward (create_graph=True): its backward runs the ring attention kernels, "
+            "whose own gradients autograd cannot compute."
+        )
+
+
 class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     """Forward ring attention + backward ring, gather (self / downsample) direction.
 
@@ -278,6 +287,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
+        _refuse_double_backward()
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
         kw, vw, qw, psi_seg, psi_seg_off, ring_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 
@@ -649,6 +659,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
+        _refuse_double_backward()
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
         kw, vw, qw, psi_seg, psi_seg_off, ring_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
 

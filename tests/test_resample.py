@@ -31,13 +31,15 @@
 
 import math
 import unittest
+from unittest import mock
 
 import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, set_seed
 
-from torch_harmonics import ResampleS2, as_grid
+from torch_harmonics import HealpixGrid, ResampleS2, as_grid
 from torch_harmonics.quadrature import precompute_latitudes, precompute_longitudes
+from torch_harmonics.resample import _ring_taps
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -100,15 +102,19 @@ class TestResampleS2(unittest.TestCase):
         [
             # Only grid pairs where output latitudes lie strictly within the input latitude range
             # (expand_poles=False), so that bilinear interpolation is exact for linear-in-θ functions.
-            [32, 64, 16, 32, "equiangular", "equiangular", 1e-5, 1e-5],
-            [32, 64, 16, 32, "equiangular", "legendre-gauss", 1e-5, 1e-5],
-            [32, 64, 16, 32, "legendre-gauss", "equiangular", 1e-5, 1e-5],
-            [32, 64, 16, 32, "legendre-gauss", "legendre-gauss", 1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto", "equiangular", 1e-5, 1e-5],
-            [32, 64, 16, 32, "lobatto", "legendre-gauss", 1e-5, 1e-5],
+            # The weights are float64 and cast at use, so float64 data is exact to rounding.
+            [32, 64, 16, 32, "equiangular", "equiangular", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "equiangular", "legendre-gauss", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "legendre-gauss", "equiangular", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "legendre-gauss", "legendre-gauss", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "equiangular", torch.float32, 1e-5, 1e-5],
+            [32, 64, 16, 32, "lobatto", "legendre-gauss", torch.float32, 1e-5, 1e-5],
+            [33, 64, 48, 96, "equiangular", "legendre-gauss", torch.float64, 1e-13, 1e-13],
+            [32, 64, 65, 128, "legendre-gauss", "equiangular", torch.float64, 1e-13, 1e-13],
+            [32, 64, 16, 32, "lobatto", "legendre-gauss", torch.float64, 1e-13, 1e-13],
         ]
     )
-    def test_linear_latitude_exactness(self, nlat_in, nlon_in, nlat_out, nlon_out, grid_in, grid_out, atol, rtol, verbose=False):
+    def test_linear_latitude_exactness(self, nlat_in, nlon_in, nlat_out, nlon_out, grid_in, grid_out, dtype, atol, rtol, verbose=False):
         """Bilinear interpolation is exact for f(θ,φ)=θ (linear in latitude)."""
         set_seed(333)
 
@@ -122,20 +128,39 @@ class TestResampleS2(unittest.TestCase):
         colats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
 
         # f(θ, φ) = θ — constant across longitude, linear in latitude
-        data = colats_in.float().to(self.device).unsqueeze(-1).expand(nlat_in, nlon_in).contiguous()
+        data = colats_in.to(dtype).to(self.device).unsqueeze(-1).expand(nlat_in, nlon_in).contiguous()
         data = data.unsqueeze(0).unsqueeze(0)  # (1, 1, nlat_in, nlon_in)
 
         out = resample(data)
 
-        expected = colats_out.float().to(self.device).unsqueeze(-1).expand(nlat_out, nlon_out).contiguous()
+        expected = colats_out.to(dtype).to(self.device).unsqueeze(-1).expand(nlat_out, nlon_out).contiguous()
         expected = expected.unsqueeze(0).unsqueeze(0)  # (1, 1, nlat_out, nlon_out)
 
-        # the pole value would differ if this is true
-        if resample.expand_poles:
-            out = out[..., 1:-1, :]
-            expected = expected[..., 1:-1, :]
+        # rings beyond the input range are extrapolated towards the pole values, which is not linear
+        rings = ((colats_out >= colats_in[0]) & (colats_out <= colats_in[-1])).to(self.device)
+        out = out[..., rings, :]
+        expected = expected[..., rings, :]
 
         self.assertTrue(compare_tensors("linear-in-theta", out, expected, atol=atol, rtol=rtol, verbose=verbose))
+
+    def test_float64_weights_follow_moves(self):
+        """The weights are float64 and cast at use; only a device without float64, such as MPS, downcasts them."""
+        grid_in, grid_out = as_grid("equiangular", nlat=9, nlon=16), as_grid("legendre-gauss", nlat=8, nlon=16)
+        resample = ResampleS2(grid_in, grid_out).to(self.device)
+        self.assertEqual((resample.lat_weights.dtype, resample.lon_weights.dtype), (torch.float64, torch.float64))
+
+        # the reference and the downcast result both come from the CPU, so the exact comparison
+        # sees only the downcast and not a difference between devices
+        resample = resample.to("cpu")
+        x = torch.randn(2, *grid_in.shape)
+        expected = resample(x)
+
+        # pretend the CPU is such a device, so the move takes the MPS path here
+        with mock.patch("torch_harmonics.utils._NO_FLOAT64_DEVICE_TYPES", frozenset({"cpu"})):
+            resample = resample.to("cpu")
+        self.assertEqual((resample.lat_weights.dtype, resample.lon_weights.dtype), (torch.float32, torch.float32))
+        # float32 data was interpolated with the weights cast to float32 anyway
+        self.assertTrue(compare_tensors("downcast weights", resample(x), expected, atol=0, rtol=0))
 
     @parameterized.expand(
         [
@@ -377,3 +402,76 @@ class TestResampleS2(unittest.TestCase):
         a, b = 2.5, -1.75
         x1, x2 = torch.randn(*shape_in, **kw), torch.randn(*shape_in, **kw)
         self.assertTrue(compare_tensors("superposition", resample(a * x1 + b * x2), a * resample(x1) + b * resample(x2), atol=1e-12, rtol=1e-12))
+
+    # -----------------------------------------------------------------------
+    # Point-by-point interpolation, for grids without a dense (nlat, nlon) layout
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _smooth_field(grid):
+        """A smooth field on any grid, flat over its points and reshaped to ``grid.shape``."""
+        theta, lam = grid.coords.to(torch.float64).unbind(-1)
+        field = torch.cos(theta) + 0.5 * torch.sin(theta) ** 2 * torch.cos(2 * lam) + 0.3 * torch.sin(theta) * torch.cos(lam)
+        return field.reshape(grid.shape)
+
+    @parameterized.expand(
+        [
+            ["bilinear", "equiangular", (32, 64), "equiangular", (64, 128)],
+            ["bilinear", "legendre-gauss", (16, 32), "equiangular", (33, 66)],
+            ["bilinear", "lobatto", (17, 34), "fejer1", (20, 41)],
+            ["bilinear-spherical", "equiangular", (32, 64), "equiangular", (64, 128)],
+            ["bilinear-spherical", "lobatto", (17, 34), "fejer1", (20, 41)],
+        ]
+    )
+    def test_point_by_point_matches_separable_path(self, mode, grid_in, shape_in, grid_out, shape_out):
+        """The taps of a ragged pair, applied to a dense pair, reproduce the separable interpolation.
+
+        This validates the indices, weights and pole handling of the point-by-point path against the
+        reference on grids where both apply. For the spherical mode the field is small, so that
+        no shortest arc wraps and the order of the two interpolations cannot matter.
+        """
+        set_seed(555)
+        grid_in, grid_out = as_grid(grid_in, nlat=shape_in[0], nlon=shape_in[1]), as_grid(grid_out, nlat=shape_out[0], nlon=shape_out[1])
+        reference = ResampleS2(grid_in, grid_out, mode=mode).to(self.device)
+        taps = ResampleS2(grid_in, grid_out, mode=mode).to(self.device)
+        # force the point-by-point path
+        taps.separable = False
+        for name, value in zip(("taps", "tap_lon_weights", "tap_lat_weights"), _ring_taps(grid_in, grid_out, taps.expand_poles)):
+            taps.register_buffer(name, value.to(self.device), persistent=False)
+
+        x = 0.2 * torch.randn(2, 3, *shape_in, dtype=torch.float64, device=self.device)
+        self.assertTrue(compare_tensors("point by point vs separable", taps(x), reference(x), atol=1e-12, rtol=1e-12))
+
+    @parameterized.expand([["bilinear"], ["bilinear-spherical"]])
+    def test_healpix_preserves_constants_and_gradients(self, mode):
+        grids = [HealpixGrid(nside=8), as_grid("equiangular", nlat=33, nlon=66), HealpixGrid(nside=16)]
+        for grid_in, grid_out in [(grids[0], grids[1]), (grids[1], grids[0]), (grids[0], grids[2])]:
+            resample = ResampleS2(grid_in, grid_out, mode=mode).to(self.device)
+            x = torch.full((2, 3, *grid_in.shape), 0.7, device=self.device, requires_grad=True)
+            y = resample(x)
+            self.assertEqual(y.shape, (2, 3, *grid_out.shape))
+            self.assertTrue(compare_tensors("constant field", y, torch.full_like(y, 0.7), atol=1e-6, rtol=1e-6))
+            y.square().sum().backward()
+            self.assertEqual(x.grad.shape, x.shape)
+            self.assertTrue(bool(torch.isfinite(x.grad).all()))
+
+            # an empty batch gives an empty field on the output grid
+            self.assertEqual(resample(x.detach()[:0]).shape, (0, 3, *grid_out.shape))
+
+    @parameterized.expand(
+        [
+            # grid_in(nside), grid_out(nside), error bound at nside 16
+            ["healpix to equiangular", lambda n: HealpixGrid(nside=n), lambda n: as_grid("equiangular", nlat=64, nlon=128), 0.008],
+            ["equiangular to healpix", lambda n: as_grid("equiangular", nlat=4 * n, nlon=8 * n), lambda n: HealpixGrid(nside=n), 0.001],
+            ["healpix to finer healpix", lambda n: HealpixGrid(nside=n), lambda n: HealpixGrid(nside=2 * n), 0.006],
+        ]
+    )
+    def test_healpix_interpolates_smooth_fields_at_second_order(self, _, make_in, make_out, bound):
+        """The error on a smooth field is small, and falls by about a factor 4 as the input is refined."""
+        errors = []
+        for nside in (8, 16):
+            grid_in, grid_out = make_in(nside), make_out(nside)
+            y = ResampleS2(grid_in, grid_out).to(self.device)(self._smooth_field(grid_in).to(self.device))
+            errors.append((y - self._smooth_field(grid_out).to(self.device)).abs().max().item())
+
+        self.assertLess(errors[1], bound)
+        self.assertLess(errors[1] / errors[0], 0.55)

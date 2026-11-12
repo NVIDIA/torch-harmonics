@@ -40,7 +40,7 @@ import torch
 from parameterized import parameterized, parameterized_class
 from testutils import compare_tensors, requires_torch_compile, set_seed
 
-from torch_harmonics import as_grid
+from torch_harmonics import HealpixGrid, as_grid
 from torch_harmonics.spectral_convolution import SpectralConvS2
 from torch_harmonics.utils import compile_if_supported, torch_compile_supported
 
@@ -48,6 +48,12 @@ from torch_harmonics.utils import compile_if_supported, torch_compile_supported
 # contracts over channels and spectral modes in float32, and the checks below only
 # reassociate that contraction (measured: up to 2).
 _CONTRACTION_ULPS = 16
+
+
+def _test_grid(name):
+    """A grid of the tests above: HEALPix, or a regular grid with nlon a multiple of 4."""
+    return HealpixGrid(nside=8) if name == "healpix" else as_grid(name, nlat=32, nlon=64)
+
 
 _devices = [(torch.device("cpu"),)]
 if torch.cuda.is_available():
@@ -115,6 +121,88 @@ class TestSpectralConvS2(unittest.TestCase):
                 verbose=verbose,
             )
         )
+
+    # -----------------------------------------------------------------------
+    # HEALPix: quarter-turn equivariance
+    #
+    # A HEALPix grid is invariant under a quarter turn about the polar axis: every ring
+    # of n_r pixels maps onto itself, shifted by n_r / 4. The SHT of such a ring turns
+    # the shift into the phase exp(-i m pi / 2) for the order m it was sampled at, and for
+    # the order it aliases onto, since n_r is a multiple of 4. The weights do not depend
+    # on m, so the layer commutes with the turn, on a HEALPix grid on either side or both.
+    # A regular grid is invariant too whenever nlon is a multiple of 4. (A spectral bias is
+    # not covered: it depends on m.)
+    # -----------------------------------------------------------------------
+    @parameterized.expand(
+        [
+            # grid_in, grid_out
+            ["healpix", "healpix"],
+            ["equiangular", "healpix"],
+            ["healpix", "equiangular"],
+            ["legendre-gauss", "healpix"],
+            ["healpix", "legendre-gauss"],
+            ["lobatto", "healpix"],
+            ["healpix", "lobatto"],
+            ["equiangular", "lobatto"],
+        ],
+        skip_on_empty=True,
+    )
+    def test_healpix_quarter_turn_equivariance(self, grid_in, grid_out, verbose=False):
+        """Conv(Turn(x)) == Turn(Conv(x)) for a quarter turn about the polar axis."""
+
+        set_seed(333)
+
+        grid_in, grid_out = _test_grid(grid_in), _test_grid(grid_out)
+
+        def turn(x, grid):
+            if isinstance(grid, HealpixGrid):
+                rings = x.split(grid.nlon_per_lat.tolist(), dim=-1)
+                return torch.cat([torch.roll(r, r.shape[-1] // 4, dims=-1) for r in rings], dim=-1)
+            return torch.roll(x, grid.nlon // 4, dims=-1)
+
+        conv = SpectralConvS2(grid_in, grid_out, in_channels=4, out_channels=6, num_groups=2).to(self.device)
+        conv.eval()
+
+        x = torch.randn(2, 4, *grid_in.shape, device=self.device)
+
+        with torch.no_grad():
+            y_of_turned = conv(turn(x, grid_in))
+            turn_of_y = turn(conv(x), grid_out)
+
+        self.assertTrue(
+            compare_tensors(
+                "healpix quarter-turn equivariance",
+                y_of_turned,
+                turn_of_y,
+                atol=0.0,
+                rtol=0.0,
+                ulps=_CONTRACTION_ULPS,
+                verbose=verbose,
+            )
+        )
+
+    # -----------------------------------------------------------------------
+    # Identity weights reduce the layer to its transforms
+    # -----------------------------------------------------------------------
+    @parameterized.expand([["healpix"], ["equiangular"], ["legendre-gauss"], ["lobatto"]], skip_on_empty=True)
+    def test_identity_weights_reduce_to_sht_roundtrip(self, grid, verbose=False):
+        """With the identity as weights the layer is synthesis after analysis."""
+
+        set_seed(333)
+
+        grid = _test_grid(grid)
+        conv = SpectralConvS2(grid, grid, in_channels=3, out_channels=3).to(self.device)
+        conv.eval()
+        with torch.no_grad():
+            conv.weight.copy_(torch.eye(3, dtype=conv.weight.dtype, device=self.device).reshape(1, 3, 3, 1).expand_as(conv.weight))
+
+        x = torch.randn(2, 3, *grid.shape, device=self.device)
+
+        with torch.no_grad():
+            y = conv(x)
+            expected = conv.isht(conv.sht(x))
+
+        self.assertTrue(compare_tensors("identity weights", y, expected, atol=0.0, rtol=0.0, ulps=_CONTRACTION_ULPS, verbose=verbose))
 
     # -----------------------------------------------------------------------
     # Test 4: Grouped convolution consistency
@@ -317,6 +405,110 @@ class TestSpectralConvS2(unittest.TestCase):
                 verbose=verbose,
             )
         )
+
+    # -----------------------------------------------------------------------
+    # Test 8b: Spectral truncation (lmax, mmax, lmmax)
+    #
+    # The layer must act as the masked spectral operator
+    #   v_hat[l, m] = mask[l, m] * sum_i K[l] (u_hat[l, m] + I * b[l, m])
+    # with mask[l, m] = (m < mmax) & (m <= l < lmax) & (l - m < lmmax). The reference
+    # does not use the layer's truncated transforms: it analyses with an SHT at a full
+    # bound lfull >= lmax, applies the mask and the zero-padded weight by hand, and
+    # synthesises with the full inverse SHT, all in float64. Agreement in space also
+    # pins the output spectrum to the mask, which is checked explicitly on the
+    # exact (Gauss) output grid.
+    # -----------------------------------------------------------------------
+    @parameterized.expand(
+        [
+            # grid_in, grid_out, lfull, lmax, mmax, lmmax, bias
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, 20, None, None, False],  # triangular, only lmax
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, None, 12, None, False],  # triangular, only mmax
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, 24, 12, None, False],  # rectangular
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, 24, 12, 12, True],  # rhomboidal
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, 32, 16, 10, True],  # lmmax clipped by lmax
+            [("legendre-gauss", 32, 64), ("legendre-gauss", 32, 64), 32, None, None, 8, True],  # default bounds + lmmax
+            [("equiangular", 33, 64), ("legendre-gauss", 24, 48), 17, 16, 8, 6, True],  # different grids
+            [("legendre-gauss", 24, 48), ("equiangular", 41, 80), 24, 24, 10, None, False],  # upsampling
+        ],
+        skip_on_empty=True,
+    )
+    def test_spectral_truncation(self, grid_in, grid_out, lfull, lmax, mmax, lmmax, bias, verbose=False):
+        """The truncated layer equals the full transforms with the (lmax, mmax, lmmax) mask applied by hand."""
+        from torch_harmonics import InverseRealSHT, RealSHT
+        from torch_harmonics.integration import QuadratureS2
+
+        set_seed(333)
+
+        in_channels, out_channels, num_groups = 4, 6, 2
+        gin = as_grid(grid_in[0], nlat=grid_in[1], nlon=grid_in[2])
+        gout = as_grid(grid_out[0], nlat=grid_out[1], nlon=grid_out[2])
+
+        conv = SpectralConvS2(gin, gout, in_channels, out_channels, num_groups=num_groups, bias=bias, lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device)
+        conv.eval()
+
+        # resolved bounds: an omitted bound follows the other one, both omitted is the triangular default
+        exp_lmax = lmax if lmax is not None else (mmax if mmax is not None else lfull)
+        exp_mmax = mmax if mmax is not None else exp_lmax
+        self.assertEqual((conv.lmax, conv.mmax, conv.lmmax), (exp_lmax, exp_mmax, lmmax))
+        self.assertEqual(conv.sht.grid_out, conv.isht.grid_in)
+        self.assertEqual(conv.weight.shape[-1], exp_lmax)
+
+        if bias:
+            with torch.no_grad():
+                conv.spectral_bias.copy_(torch.randn_like(conv.spectral_bias))
+
+        # mask over the full (lfull, lfull) coefficient array
+        l = torch.arange(lfull, device=self.device).reshape(-1, 1)
+        m = torch.arange(lfull, device=self.device).reshape(1, -1)
+        mask = (m < exp_mmax) & (m <= l) & (l < exp_lmax)
+        if lmmax is not None:
+            mask = mask & (l - m < lmmax)
+
+        x = torch.randn(2, in_channels, *gin.shape, device=self.device)
+        with torch.no_grad():
+            y = conv(x)
+
+            # float64 reference from the untruncated transforms
+            sht_full = RealSHT(gin, lmax=lfull, mmax=lfull).to(self.device).double()
+            isht_full = InverseRealSHT(gout, lmax=lfull, mmax=lfull).to(self.device).double()
+            xd = x.double()
+            u = sht_full(xd)
+            if bias:
+                integral = QuadratureS2(gin, normalize=False).to(self.device).double()(xd)
+                b = torch.zeros(1, in_channels, lfull, lfull, dtype=torch.complex128, device=self.device)
+                b[..., :exp_lmax, :exp_mmax] = conv.spectral_bias.to(torch.complex128)
+                u = u + integral.reshape(*integral.shape, 1, 1) * b
+            u = u * mask
+            w = torch.zeros(*conv.weight.shape[:-1], lfull, dtype=torch.complex128, device=self.device)
+            w[..., :exp_lmax] = conv.weight.to(torch.complex128)
+            u = u.reshape(u.shape[0], num_groups, in_channels // num_groups, lfull, lfull)
+            v = torch.einsum("bgilm,giol->bgolm", u, w).reshape(u.shape[0], out_channels, lfull, lfull)
+            y_ref = isht_full(v)
+
+        self.assertTrue(compare_tensors("truncated spectral conv output", y, y_ref.float(), atol=1e-5, rtol=0.0, ulps=64, verbose=verbose))
+
+        # the output spectrum lives on the mask. Only checkable where analysis is exact on the output grid
+        if gout.grid_type == "legendre-gauss":
+            with torch.no_grad():
+                spec = RealSHT(gout, lmax=lfull, mmax=lfull).to(self.device).double()(y.double())
+            outside = spec.abs() * (~mask)
+            self.assertTrue(compare_tensors("output spectrum outside the support", outside, torch.zeros_like(outside), atol=1e-5, rtol=0.0, verbose=verbose))
+
+    @parameterized.expand(
+        [
+            # grid, nlat, nlon, lmax, mmax, lmmax
+            ["legendre-gauss", 32, 64, 40, None, None],  # lmax alone sets mmax above max_azimuthal_order
+            ["legendre-gauss", 32, 64, 16, 20, None],  # mmax > lmax
+            ["legendre-gauss", 32, 64, 16, 8, 0],  # lmmax must be positive
+            ["legendre-gauss", 32, 64, 0, None, None],  # no degrees
+            ["legendre-gauss", 32, 64, 16, 0, None],  # no orders
+        ],
+        skip_on_empty=True,
+    )
+    def test_spectral_truncation_rejects_invalid_bounds(self, grid, nlat, nlon, lmax, mmax, lmmax):
+        g = as_grid(grid, nlat=nlat, nlon=nlon)
+        with self.assertRaises(ValueError):
+            SpectralConvS2(g, g, 2, 2, lmax=lmax, mmax=mmax, lmmax=lmmax)
 
     # -----------------------------------------------------------------------
     # Test 9: Spectral bias

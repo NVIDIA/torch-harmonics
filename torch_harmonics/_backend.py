@@ -77,6 +77,21 @@ def _kernel_device_types(op_name: str) -> frozenset:
         return frozenset()
 
 
+def _reference_state_dtype(layer) -> torch.dtype:
+    """
+    The dtype a torch reference backend builds its floating state in: float64 for a float64
+    layer, float32 otherwise.
+
+    The layer's parameters already bound the precision of its output, so state in float64
+    would buy a float32 layer nothing, and cost memory and a cast on every forward. A float64
+    layer computes in float64, and state rounded to float32 would cap it at float32 accuracy.
+    No float64 layer exists on a device without float64 (MPS), so no float64 state is built
+    there. :meth:`BackendSelectionMixin._apply` prepares the backend again when the layer's
+    ``dtype`` changes, so ``.double()`` and ``.float()`` rebuild the state to match.
+    """
+    return torch.float64 if layer.dtype == torch.float64 else torch.float32
+
+
 class BackendS2:
     """
     One way of evaluating a layer, and the state it needs to do it.

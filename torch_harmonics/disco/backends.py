@@ -91,7 +91,7 @@ from typing import TYPE_CHECKING
 import torch
 from disco_helpers import optimized_kernels_is_available
 
-from torch_harmonics._backend import BackendS2, _kernel_device_types
+from torch_harmonics._backend import BackendS2, _kernel_device_types, _reference_state_dtype
 
 from ._psi_layouts import build_arcs, build_kpacked, build_split
 from .kernels_torch.disco_ragged_torch import _disco_s2_contraction_ragged_torch, _disco_s2_transpose_contraction_ragged_torch
@@ -195,7 +195,7 @@ class RegularReferenceBackend(DiscoBackendS2):
         return not layer.ragged
 
     def prepare(self, layer, device):
-        return {"psi": layer._reference_psi(*layer._psi_coo()).to(device)}
+        return {"psi": layer._reference_psi(*layer._psi_coo()).to(device=device, dtype=_reference_state_dtype(layer))}
 
     def contract(self, layer, x):
         return _disco_s2_contraction_regular_torch(x, layer.psi, layer.nlon_out)
@@ -385,7 +385,7 @@ class RaggedReferenceBackend(DiscoBackendS2):
         return layer.ragged
 
     def prepare(self, layer, device):
-        return {"psi": layer._reference_psi(*layer._psi_coo()).to(device)}
+        return {"psi": layer._reference_psi(*layer._psi_coo()).to(device=device, dtype=_reference_state_dtype(layer))}
 
     def contract(self, layer, x):
         return _disco_s2_contraction_ragged_torch(x, layer.psi)
