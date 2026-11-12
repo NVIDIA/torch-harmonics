@@ -140,6 +140,34 @@ th.truncate_sht(th.as_grid("equiangular", nlat=721, nlon=1440))    # SpectralGri
 th.truncate_sht(th.as_grid("legendre-gauss", nlat=64, nlon=64))     # SpectralGrid(lmax=32, mmax=32, lmmax=None, onesided=True): longitude binds
 ```
 
+### Table storage
+
+The SHTs store their Legendre tables in blocks of orders. A block of orders
+`[ms, me)` holds only the degrees those orders have, `ms <= l < lmax`, or
+`l < me - 1 + lmmax` with a band limit, so the triangle `l < m` that a dense
+`(mmax, lmax, nlat)` table fills with zeros is never stored, and the forward
+and inverse transforms contract one block at a time. For a triangular
+truncation that roughly halves both the tables and the Legendre contraction:
+on a 721 by 1440 equiangular grid with `lmax=mmax=720`, a float32 table
+shrinks from 1.4 GiB to 0.73 GiB.
+
+`block_size` sets the number of orders per block, and `None` keeps one dense
+table. Smaller blocks store less but contract in more, smaller matrix products.
+The default is the environment variable `TORCH_HARMONICS_SHT_BLOCK_SIZE`
+(an integer, or `none`) if it is set, else 32; an explicit argument wins.
+
+```python
+sht_b64 = th.RealSHT(grid, block_size=64)      # blocks of 64 orders
+sht_dense = th.RealSHT(grid, block_size=None)  # None: one dense table
+```
+
+Identical transforms share their tables only when their block sizes agree. A
+block size of at least `mmax` is a single block, the dense table, and shares
+it with `block_size=None`. The distributed transforms cut their blocks at the
+same global multiples of `block_size`, so a rank holds the serial blocks of its
+orders. `weights`, `pct` and `dpct` assemble the dense table on access, for
+inspection. HEALPix transforms store their tables in the same blocks.
+
 ## SHT on HEALPix
 
 `RealSHT`, `InverseRealSHT`, `RealVectorSHT` and `InverseRealVectorSHT` accept a
@@ -216,13 +244,13 @@ This makes $U_m$ real and symmetric. Scalar continuation uses $(-1)^m$ and
 tangential vector continuation uses $(-1)^{m+1}$. Both derivative components
 use the same vector parity. Precomputation runs in float64 degree/order blocks;
 modules retain only real, nonpersistent weights and cast them when requested.
-A two-entry cache can retain up to two completed float64 projection tables in
-host memory, in addition to the independent projection buffers owned by each
-module.
+Identical transforms share their projection tables rather than each holding a
+copy.
 
 This increases construction time while removing meridional FFTs from every
 analysis call. Persistent storage remains one scalar projection table or two
-vector projection tables. Distributed ranks generate their local global-order
+vector projection tables, stored in order blocks like every SHT table (see
+"Table storage" above). Distributed ranks generate their local global-order
 range on the full meridian, then retain their latitude shard. Polar ranks repeat
 that initialization work, but forward communication remains the existing two
 azimuth redistributions and polar reduce-scatter. There is no latitude gather.
@@ -264,8 +292,9 @@ and `2 * nlat` for F1.
 For either grid, folded analysis uses more constructor work and projection
 memory than native quadrature, while avoiding meridional resampling during each
 forward call. On a 180 by 360 Fejér-1 grid with `lmax=mmax=180`, a float64
-scalar projection is about 44.5 MiB and a vector projection about 89 MiB; temporary
-construction memory is block bounded. The cache may retain two projections.
+scalar projection is about 26 MiB in the default blocks of 32 orders (44.5 MiB as
+one dense table) and a vector projection about 52 MiB (89 MiB); temporary
+construction memory is block bounded.
 Synthesis evaluates Legendre functions directly on the requested grid.
 
 ## Field shapes

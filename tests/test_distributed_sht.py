@@ -131,7 +131,10 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         block = serial.weights[
             ..., distributed.mmax_offset : distributed.mmax_offset + distributed.mmax_local, :, distributed.lat_offset : distributed.lat_offset + distributed.nlat_local
         ]
-        torch.testing.assert_close(distributed.weights, block, atol=1e-13 if dtype == torch.float64 else 0, rtol=1e-13 if dtype == torch.float64 else 0)
+        # a rank's blocks cover fewer orders than the serial ones, which changes the roundoff of
+        # the folded projection at the level of float64; in float32 that can flip the rounding of
+        # an entry, by one ulp, or by about 1e-17 at entries that are themselves roundoff
+        torch.testing.assert_close(distributed.weights, block, atol=1e-13, rtol=1e-13 if dtype == torch.float64 else 1.2e-7)
         # Independent analytic top-degree zonal scalar harmonic and its vector derivative.
         # SciPy's recurrence supplies the spatial field; no shared synthesis is used.
         import numpy as np
@@ -638,11 +641,15 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         """
         grid = th.as_grid("legendre-gauss", nlat=16, nlon=32)
         cls = getattr(thd, cls_name)
-        a = cls(grid).to(self.device)
-        b = cls(grid).to(self.device)
-        other = cls(grid, lmax=10, mmax=10).to(self.device)
-        self.assertIs(getattr(a, buffer), getattr(b, buffer))
-        self.assertIsNot(getattr(a, buffer), getattr(other, buffer))
+        a = cls(grid, block_size=3).to(self.device)
+        b = cls(grid, block_size=3).to(self.device)
+        other = cls(grid, lmax=10, mmax=10, block_size=3).to(self.device)
+        tables = [getattr(a, name) for name in a._block_names]
+        self.assertEqual([name.rsplit("_", 1)[0] for name in a._block_names], [buffer] * len(tables))
+        self.assertGreater(len(tables), 1)
+        for name, table in zip(a._block_names, tables):
+            self.assertIs(getattr(b, name), table)
+        self.assertFalse(any(getattr(other, name) is table for name in other._block_names for table in tables))
 
     @parameterized.expand(
         [

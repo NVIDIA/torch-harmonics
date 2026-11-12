@@ -40,6 +40,7 @@ import torch.nn as nn
 import torch_harmonics as th
 from torch_harmonics.fft import rfft
 from torch_harmonics.grid import _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.sht import _analysis_contraction, _blocks, _real_and_imaginary
 from torch_harmonics.utils import recast_buffers_for
 
 
@@ -182,14 +183,14 @@ class ShallowWaterSolver(nn.Module):
 
     def divspec(self, ugrid):
         """Compute only the divergence from velocity field, i.e. vrtdivspec(ugrid)[1] without the vorticity contractions."""
-        x = rfft(ugrid, nmodes=self.vsht.mmax, dim=-1, norm="forward").transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
-        w0 = self.vsht.weights[0].to(x_re.dtype)
-        w1 = self.vsht.weights[1].to(x_re.dtype)
-        # same contractions as the toroidal component in RealVectorSHT.forward
-        t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
-        t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
+        x = _real_and_imaginary(rfft(ugrid, nmodes=self.vsht.mmax, dim=-1, norm="forward").transpose(-1, -2))
+        tables = [w.to(x.dtype) for w in _blocks(self.vsht)]
+        # same contractions as the toroidal component in RealVectorSHT.forward: the second
+        # tangential component with the first derivative table, the first with the second
+        x1 = _analysis_contraction(x.select(-3, 1), [w[0] for w in tables], self.vsht._layout, self.vsht.lmax)
+        z0 = _analysis_contraction(x.select(-3, 0), [w[1] for w in tables], self.vsht._layout, self.vsht.lmax)
+        t_re = -z0[1] - x1[0]
+        t_im = z0[0] - x1[1]
         return self._cast(self.lap, ugrid) * self.radius * torch.complex(t_re, t_im)
 
     def getuv(self, vrtdivspec):

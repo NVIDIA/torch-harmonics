@@ -39,7 +39,21 @@ from torch_harmonics.cache import SharedBufferMixin
 from torch_harmonics.fft import irfft, rfft
 from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
 from torch_harmonics.radial import split_radial
-from torch_harmonics.sht import _analysis_weights, _extended_folded_analysis, _synthesis_table
+from torch_harmonics.sht import (
+    BLOCK_SIZE_FROM_ENVIRONMENT,
+    _analysis_contraction,
+    _analysis_weights,
+    _blocks,
+    _components,
+    _dense_table,
+    _extended_folded_analysis,
+    _real_and_imaginary,
+    _register_blocks,
+    _resolve_block_size,
+    _sht_blocks,
+    _synthesis_contraction,
+    _synthesis_table,
+)
 from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_not_spectrally_accurate, truncate_sht
 
 from .primitives import (
@@ -117,6 +131,10 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    block_size : int or None
+        Number of orders per block of the stored Legendre tables, or ``None`` for one dense
+        table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
+        multiples of ``block_size``, so a rank holds the serial blocks of its orders.
 
     Returns
     -------
@@ -141,6 +159,7 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
     ):
 
         super().__init__()
@@ -188,10 +207,16 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         # so only the local latitudes are needed; l is contracted in full. The block is shared
         # with every transform of the same kind on this rank's block, see _analysis_weights.
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
-        weights = _analysis_weights(
-            self.grid, self._trunc, self.norm, self.csphase, False, self.mmax_offset, self.mmax_offset + self.mmax_local, self.lat_offset, self.lat_offset + self.nlat_local
-        )
-        self.register_shared_buffer("weights", weights)
+        self.block_size = _resolve_block_size(block_size, self.mmax)
+        mmin, mmax = self.mmax_offset, self.mmax_offset + self.mmax_local
+        blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, 0, self.lmax)
+        tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, False, mmin, mmax, self.lat_offset, self.lat_offset + self.nlat_local, self.block_size)
+        _register_blocks(self, "weights", tables, blocks, 0)
+
+    @property
+    def weights(self) -> torch.Tensor:
+        """This rank's dense analysis table ``(mmax_local, lmax, nlat_local)``, assembled from the blocks: a fresh tensor, for inspection."""
+        return _dense_table(self, -2, self.lmax)
 
     @property
     def lmax(self) -> int:
@@ -256,14 +281,11 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         # transpose to put the contraction dim (nlat) on the fast axis. nlat stays split across
         # the polar group: each rank contracts the latitudes it owns and the reduce-scatter
         # below completes the sum.
-        x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        x = _real_and_imaginary(x.transpose(-1, -2))
 
-        # Legendre-Gauss quadrature: partial contraction over the local k=nlat chunk
-        w = self.weights.to(x_re.dtype)
-        out_re = torch.einsum("...mk,mlk->...lm", x_re, w)
-        out_im = torch.einsum("...mk,mlk->...lm", x_im, w)
+        # Legendre-Gauss quadrature: partial contraction over the local k=nlat chunk, block by block
+        out = _analysis_contraction(x, [w.to(x.dtype) for w in _blocks(self)], self._layout, self.lmax)
+        out_re, out_im = out[0], out[1]
 
         # complete the quadrature sum and split l in a single collective. This runs on the real
         # view: the reduce-scatter reduces in fp32, which would discard the imaginary part of a
@@ -333,6 +355,10 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    block_size : int or None
+        Number of orders per block of the stored Legendre tables, or ``None`` for one dense
+        table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
+        multiples of ``block_size``, so a rank holds the serial blocks of its orders.
 
     Returns
     -------
@@ -357,6 +383,7 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
     ):
 
         super().__init__()
@@ -401,10 +428,17 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         # walked from the start even though only the local window is stored.
         # stored as (mmax_local, nlat, lmax_local) so the contraction dim l is stride-1, and
         # shared with every transform of the same kind on this rank's block
-        pct = _synthesis_table(
-            self.grid, self._trunc, self.norm, self.csphase, False, self.mmax_offset, self.mmax_offset + self.mmax_local, self.lmax_offset, self.lmax_offset + self.lmax_local
-        )
-        self.register_shared_buffer("pct", pct)
+        self.block_size = _resolve_block_size(block_size, self.mmax)
+        mmin, mmax = self.mmax_offset, self.mmax_offset + self.mmax_local
+        lmin, lmax = self.lmax_offset, self.lmax_offset + self.lmax_local
+        blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, lmin, lmax)
+        tables = _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, False, mmin, mmax, lmin, lmax, self.block_size)
+        _register_blocks(self, "pct", tables, blocks, lmin)
+
+    @property
+    def pct(self) -> torch.Tensor:
+        """This rank's dense synthesis table ``(mmax_local, nlat, lmax_local)``, assembled from the blocks: a fresh tensor, for inspection."""
+        return _dense_table(self, -1, self.lmax_local)
 
     @property
     def lmax(self) -> int:
@@ -455,15 +489,12 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         # transpose to put the contraction dim (lmax) on the fast axis. l stays split across
         # the polar group: each rank synthesizes from the degrees it owns and the
         # reduce-scatter below completes the sum.
-        x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        x = _real_and_imaginary(x.transpose(-1, -2))
 
-        # legendre transformation: partial contraction over the local l chunk
-        # pct layout: (mmax_local, nlat, lmax_local)
-        w = self.pct.to(x_re.dtype)
-        out_re = torch.einsum("...ml,mkl->...km", x_re, w)
-        out_im = torch.einsum("...ml,mkl->...km", x_im, w)
+        # legendre transformation: partial contraction over the local l chunk, block by block
+        # pct blocks: (orders, nlat, local degrees)
+        out = _synthesis_contraction(x, [p.to(x.dtype) for p in _blocks(self)], self._layout)
+        out_re, out_im = out[0], out[1]
 
         # complete the synthesis sum and split nlat in a single collective, on the real view
         # (see DistributedRealSHT.forward for why the collective cannot take complex input).
@@ -528,6 +559,10 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    block_size : int or None
+        Number of orders per block of the stored Legendre tables, or ``None`` for one dense
+        table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
+        multiples of ``block_size``, so a rank holds the serial blocks of its orders.
 
     Returns
     -------
@@ -552,6 +587,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
     ):
 
         super().__init__()
@@ -594,10 +630,16 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         # build only the block this rank keeps: local orders, all degrees, local latitudes, see
         # DistributedRealSHT.__init__
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
-        weights = _analysis_weights(
-            self.grid, self._trunc, self.norm, self.csphase, True, self.mmax_offset, self.mmax_offset + self.mmax_local, self.lat_offset, self.lat_offset + self.nlat_local
-        )
-        self.register_shared_buffer("weights", weights)
+        self.block_size = _resolve_block_size(block_size, self.mmax)
+        mmin, mmax = self.mmax_offset, self.mmax_offset + self.mmax_local
+        blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, 0, self.lmax)
+        tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, True, mmin, mmax, self.lat_offset, self.lat_offset + self.nlat_local, self.block_size)
+        _register_blocks(self, "weights", tables, blocks, 0)
+
+    @property
+    def weights(self) -> torch.Tensor:
+        """This rank's dense analysis tables ``(2, mmax_local, lmax, nlat_local)``, assembled from the blocks: a fresh tensor, for inspection."""
+        return _dense_table(self, -2, self.lmax)
 
     @property
     def lmax(self) -> int:
@@ -665,20 +707,21 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
 
         # transpose to put the contraction dim (nlat) on the fast axis. nlat stays split across
         # the polar group, see DistributedRealSHT.forward.
-        x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        x = _real_and_imaginary(x.transpose(-1, -2))
 
-        w0 = self.weights[0].to(x_re.dtype)
-        w1 = self.weights[1].to(x_re.dtype)
+        # one contraction per block and derivative table; xc_* holds component c contracted
+        # with the first derivative table, zc_* with the second
+        tables = [w.to(x.dtype) for w in _blocks(self)]
+        y0 = _analysis_contraction(x, [w[0] for w in tables], self._layout, self.lmax)
+        y1 = _analysis_contraction(x, [w[1] for w in tables], self._layout, self.lmax)
+        (x0_re, x0_im), (x1_re, x1_im) = _components(y0, -3)
+        (z0_re, z0_im), (z1_re, z1_im) = _components(y1, -3)
 
-        # contraction - spheroidal component
-        s_re = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w0) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w1)
-        s_im = torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w0) + torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w1)
-
-        # contraction - toroidal component
-        t_re = -torch.einsum("...mk,mlk->...lm", x_im[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_re[..., 1, :, :], w0)
-        t_im = torch.einsum("...mk,mlk->...lm", x_re[..., 0, :, :], w1) - torch.einsum("...mk,mlk->...lm", x_im[..., 1, :, :], w0)
+        # spheroidal and toroidal components
+        s_re = x0_re - z1_im
+        s_im = x0_im + z1_re
+        t_re = -z0_im - x1_re
+        t_im = z0_re - x1_im
 
         # stack the components in real space, see RealVectorSHT.forward
         out_re = torch.stack((s_re, t_re), dim=-3)
@@ -733,6 +776,10 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         Normalization type (``"ortho"``, ``"schmidt"``, ``"unnorm"``), by default ``"ortho"``
     csphase : bool
         Whether to apply the Condon-Shortley phase factor, by default True
+    block_size : int or None
+        Number of orders per block of the stored Legendre tables, or ``None`` for one dense
+        table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
+        multiples of ``block_size``, so a rank holds the serial blocks of its orders.
 
     Returns
     -------
@@ -757,6 +804,7 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         *,
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
+        block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
     ):
 
         super().__init__()
@@ -798,10 +846,17 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         # see DistributedInverseRealSHT.__init__
         # stored as (2, mmax_local, nlat, lmax_local) so the contraction dim l is stride-1,
         # and shared with every transform of the same kind on this rank's block
-        dpct = _synthesis_table(
-            self.grid, self._trunc, self.norm, self.csphase, True, self.mmax_offset, self.mmax_offset + self.mmax_local, self.lmax_offset, self.lmax_offset + self.lmax_local
-        )
-        self.register_shared_buffer("dpct", dpct)
+        self.block_size = _resolve_block_size(block_size, self.mmax)
+        mmin, mmax = self.mmax_offset, self.mmax_offset + self.mmax_local
+        lmin, lmax = self.lmax_offset, self.lmax_offset + self.lmax_local
+        blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, lmin, lmax)
+        tables = _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, True, mmin, mmax, lmin, lmax, self.block_size)
+        _register_blocks(self, "dpct", tables, blocks, lmin)
+
+    @property
+    def dpct(self) -> torch.Tensor:
+        """This rank's dense synthesis tables ``(2, mmax_local, nlat, lmax_local)``, assembled from the blocks: a fresh tensor, for inspection."""
+        return _dense_table(self, -1, self.lmax_local)
 
     @property
     def lmax(self) -> int:
@@ -856,21 +911,22 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
 
         # transpose to put the contraction dim (lmax) on the fast axis. l stays split across
         # the polar group, see DistributedInverseRealSHT.forward.
-        x = x.transpose(-1, -2)
-        x_re = x.real.contiguous()
-        x_im = x.imag.contiguous()
+        x = _real_and_imaginary(x.transpose(-1, -2))
 
-        # dpct layout: (2, mmax_local, nlat, lmax_local) — contract over l (stride-1 in both operands)
-        d0 = self.dpct[0].to(x_re.dtype)
-        d1 = self.dpct[1].to(x_re.dtype)
+        # dpct blocks: (2, orders, nlat, local degrees) -- contract over l (stride-1 in both
+        # operands), one contraction per block and derivative table; xc_* holds component c
+        # contracted with the first derivative table, zc_* with the second
+        tables = [d.to(x.dtype) for d in _blocks(self)]
+        y0 = _synthesis_contraction(x, [d[0] for d in tables], self._layout)
+        y1 = _synthesis_contraction(x, [d[1] for d in tables], self._layout)
+        (x0_re, x0_im), (x1_re, x1_im) = _components(y0, -3)
+        (z0_re, z0_im), (z1_re, z1_im) = _components(y1, -3)
 
-        # contraction - spheroidal component
-        srl = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d0) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d1)
-        sim = torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d0) + torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d1)
-
-        # contraction - toroidal component
-        trl = -torch.einsum("...ml,mkl->...km", x_im[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_re[..., 1, :, :], d0)
-        tim = torch.einsum("...ml,mkl->...km", x_re[..., 0, :, :], d1) - torch.einsum("...ml,mkl->...km", x_im[..., 1, :, :], d0)
+        # spheroidal and toroidal components
+        srl = x0_re - z1_im
+        sim = x0_im + z1_re
+        trl = -z0_im - x1_re
+        tim = z0_re - x1_im
 
         # reassemble in real space, see RealVectorSHT.forward
         out_re = torch.stack((srl, trl), dim=-3)
