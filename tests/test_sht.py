@@ -1250,6 +1250,25 @@ class TestRingFFT(unittest.TestCase):
         c = torch.randn(2, ring_fft.nrings, 6, dtype=torch.complex128, requires_grad=True)
         self.assertTrue(gradcheck(ring_fft.inverse, (c,)))
 
+    def test_a_band_of_rings_is_its_slice_of_the_full_transform(self):
+        """A ring range transforms its own pixels alone, which is what a distributed SHT holds."""
+        set_seed(333)
+        g = th.HealpixGrid(nside=4)
+        full = RingFFT(g, mmax=9)
+        x = torch.randn(2, g.npoints, dtype=torch.float64)
+        c = torch.randn(2, g.nrings, 9, dtype=torch.complex128)
+        offsets = g.lon_offsets.tolist()
+        for rmin, rmax in [(0, 3), (2, 9), (5, g.nrings), (0, g.nrings)]:
+            with self.subTest(rings=(rmin, rmax)):
+                band = RingFFT(g, mmax=9, rings=(rmin, rmax))
+                self.assertEqual(band.npoints, offsets[rmax] - offsets[rmin])
+                pixels = slice(offsets[rmin], offsets[rmax])
+                self.assertTrue(compare_tensors("band forward", band(x[..., pixels]), full(x)[..., rmin:rmax, :], atol=1e-14, rtol=0.0))
+                expected = full.inverse(torch.nn.functional.pad(c[..., rmin:rmax, :], (0, 0, rmin, g.nrings - rmax)))[..., pixels]
+                self.assertTrue(compare_tensors("band inverse", band.inverse(c[..., rmin:rmax, :]), expected, atol=1e-14, rtol=0.0))
+        with self.assertRaises(ValueError):
+            RingFFT(g, mmax=9, rings=(3, 3))
+
     def test_it_matches_rfft_on_a_regular_grid(self):
         set_seed(333)
         g = th.as_grid("equiangular", nlat=5, nlon=16)

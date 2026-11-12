@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import warnings
 from typing import Optional
 
 import torch
@@ -36,8 +37,8 @@ import torch.nn as nn
 
 from torch_harmonics._field_contract import check_coeffs, check_field
 from torch_harmonics.cache import SharedBufferMixin
-from torch_harmonics.fft import irfft, rfft
-from torch_harmonics.grid import RegularGridS2, SpectralGrid, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.fft import RingFFT, irfft, rfft
+from torch_harmonics.grid import GridS2, RegularGridS2, SpectralGrid, _rejects_legacy_signature
 from torch_harmonics.radial import split_radial
 from torch_harmonics.sht import (
     BLOCK_SIZE_FROM_ENVIRONMENT,
@@ -49,6 +50,7 @@ from torch_harmonics.sht import (
     _extended_folded_analysis,
     _real_and_imaginary,
     _register_blocks,
+    _require_sht_grid,
     _resolve_block_size,
     _sht_blocks,
     _synthesis_contraction,
@@ -64,6 +66,96 @@ from .primitives import (
     unpad_and_unflatten_leading_dims,
 )
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
+
+
+def _setup_grid(module: nn.Module, grid: GridS2) -> None:
+    """
+    The global grid of a distributed SHT and the communicator layout it is split over.
+
+    A :class:`~torch_harmonics.grid.RegularGridS2` or a :class:`~torch_harmonics.healpix.HealpixGrid`.
+    On HEALPix a ring stands in for a latitude: ``nlat`` counts the rings and there is no
+    ``nlon``, since the rings differ in length.
+    """
+    module.grid = _require_sht_grid(grid)
+    if isinstance(module.grid, RegularGridS2):
+        module.nlat, module.nlon = module.grid.shape
+        _warn_if_not_spectrally_accurate(module.grid)
+    else:
+        module.nlat, module.nlon = module.grid.nrings, None
+
+    module.comm_size_polar = polar_group_size()
+    module.comm_rank_polar = polar_group_rank()
+    module.comm_size_azimuth = azimuth_group_size()
+    module.comm_rank_azimuth = azimuth_group_rank()
+
+
+def _setup_shard(module: nn.Module) -> None:
+    """
+    This rank's spatial shard, the extents the collectives split by, and the longitudinal transform.
+
+    The grid decomposes itself in space. A regular grid splits its latitudes over the polar
+    group and its longitudes over the azimuth group, and the longitudes are made local by the
+    azimuth transposes before the FFT. A HEALPix grid splits into bands of whole rings over the
+    polar group only, cut by pixel count rather than evenly, and refuses an azimuth split: each
+    band is a contiguous slice of the flat pixel axis, so the ring FFT of its own rings is
+    local and no transpose is needed. ``lat_shapes`` holds the rings of every rank then, which
+    is what the synthesis reduce-scatter splits by.
+    """
+    module.shard = module.grid.shard(
+        polar=(module.comm_rank_polar, module.comm_size_polar),
+        azimuth=(module.comm_rank_azimuth, module.comm_size_azimuth),
+    )
+    if isinstance(module.grid, RegularGridS2):
+        module.lat_shapes = list(module.shard.lat_shapes)
+        module.lon_shapes = list(module.shard.lon_shapes)
+        module.nlat_local = module.shard.nlat
+        module.nlon_local = module.shard.nlon
+    else:
+        module.lat_shapes = list(module.shard.ring_shapes)
+        module.lon_shapes = None
+        module.pixel_shapes = list(module.shard.pixel_shapes)
+        module.nlat_local = module.shard.nrings
+        module.nlon_local = None
+    module.lat_offset = sum(module.lat_shapes[: module.comm_rank_polar])
+
+    if isinstance(module.grid, RegularGridS2):
+        module.ring_fft = None
+    else:
+        module.ring_fft = RingFFT(module.grid, module.mmax, rings=(module.lat_offset, module.lat_offset + module.nlat_local))
+
+
+def _validate_iter(iter: int) -> int:
+    if isinstance(iter, bool) or not isinstance(iter, int) or iter < 0:
+        raise ValueError(f"iter must be a non-negative integer, got {iter!r}")
+    return iter
+
+
+def _setup_jacobi(module: nn.Module, grid: GridS2, inverse_cls: type) -> None:
+    """
+    The distributed synthesis a forward transform with ``iter > 0`` refines its analysis with.
+
+    ``grid`` is the grid the forward was given, the radial factor included, so that the
+    synthesis takes and returns the forward's own layouts. Its bounds are already resolved,
+    so the inverse cannot warn about a changed default.
+    """
+    module._synthesis = None
+    if module.iter > 0:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            module._synthesis = inverse_cls(grid, module.lmax, module.mmax, module.lmmax, norm=module.norm, csphase=module.csphase, block_size=module.block_size)
+
+
+def _vector_radial_dims(module: nn.Module, spatial: bool) -> tuple:
+    """
+    The ``(component, radial)`` axes of a vector field on a product grid, counted from the end.
+
+    A product field is ``(..., 2, nr, *spatial)``; the transforms move the radial axis in
+    front of the component one, where it is just another leading axis, and back at the end.
+    The spatial shape is ``(nlat, nlon)`` on a regular grid and ``(npix,)`` on HEALPix, the
+    spectral one is always ``(lmax, mmax)``.
+    """
+    ndims = len(module.shard.shape) if spatial else 2
+    return -(ndims + 2), -(ndims + 1)
 
 
 class DistributedRealSHT(SharedBufferMixin, nn.Module):
@@ -108,6 +200,13 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
     are not bitwise identical to the serial transform. A leading axis ``N`` smaller
     than the group size is supported; it is zero-padded internally, which is exact.
 
+    **HEALPix.** On a :class:`~torch_harmonics.healpix.HealpixGrid` the input is flat,
+    ``(B, C, npix_local)``: each polar rank holds a band of whole rings, cut so that every
+    rank holds about the same number of pixels (see
+    :class:`~torch_harmonics.healpix.HealpixGridShardS2`), and there is no azimuth split.
+    Steps 1 to 3 collapse into the ring FFT of the local rings, which needs no
+    communication; steps 4 and 5 are unchanged. The output is split as on a regular grid.
+
     .. seealso::
         :class:`torch_harmonics.RealSHT`
             Serial counterpart with full mathematical description and parameter
@@ -115,7 +214,7 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
+    grid : RegularGridS2 or HealpixGrid
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -135,11 +234,16 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         Number of orders per block of the stored Legendre tables, or ``None`` for one dense
         table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
         multiples of ``block_size``, so a rank holds the serial blocks of its orders.
+    iter : int
+        Number of Jacobi iterations refining the analysis, by default 0, see
+        :class:`~torch_harmonics.RealSHT`. Each one adds a distributed synthesis and analysis,
+        and with them their collectives.
 
     Returns
     -------
     torch.Tensor
-        Local spectral coefficients, shape ``(..., lmax_local, mmax_local)``.
+        Local spectral coefficients, shape ``(..., lmax_local, mmax_local)``. On HEALPix
+        ``mmax_local`` is ``mmax``, since there is no azimuth split.
 
     References
     ----------
@@ -160,46 +264,30 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
         block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
+        iter: int = 0,
     ):
 
         super().__init__()
 
         # on a SphericalProductGrid every shell is transformed alike; the radial axis is one
         # more leading axis, flattened into the one the transposes split
+        input_grid = grid
         grid, self.radial = split_radial(grid)
-        self.grid = require_regular_grid(grid)
-        self.nlat, self.nlon = self.grid.shape
-        _warn_if_not_spectrally_accurate(self.grid)
+        _setup_grid(self, grid)
         self.norm = norm
         self.csphase = csphase
-
-        # TODO: include assertions regarding the dimensions
-
-        # get the comms grid:
-        self.comm_size_polar = polar_group_size()
-        self.comm_rank_polar = polar_group_rank()
-        self.comm_size_azimuth = azimuth_group_size()
-        self.comm_rank_azimuth = azimuth_group_rank()
+        self.iter = _validate_iter(iter)
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
         _validate_forward_sht_degree(self.grid, self.lmax)
 
-        # compute splits
-        # the grid decomposes itself in space; the spectral split below stays manual,
+        # compute splits: the grid decomposes itself in space; the spectral split stays manual,
         # since lmax/mmax are not grid dimensions
-        self.shard = self.grid.shard(
-            polar=(self.comm_rank_polar, self.comm_size_polar),
-            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
-        )
-        self.lat_shapes = list(self.shard.lat_shapes)
-        self.lon_shapes = list(self.shard.lon_shapes)
-        self.nlat_local = self.shard.nlat
-        self.nlon_local = self.shard.nlon
+        _setup_shard(self)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
-        self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
         # build only the block this rank keeps: local orders, all degrees, local latitudes. The
@@ -212,6 +300,9 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, 0, self.lmax)
         tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, False, mmin, mmax, self.lat_offset, self.lat_offset + self.nlat_local, self.block_size)
         _register_blocks(self, "weights", tables, blocks, 0)
+
+        # the Jacobi iteration refines the analysis with the distributed synthesis, see RealSHT
+        _setup_jacobi(self, input_grid, DistributedInverseRealSHT)
 
     @property
     def weights(self) -> torch.Tensor:
@@ -231,7 +322,7 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         return self._trunc.lmmax
 
     @property
-    def grid_in(self) -> RegularGridS2:
+    def grid_in(self) -> GridS2:
         """Global spatial domain of the input field."""
         return self.grid
 
@@ -242,7 +333,7 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}" + (f", iter={self.iter}" if self.iter else "")
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -257,26 +348,40 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         # a channel axis is required: the transposes split it across the ranks
         check_field(x, self.shard, leading=(..., None), radial=self.radial)
 
+        # Jacobi iteration a <- a + A (f - S a), see RealSHT.forward. Every step is one more
+        # distributed synthesis and analysis, each with its own collectives.
+        coeffs = self._analyze(x)
+        for _ in range(self.iter):
+            coeffs = coeffs + self._analyze(x - self._synthesis(coeffs))
+        return coeffs
+
+    def _analyze(self, x: torch.Tensor) -> torch.Tensor:
+
         # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
         # must be at least as large as the azimuth group. Flatten all leading dims into that
         # axis and zero-pad it if needed (linear transform, so padding stays zero); restore
         # the original layout before returning. The polar group never touches this axis --
         # the latitude contraction is a distributed matmul, not a transpose.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth)
-        num_chans = x.shape[-3]
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=len(self.shard.shape))
+        num_chans = x.shape[-1 - len(self.shard.shape)]
 
-        # h and w is split. First we make w local by transposing into channel dim
-        if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth(x, (-3, -1), self.lon_shapes)
+        if self.ring_fft is None:
+            # h and w is split. First we make w local by transposing into channel dim
+            if self.comm_size_azimuth > 1:
+                x = distributed_transpose_azimuth(x, (-3, -1), self.lon_shapes)
 
-        # apply real fft in the longitudinal direction: make sure to truncate to nlon. The 2*pi
-        # scale factor is folded into the quadrature weights, so no scaling is needed here.
-        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+            # apply real fft in the longitudinal direction: make sure to truncate to nlon. The 2*pi
+            # scale factor is folded into the quadrature weights, so no scaling is needed here.
+            x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
-        # transpose: after this, m is split and c is local
-        if self.comm_size_azimuth > 1:
-            chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth(x, (-1, -3), chan_shapes)
+            # transpose: after this, m is split and c is local
+            if self.comm_size_azimuth > 1:
+                chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
+                x = distributed_transpose_azimuth(x, (-1, -3), chan_shapes)
+        else:
+            # HEALPix: this rank holds whole rings, so their FFT is local, (..., npix_local) ->
+            # (..., nrings_local, mmax) with every order on every rank
+            x = self.ring_fft(x)
 
         # transpose to put the contraction dim (nlat) on the fast axis. nlat stays split across
         # the polar group: each rank contracts the latitudes it owns and the reduce-scatter
@@ -292,7 +397,7 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         # complex tensor, and NCCL has no complex reduction to begin with.
         out = torch.stack((out_re, out_im), dim=-1)
         if self.comm_size_polar > 1:
-            out = reduce_from_scatter_to_polar_region(out, -3)
+            out = reduce_from_scatter_to_polar_region(out, -3, self.l_shapes)
         x = torch.view_as_complex(out.contiguous())
 
         # drop padding and restore the original leading dims
@@ -332,6 +437,11 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
     smaller than the group size is supported; it is zero-padded internally, which is
     exact.
 
+    **HEALPix.** On a :class:`~torch_harmonics.healpix.HealpixGrid` the reduce-scatter of
+    step 2 leaves each polar rank its band of rings, split by pixel count rather than evenly,
+    and steps 3 to 5 collapse into the inverse ring FFT of those rings. The output is flat,
+    ``(B, C, npix_local)``.
+
     .. seealso::
         :class:`torch_harmonics.InverseRealSHT`
             Serial counterpart with full mathematical description and parameter
@@ -339,7 +449,7 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
+    grid : RegularGridS2 or HealpixGrid
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -363,7 +473,8 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
     Returns
     -------
     torch.Tensor
-        Local spatial signal, shape ``(..., nlat_local, nlon_local)``.
+        Local spatial signal, shape ``(..., nlat_local, nlon_local)``, or ``(..., npix_local)``
+        on HEALPix.
 
     References
     ----------
@@ -391,29 +502,15 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         # on a SphericalProductGrid every shell is transformed alike; the radial axis is one
         # more leading axis, flattened into the one the transposes split
         grid, self.radial = split_radial(grid)
-        self.grid = require_regular_grid(grid)
-        self.nlat, self.nlon = self.grid.shape
-        _warn_if_not_spectrally_accurate(self.grid)
+        _setup_grid(self, grid)
         self.norm = norm
         self.csphase = csphase
 
-        # get the comms grid:
-        self.comm_size_polar = polar_group_size()
-        self.comm_rank_polar = polar_group_rank()
-        self.comm_size_azimuth = azimuth_group_size()
-        self.comm_rank_azimuth = azimuth_group_rank()
-
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
-        # compute splits
-        # the grid decomposes itself in space; the spectral split below stays manual,
+        # compute splits: the grid decomposes itself in space; the spectral split stays manual,
         # since lmax/mmax are not grid dimensions
-        self.shard = self.grid.shard(
-            polar=(self.comm_rank_polar, self.comm_size_polar),
-            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
-        )
-        self.lat_shapes = list(self.shard.lat_shapes)
-        self.lon_shapes = list(self.shard.lon_shapes)
+        _setup_shard(self)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
@@ -458,7 +555,7 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         return self._trunc
 
     @property
-    def grid_out(self) -> RegularGridS2:
+    def grid_out(self) -> GridS2:
         """Global spatial grid sampled by the output field."""
         return self.grid
 
@@ -484,7 +581,6 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         # the original layout before returning. The polar group never touches this axis --
         # the degree contraction is a distributed matmul, not a transpose.
         x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth)
-        num_chans = x.shape[-3]
 
         # transpose to put the contraction dim (lmax) on the fast axis. l stays split across
         # the polar group: each rank synthesizes from the degrees it owns and the
@@ -500,23 +596,30 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         # (see DistributedRealSHT.forward for why the collective cannot take complex input).
         out = torch.stack((out_re, out_im), dim=-1)
         if self.comm_size_polar > 1:
-            out = reduce_from_scatter_to_polar_region(out, -3)
+            out = reduce_from_scatter_to_polar_region(out, -3, self.lat_shapes)
         x = torch.view_as_complex(out.contiguous())
 
-        # transpose: after this, channels are split and m is local
-        if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth(x, (-3, -1), self.m_shapes)
+        if self.ring_fft is None:
+            num_chans = x.shape[-3]
 
-        # apply the inverse (real) FFT
-        x = irfft(x, n=self.nlon, dim=-1, norm="forward")
+            # transpose: after this, channels are split and m is local
+            if self.comm_size_azimuth > 1:
+                x = distributed_transpose_azimuth(x, (-3, -1), self.m_shapes)
 
-        # transpose: after this, m is split and channels are local
-        if self.comm_size_azimuth > 1:
-            chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth(x, (-1, -3), chan_shapes)
+            # apply the inverse (real) FFT
+            x = irfft(x, n=self.nlon, dim=-1, norm="forward")
+
+            # transpose: after this, m is split and channels are local
+            if self.comm_size_azimuth > 1:
+                chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
+                x = distributed_transpose_azimuth(x, (-1, -3), chan_shapes)
+        else:
+            # HEALPix: every order of this rank's rings is local, (..., nrings_local, mmax) ->
+            # (..., npix_local)
+            x = self.ring_fft.inverse(x)
 
         # drop padding and restore the original leading dims
-        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size)
+        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=len(self.shard.shape))
 
         return x
 
@@ -530,7 +633,8 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
     The distribution scheme is the same as for
     :class:`DistributedRealSHT` (see its docstring for a step-by-step
     description of the all-to-all transposes over the ``N = B * C`` axis).
-    The additional size-2 vector component dimension is preserved throughout.
+    The additional size-2 vector component dimension is preserved throughout, and
+    HEALPix is handled as there, with the field ``(B, C, 2, npix_local)``.
 
     .. seealso::
         :class:`torch_harmonics.RealVectorSHT`
@@ -543,7 +647,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
+    grid : RegularGridS2 or HealpixGrid
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -563,6 +667,10 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         Number of orders per block of the stored Legendre tables, or ``None`` for one dense
         table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
         multiples of ``block_size``, so a rank holds the serial blocks of its orders.
+    iter : int
+        Number of Jacobi iterations refining the analysis, by default 0, see
+        :class:`~torch_harmonics.RealSHT`. Each one adds a distributed synthesis and analysis,
+        and with them their collectives.
 
     Returns
     -------
@@ -588,43 +696,29 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
         block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
+        iter: int = 0,
     ):
 
         super().__init__()
 
         # on a SphericalProductGrid every shell is transformed alike; the radial axis is one
         # more leading axis, flattened into the one the transposes split
+        input_grid = grid
         grid, self.radial = split_radial(grid)
-        self.grid = require_regular_grid(grid)
-        self.nlat, self.nlon = self.grid.shape
-        _warn_if_not_spectrally_accurate(self.grid)
+        _setup_grid(self, grid)
         self.norm = norm
         self.csphase = csphase
-
-        # get the comms grid:
-        self.comm_size_polar = polar_group_size()
-        self.comm_rank_polar = polar_group_rank()
-        self.comm_size_azimuth = azimuth_group_size()
-        self.comm_rank_azimuth = azimuth_group_rank()
+        self.iter = _validate_iter(iter)
 
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
         _validate_forward_sht_degree(self.grid, self.lmax)
 
-        # compute splits
-        # the grid decomposes itself in space; the spectral split below stays manual,
+        # compute splits: the grid decomposes itself in space; the spectral split stays manual,
         # since lmax/mmax are not grid dimensions
-        self.shard = self.grid.shard(
-            polar=(self.comm_rank_polar, self.comm_size_polar),
-            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
-        )
-        self.lat_shapes = list(self.shard.lat_shapes)
-        self.lon_shapes = list(self.shard.lon_shapes)
-        self.nlat_local = self.shard.nlat
-        self.nlon_local = self.shard.nlon
+        _setup_shard(self)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
-        self.lat_offset = sum(self.lat_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
         # build only the block this rank keeps: local orders, all degrees, local latitudes, see
@@ -635,6 +729,9 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, 0, self.lmax)
         tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, True, mmin, mmax, self.lat_offset, self.lat_offset + self.nlat_local, self.block_size)
         _register_blocks(self, "weights", tables, blocks, 0)
+
+        # the Jacobi iteration refines the analysis with the distributed synthesis, see RealSHT
+        _setup_jacobi(self, input_grid, DistributedInverseRealVectorSHT)
 
     @property
     def weights(self) -> torch.Tensor:
@@ -654,7 +751,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         return self._trunc.lmmax
 
     @property
-    def grid_in(self) -> RegularGridS2:
+    def grid_in(self) -> GridS2:
         """Global spatial domain of the input field."""
         return self.grid
 
@@ -665,7 +762,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
 
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
-        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}"
+        return f"grid={self.grid!r}{radial},\nlmax={self.lmax}, mmax={self.mmax}, lmmax={self.lmmax}, csphase={self.csphase}" + (f", iter={self.iter}" if self.iter else "")
 
     # This transform cannot be captured in a single graph: the redistribution collectives it
     # calls are themselves torch.compiler.disable()d, so at comm_size > 1 dynamo breaks at
@@ -679,31 +776,44 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
 
         check_field(x, self.shard, leading=(..., None, 2), radial=self.radial)
 
+        # Jacobi iteration a <- a + A (f - S a), see DistributedRealSHT.forward
+        coeffs = self._analyze(x)
+        for _ in range(self.iter):
+            coeffs = coeffs + self._analyze(x - self._synthesis(coeffs))
+        return coeffs
+
+    def _analyze(self, x: torch.Tensor) -> torch.Tensor:
+
         # a product field is (..., 2, nr, *spatial); the radial axis moves in front of the
         # component one, where it is just another leading axis, and back at the end
         if self.radial is not None:
-            x = x.movedim(-3, -4)
+            component, radial = _vector_radial_dims(self, spatial=True)
+            x = x.movedim(radial, component)
 
         # the transposes below redistribute the leading (channel/batch) axis across the
         # process grid, so it must be at least as large as the larger comm group. Flatten
-        # all leading dims into that axis -- keeping the trailing (2, nlat, nlon) intact --
+        # all leading dims into that axis -- keeping the trailing (2, *spatial) intact --
         # and zero-pad it if needed (linear transform, so padding stays zero); restore the
         # original layout before returning.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=3)
-        num_chans = x.shape[-4]
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=1 + len(self.shard.shape))
+        num_chans = x.shape[-2 - len(self.shard.shape)]
 
-        # h and w is split. First we make w local by transposing into channel dim
-        if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth(x, (-4, -1), self.lon_shapes)
+        if self.ring_fft is None:
+            # h and w is split. First we make w local by transposing into channel dim
+            if self.comm_size_azimuth > 1:
+                x = distributed_transpose_azimuth(x, (-4, -1), self.lon_shapes)
 
-        # apply real fft in the longitudinal direction: make sure to truncate to nlon. The 2*pi
-        # scale factor is folded into the quadrature weights, so no scaling is needed here.
-        x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
+            # apply real fft in the longitudinal direction: make sure to truncate to nlon. The 2*pi
+            # scale factor is folded into the quadrature weights, so no scaling is needed here.
+            x = rfft(x, nmodes=self.mmax, dim=-1, norm="forward")
 
-        # transpose: after this, m is split and c is local
-        if self.comm_size_azimuth > 1:
-            chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth(x, (-1, -4), chan_shapes)
+            # transpose: after this, m is split and c is local
+            if self.comm_size_azimuth > 1:
+                chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
+                x = distributed_transpose_azimuth(x, (-1, -4), chan_shapes)
+        else:
+            # HEALPix: the ring FFT of this rank's rings is local, see DistributedRealSHT
+            x = self.ring_fft(x)
 
         # transpose to put the contraction dim (nlat) on the fast axis. nlat stays split across
         # the polar group, see DistributedRealSHT.forward.
@@ -731,14 +841,15 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         # (see DistributedRealSHT.forward for why the collective cannot take complex input).
         out = torch.stack((out_re, out_im), dim=-1)
         if self.comm_size_polar > 1:
-            out = reduce_from_scatter_to_polar_region(out, -3)
+            out = reduce_from_scatter_to_polar_region(out, -3, self.l_shapes)
         x = torch.view_as_complex(out.contiguous())
 
         # drop padding and restore the original leading dims
         x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=3)
 
         if self.radial is not None:
-            x = x.movedim(-4, -3).contiguous()
+            component, radial = _vector_radial_dims(self, spatial=False)
+            x = x.movedim(component, radial).contiguous()
 
         return x
 
@@ -751,7 +862,8 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
     The distribution scheme is the same as for
     :class:`DistributedInverseRealSHT` (see its docstring for a step-by-step
     description of the all-to-all transposes over the ``N = B * C`` axis).
-    The additional size-2 vector component dimension is preserved throughout.
+    The additional size-2 vector component dimension is preserved throughout, and
+    HEALPix is handled as there, with the output ``(B, C, 2, npix_local)``.
 
     .. seealso::
         :class:`torch_harmonics.InverseRealVectorSHT`
@@ -760,7 +872,7 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
 
     Parameters
     ----------
-    grid : RegularGridS2
+    grid : RegularGridS2 or HealpixGrid
         Descriptor of the spatial grid the transform operates on. It carries the
         resolution as well as the quadrature rule, so no separate ``nlat``/``nlon``
         is needed. Build one with :func:`torch_harmonics.grid.as_grid`.
@@ -784,7 +896,8 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
     Returns
     -------
     torch.Tensor
-        Local spatial vector field, shape ``(..., 2, nlat_local, nlon_local)``.
+        Local spatial vector field, shape ``(..., 2, nlat_local, nlon_local)``, or
+        ``(..., 2, npix_local)`` on HEALPix.
 
     References
     ----------
@@ -812,33 +925,19 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         # on a SphericalProductGrid every shell is transformed alike; the radial axis is one
         # more leading axis, flattened into the one the transposes split
         grid, self.radial = split_radial(grid)
-        self.grid = require_regular_grid(grid)
-        self.nlat, self.nlon = self.grid.shape
-        _warn_if_not_spectrally_accurate(self.grid)
+        _setup_grid(self, grid)
         self.norm = norm
         self.csphase = csphase
 
-        self.comm_size_polar = polar_group_size()
-        self.comm_rank_polar = polar_group_rank()
-        self.comm_size_azimuth = azimuth_group_size()
-        self.comm_rank_azimuth = azimuth_group_rank()
-
         self._trunc = truncate_sht(self.grid, lmax, mmax, lmmax)
 
-        # compute splits
-        # the grid decomposes itself in space; the spectral split below stays manual,
+        # compute splits: the grid decomposes itself in space; the spectral split stays manual,
         # since lmax/mmax are not grid dimensions
-        self.shard = self.grid.shard(
-            polar=(self.comm_rank_polar, self.comm_size_polar),
-            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
-        )
-        self.lat_shapes = list(self.shard.lat_shapes)
-        self.lon_shapes = list(self.shard.lon_shapes)
+        _setup_shard(self)
         self.l_shapes = compute_split_shapes(self.lmax, self.comm_size_polar)
         self.lmax_local = self.l_shapes[self.comm_rank_polar]
         self.m_shapes = compute_split_shapes(self.mmax, self.comm_size_azimuth)
         self.mmax_local = self.m_shapes[self.comm_rank_azimuth]
-
         self.lmax_offset = sum(self.l_shapes[: self.comm_rank_polar])
         self.mmax_offset = sum(self.m_shapes[: self.comm_rank_azimuth])
 
@@ -876,7 +975,7 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         return self._trunc
 
     @property
-    def grid_out(self) -> RegularGridS2:
+    def grid_out(self) -> GridS2:
         """Global spatial domain of the output field."""
         return self.grid
 
@@ -899,7 +998,8 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         # a product field is (..., 2, nr, *spatial); the radial axis moves in front of the
         # component one, where it is just another leading axis, and back at the end
         if self.radial is not None:
-            x = x.movedim(-3, -4)
+            component, radial = _vector_radial_dims(self, spatial=False)
+            x = x.movedim(radial, component)
 
         # the transposes below redistribute the leading (channel/batch) axis across the
         # process grid, so it must be at least as large as the larger comm group. Flatten
@@ -907,7 +1007,6 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         # and zero-pad it if needed (linear transform, so padding stays zero); restore the
         # original layout before returning.
         x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=3)
-        num_chans = x.shape[-4]
 
         # transpose to put the contraction dim (lmax) on the fast axis. l stays split across
         # the polar group, see DistributedInverseRealSHT.forward.
@@ -936,25 +1035,32 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         # (see DistributedRealSHT.forward for why the collective cannot take complex input).
         out = torch.stack((out_re, out_im), dim=-1)
         if self.comm_size_polar > 1:
-            out = reduce_from_scatter_to_polar_region(out, -3)
+            out = reduce_from_scatter_to_polar_region(out, -3, self.lat_shapes)
         x = torch.view_as_complex(out.contiguous())
 
-        # transpose: after this, channels are split and m is local
-        if self.comm_size_azimuth > 1:
-            x = distributed_transpose_azimuth(x, (-4, -1), self.m_shapes)
+        if self.ring_fft is None:
+            num_chans = x.shape[-4]
 
-        # apply the inverse (real) FFT
-        x = irfft(x, n=self.nlon, dim=-1, norm="forward")
+            # transpose: after this, channels are split and m is local
+            if self.comm_size_azimuth > 1:
+                x = distributed_transpose_azimuth(x, (-4, -1), self.m_shapes)
 
-        # transpose: after this, m is split and channels are local
-        if self.comm_size_azimuth > 1:
-            chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
-            x = distributed_transpose_azimuth(x, (-1, -4), chan_shapes)
+            # apply the inverse (real) FFT
+            x = irfft(x, n=self.nlon, dim=-1, norm="forward")
+
+            # transpose: after this, m is split and channels are local
+            if self.comm_size_azimuth > 1:
+                chan_shapes = compute_split_shapes(num_chans, self.comm_size_azimuth)
+                x = distributed_transpose_azimuth(x, (-1, -4), chan_shapes)
+        else:
+            # HEALPix: every order of this rank's rings is local, see DistributedInverseRealSHT
+            x = self.ring_fft.inverse(x)
 
         # drop padding and restore the original leading dims
-        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=3)
+        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=1 + len(self.shard.shape))
 
         if self.radial is not None:
-            x = x.movedim(-4, -3).contiguous()
+            component, radial = _vector_radial_dims(self, spatial=True)
+            x = x.movedim(component, radial).contiguous()
 
         return x

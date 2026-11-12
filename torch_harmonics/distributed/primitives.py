@@ -488,11 +488,21 @@ def _gather(input_, dim_, shapes_, group=None, verify_shapes=None):
     return output
 
 
-def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
+def _split_chunks(input_, dim_, comm_size, shapes):
+    """The per-rank chunks of ``input_`` along ``dim_``: the natural split, or ``shapes``."""
+    if shapes is None:
+        return split_tensor_along_dim(input_, dim_, comm_size)
+    return torch.split(input_, [int(n) for n in shapes], dim=dim_)
+
+
+def _reduce_scatter(input_, dim_, use_fp32=True, group=None, shapes=None):
     """Reduce-scatter along ``dim_`` across the given group.
 
-    Handles uneven splits (compute_split_shapes can produce per-rank chunk
-    sizes that differ by one) by padding each chunk to max_chunk before the
+    ``shapes`` are the per-rank chunk sizes along ``dim_``, by default the natural split of
+    :func:`compute_split_shapes`. A HEALPix band of rings is cut by pixel count instead, so
+    its chunks can differ by more than one.
+
+    Handles uneven splits by padding each chunk to max_chunk before the
     collective and trimming the per-rank output after. NCCL's reduce_scatter
     requires equal-sized chunks across ranks; without padding the call
     would silently read past short chunks' allocations, which manifests as
@@ -510,8 +520,13 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     comm_size = dist.get_world_size(group=group)
     comm_rank = dist.get_rank(group=group)
 
-    # Per-rank chunk sizes from the natural (possibly uneven) split.
-    orig_shapes = compute_split_shapes(input_.shape[dim_], comm_size)
+    # Per-rank chunk sizes, by default from the natural (possibly uneven) split.
+    if shapes is None:
+        orig_shapes = compute_split_shapes(input_.shape[dim_], comm_size)
+    else:
+        orig_shapes = [int(n) for n in shapes]
+        if len(orig_shapes) != comm_size or sum(orig_shapes) != input_.shape[dim_]:
+            raise ValueError(f"shapes {orig_shapes} do not split dimension {dim_} of size {input_.shape[dim_]} over {comm_size} ranks")
     max_chunk = max(orig_shapes)
     my_chunk = orig_shapes[comm_rank]
     is_even = min(orig_shapes) == max_chunk
@@ -521,7 +536,7 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
 
     if is_even:
         # Fast path: all chunks the same size; call reduce_scatter directly.
-        input_list = split_tensor_along_dim(input_, dim_, comm_size)
+        input_list = _split_chunks(input_, dim_, comm_size, shapes)
         if work_dtype != dtype:
             input_list = [x.to(work_dtype) for x in input_list]
         input_list = [x.contiguous() for x in input_list]
@@ -533,7 +548,7 @@ def _reduce_scatter(input_, dim_, use_fp32=True, group=None):
     # run reduce_scatter on the now-equal-sized chunks, then trim back to
     # the local rank's true chunk size. Padding zeros sum to zero across
     # ranks and are discarded by the slice after the collective.
-    chunks = list(split_tensor_along_dim(input_, dim_, comm_size))
+    chunks = list(_split_chunks(input_, dim_, comm_size, shapes))
     padded_chunks = []
     for c in chunks:
         if c.shape[dim_] < max_chunk:
@@ -696,27 +711,27 @@ class _ReduceFromScatterToPolarRegion(torch.autograd.Function):
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
-    def forward(input_, dim_):
+    def forward(input_, dim_, shapes_=None):
         if is_distributed_polar():
-            return _reduce_scatter(input_, dim_, group=polar_group())
+            return _reduce_scatter(input_, dim_, group=polar_group(), shapes=shapes_)
         else:
             return input_
 
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        input_, dim_ = inputs
+        input_, dim_, shapes_ = inputs
         ctx.dim = dim_
         if is_distributed_polar():
-            ctx.split_shapes = compute_split_shapes(input_.shape[dim_], polar_group_size())
+            ctx.split_shapes = compute_split_shapes(input_.shape[dim_], polar_group_size()) if shapes_ is None else list(shapes_)
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_polar():
-            return _GatherFromCopyToPolarRegion.apply(grad_output, ctx.dim, ctx.split_shapes), None
+            return _GatherFromCopyToPolarRegion.apply(grad_output, ctx.dim, ctx.split_shapes), None, None
         else:
-            return grad_output, None
+            return grad_output, None, None
 
 
 class _ReduceFromScatterToAzimuthRegion(torch.autograd.Function):
@@ -761,14 +776,16 @@ class _GatherFromCopyToPolarRegion(torch.autograd.Function):
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        _, dim_, _ = inputs
+        _, dim_, shapes_ = inputs
         ctx.dim = dim_
+        ctx.shapes = list(shapes_)
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_output):
         if is_distributed_polar():
-            return _ReduceFromScatterToPolarRegion.apply(grad_output, ctx.dim), None, None
+            # the adjoint scatters back the chunks the forward gathered, whatever their sizes
+            return _ReduceFromScatterToPolarRegion.apply(grad_output, ctx.dim, ctx.shapes), None, None
         else:
             return grad_output, None, None
 
@@ -979,7 +996,7 @@ def gather_from_polar_region(input_, dim_, shapes_):
 
 
 @torch.compiler.disable()
-def reduce_from_scatter_to_polar_region(input_, dim_):
+def reduce_from_scatter_to_polar_region(input_, dim_, shapes_=None):
     """Fused reduce-scatter across polar ranks along ``dim_``.
 
     Equivalent to an all-reduce followed by keeping only the local rank's
@@ -992,13 +1009,16 @@ def reduce_from_scatter_to_polar_region(input_, dim_):
         Tensor with partial contributions from the local rank.
     dim_ : int
         Dimension along which to scatter after reducing.
+    shapes_ : list[int], optional
+        Per-rank sizes along ``dim_``, by default the natural split of
+        :func:`compute_split_shapes`.
 
     Returns
     -------
     torch.Tensor
         Reduced and scattered tensor (local chunk only).
     """
-    return _ReduceFromScatterToPolarRegion.apply(input_, dim_)
+    return _ReduceFromScatterToPolarRegion.apply(input_, dim_, shapes_)
 
 
 @torch.compiler.disable()
