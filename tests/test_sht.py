@@ -935,8 +935,10 @@ class TestBlockedLegendreTables(unittest.TestCase):
     what the single dense table, ``block_size=None``, computes.
     """
 
+    # odd block sizes leave a short last block on every mmax in _BLOCK_CASES; 2 and 4 tile
+    # mmax = 16 and 20 exactly, and leave a short block on mmax = 11
     @parameterized.expand(
-        [[*case, vector, block_size] for case in _BLOCK_CASES for vector in (False, True) for block_size in (1, 3, 7)],
+        [[*case, vector, block_size] for case in _BLOCK_CASES for vector in (False, True) for block_size in (1, 2, 3, 4, 7)],
         skip_on_empty=True,
     )
     def test_blocks_compute_what_the_dense_table_does(self, grid, nlat, nlon, lmax, mmax, lmmax, vector, block_size):
@@ -974,7 +976,7 @@ class TestBlockedLegendreTables(unittest.TestCase):
         (expected_grad,) = torch.autograd.grad(expected, c, gradient)
         self.assertTrue(compare_tensors("blocked synthesis gradient", grad, expected_grad, atol=1e-13, rtol=1e-13))
 
-    @parameterized.expand([[vector, iter, block_size] for vector in (False, True) for iter in (0, 2) for block_size in (1, 3)])
+    @parameterized.expand([[vector, iter, block_size] for vector in (False, True) for iter in (0, 2) for block_size in (1, 3, 4)])
     def test_healpix_blocks_compute_what_the_dense_table_does(self, vector, iter, block_size):
         """HEALPix stores its tables in the same blocks; the Jacobi synthesis uses the transform's block size."""
         set_seed(333)
