@@ -161,16 +161,18 @@ def _ring_groups(nlon_per_lat: torch.Tensor) -> List[Tuple[int, torch.Tensor]]:
 
 @shared_table
 @torch.no_grad()
-def _ring_fft_tables(grid: GridS2, mmax: int) -> Dict[str, object]:
+def _ring_fft_tables(grid: GridS2, mmax: int, rmin: int, rmax: int) -> Dict[str, object]:
     """
-    The index and phase tables of a :class:`RingFFT`, and the layout of its ring batches.
+    The index and phase tables of a :class:`RingFFT` over the rings ``[rmin, rmax)``, and the layout of its ring batches.
 
-    Depend on the grid's rings and ``mmax`` only, so every ring FFT of the same grid and
+    Depend on those rings and ``mmax`` only, so every ring FFT of the same grid, rings and
     order count -- forward and inverse SHTs alike -- shares one set, see
-    :func:`~torch_harmonics.cache.shared_table`. The tensors are read-only.
+    :func:`~torch_harmonics.cache.shared_table`. The tensors are read-only. Pixel indices are
+    counted from the first pixel of ring ``rmin``.
     """
-    nlon_per_lat = grid.nlon_per_lat.to(torch.int64)
-    offsets = grid.lon_offsets.to(torch.int64)
+    nlon_per_lat = grid.nlon_per_lat[rmin:rmax].to(torch.int64)
+    offsets = grid.lon_offsets[rmin : rmax + 1].to(torch.int64)
+    offsets = offsets - offsets[0]
     nrings = int(nlon_per_lat.numel())
 
     # every ring's half spectrum fits into nbins bins
@@ -235,7 +237,7 @@ def _ring_fft_tables(grid: GridS2, mmax: int) -> Dict[str, object]:
     imag_mask[slot[even], nlon_per_lat[even] // 2] = 0.0
 
     # ring phases e^{-i m lambda_0}, lambda_0 = 2 pi shift / n
-    lam0 = 2.0 * torch.pi * grid.lon_shifts.to(torch.float64) / nlon_per_lat.to(torch.float64)
+    lam0 = 2.0 * torch.pi * grid.lon_shifts[rmin:rmax].to(torch.float64) / nlon_per_lat.to(torch.float64)
     angle = -m.to(torch.float64) * lam0.unsqueeze(-1)
 
     return {
@@ -281,16 +283,25 @@ class RingFFT(SharedBufferMixin, nn.Module):
         :attr:`~torch_harmonics.grid.GridS2.lon_shifts` describe the rings.
     mmax : int
         Number of orders, non-inclusive.
+    rings : tuple of int, optional
+        The rings ``(rmin, rmax)`` to transform, a contiguous range of the grid's, by default
+        all of them. A distributed transform takes its band of rings, which in ring order is a
+        contiguous slice of the flat field: ``(..., npoints)`` then counts that band's pixels.
     """
 
-    def __init__(self, grid: GridS2, mmax: int):
+    def __init__(self, grid: GridS2, mmax: int, rings: Optional[Tuple[int, int]] = None):
         super().__init__()
 
-        self.nrings = int(grid.nlon_per_lat.numel())
-        self.npoints = int(grid.lon_offsets[-1])
+        total = int(grid.nlon_per_lat.numel())
+        rmin, rmax = (0, total) if rings is None else (int(rings[0]), int(rings[1]))
+        if not 0 <= rmin < rmax <= total:
+            raise ValueError(f"rings must be a non-empty range within [0, {total}), got {rings!r}")
+        self.rings = (rmin, rmax)
+        self.nrings = rmax - rmin
+        self.npoints = int(grid.lon_offsets[rmax]) - int(grid.lon_offsets[rmin])
         self.mmax = int(mmax)
 
-        tables = _ring_fft_tables(grid, self.mmax)
+        tables = _ring_fft_tables(grid, self.mmax, rmin, rmax)
         self.nbins = tables["nbins"]
         self._lengths = list(tables["lengths"])
         self._counts = list(tables["counts"])
@@ -305,7 +316,7 @@ class RingFFT(SharedBufferMixin, nn.Module):
             self.register_shared_buffer(f"_{name}", tables[name])
 
     def extra_repr(self) -> str:
-        return f"nrings={self.nrings}, npoints={self.npoints}, mmax={self.mmax}, nbatches={len(self._lengths)}"
+        return f"rings={self.rings}, npoints={self.npoints}, mmax={self.mmax}, nbatches={len(self._lengths)}"
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
