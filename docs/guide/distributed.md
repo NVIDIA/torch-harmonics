@@ -181,6 +181,39 @@ x_local = x_global[
 ]
 ```
 
+### HEALPix
+
+A {class}`~torch_harmonics.healpix.HealpixGrid` decomposes along **latitude
+only**. Its rings differ in length and carry different phases, so there is no
+global `nlon` to split, and `grid.shard` raises `NotImplementedError` for an
+azimuth group of more than one rank. Every distributed layer that accepts
+HEALPix inherits this, so it refuses such a process grid at construction; run it
+on a `num_polar × 1` layout.
+
+Each polar rank holds a contiguous band of whole rings. The bands are cut so
+that every rank holds about the same number of **pixels** rather than rings, so
+ranks near the poles hold more, shorter rings. In RING order a band is a
+contiguous slice of the flat pixel axis, so the local field is
+`(batch, channels, npix_local)` and splitting is a single `torch.split`:
+
+```python
+grid = th.HealpixGrid(nside=256)
+shard = grid.shard(polar=(polar_rank, num_polar))   # a HealpixGridShardS2
+
+pixel_shapes = list(shard.pixel_shapes)  # pixels held by every polar rank
+shard.ring_shapes                        # rings held by every polar rank
+shard.ring_offset, shard.pixel_offset    # where this rank's band starts
+npix_local, = shard.shape
+
+x_local = torch.split(x_global, pixel_shapes, dim=-1)[polar_rank]
+```
+
+The distributed SHTs (`DistributedRealSHT`, `DistributedInverseRealSHT` and
+their vector variants) and `DistributedQuadratureS2` accept HEALPix; the other
+distributed layers still require a latitude-longitude grid. The spectral layout
+of the SHTs is the same as on a latitude-longitude grid with one azimuth rank:
+degrees `l` split across the polar ranks, all orders `m` local.
+
 ## 5. Calling distributed modules
 
 Once the communicator grid is set up and each rank holds its local tile, the
@@ -208,31 +241,37 @@ x_recon = isht(coeffs)           # (4, 16, nlat_local, nlon_local), real
 
 ## 6. How the distributed SHT works internally
 
-The distributed SHT uses **all-to-all transposes** that trade spatial
-dimensions for slices of the flattened leading axis `N = B * C`. This is why
-`N` must be at least as large as the process-group size (if it is smaller, the
-module zero-pads it automatically and strips the padding on output).
+Along the azimuth the distributed SHT uses **all-to-all transposes** that trade
+the longitudes for slices of the flattened leading axis `N = B * C`. This is why
+`N` must be at least as large as the azimuth group (if it is smaller, the
+module zero-pads it automatically and strips the padding on output). Along the
+polar axis there is no transpose: the Legendre sum is a distributed matrix
+product, which each rank evaluates partially over the latitudes it holds and a
+single reduce-scatter completes.
 
 For the **forward** SHT (`DistributedRealSHT`), the sequence is:
 
-| Step | Operation            | What becomes local | What gets split          |
-| ---- | -------------------- | ------------------ | ------------------------ |
-| 1    | Azimuth a2a          | `nlon` (full)      | `N` across azimuth ranks |
-| 2    | Real FFT             | —                  | —                        |
-| 3    | Azimuth a2a          | `N` (full)         | `m` across azimuth ranks |
-| 4    | Polar a2a            | `nlat` (full)      | `N` across polar ranks   |
-| 5    | Legendre contraction | —                  | —                        |
-| 6    | Polar a2a            | `N` (full)         | `l` across polar ranks   |
+| Step | Operation                    | What becomes local                       | What gets split          |
+| ---- | ---------------------------- | ---------------------------------------- | ------------------------ |
+| 1    | Azimuth a2a                  | `nlon` (full)                            | `N` across azimuth ranks |
+| 2    | Real FFT                     | —                                        | —                        |
+| 3    | Azimuth a2a                  | `N` (full)                               | `m` across azimuth ranks |
+| 4    | Partial Legendre contraction | all `l`, summed over the local latitudes | —                        |
+| 5    | Polar reduce-scatter         | the full sum over latitudes              | `l` across polar ranks   |
 
 The **inverse** SHT (`DistributedInverseRealSHT`) reverses this sequence:
-degrees `l` are gathered via a polar transpose, the Legendre synthesis runs
-locally, then latitudes are redistributed; orders `m` are gathered via an
-azimuth transpose, the inverse FFT runs locally, and longitudes are
-redistributed.
+each rank synthesizes all latitudes from the degrees `l` it holds, a polar
+reduce-scatter completes the sum and splits the latitudes, then the orders `m`
+are gathered via an azimuth transpose, the inverse FFT runs locally, and
+longitudes are redistributed.
 
 The **vector** variants (`DistributedRealVectorSHT`,
 `DistributedInverseRealVectorSHT`) follow the same scheme; the additional
 size-2 component dimension is preserved throughout.
+
+On a **HEALPix** grid steps 1-3 collapse into one local step: every rank holds
+whole rings, so it runs the per-ring FFT on its band without any azimuth
+transpose. Steps 4 and 5 are unchanged. The inverse runs the same path backwards.
 
 ## 7. Clean-up
 

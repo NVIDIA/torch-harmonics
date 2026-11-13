@@ -67,9 +67,12 @@ where the nodes sit: the quadrature weights, the node spacing localized
 operators take their default cutoff from, the degree an SHT can be truncated to,
 and how the grid decomposes across ranks. Operators mapping between two grids
 take `grid_in` and `grid_out` in that leading position. Besides the
-latitude-longitude grids there is HEALPix, which the attention layers and the DISCO
-convolutions accept on either side, and the scalar and vector SHTs transform with
-exact synthesis and iteratively refined analysis. See {ref}`grids`.
+latitude-longitude grids there is HEALPix, which the attention layers, the DISCO
+convolutions and resampling accept on either side, the scalar and vector SHTs
+transform with exact synthesis and iteratively refined analysis, and spectral
+convolutions, random fields and quadrature accept as well. The distributed SHTs and
+the distributed quadrature accept HEALPix too, decomposed along latitude only. See
+{ref}`grids`.
 
 ## Citing torch-harmonics
 

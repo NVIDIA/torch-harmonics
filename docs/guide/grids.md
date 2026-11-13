@@ -79,10 +79,13 @@ whose length grows from 4 at the poles to `4 * nside` at the equator. Its
 quadrature integrates only constants exactly, so no SHT on it is exact in
 analysis. The scalar and vector SHTs accept it all the same: synthesis is exact,
 and analysis is approximate, refined by Jacobi iteration (see "SHT on HEALPix"
-below). It is also accepted by `AttentionS2`, `NeighborhoodAttentionS2`,
-`DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and `QuadratureS2`;
-spectral convolutions, resampling, random fields and the distributed layers
-require a latitude-longitude grid. `HealpixGrid.from_level(k)`
+below). It is also accepted by `SpectralConvS2`, `ResampleS2`,
+`GaussianRandomFieldS2`, `AttentionS2`, `NeighborhoodAttentionS2`,
+`DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and `QuadratureS2`.
+Of the distributed layers, the four distributed SHTs and `DistributedQuadratureS2`
+accept it, with the grid decomposed along latitude only: more than one azimuth
+rank is rejected (see "HEALPix" in the distributed guide). The other distributed
+layers still require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
 ## Spherical harmonic truncation
@@ -376,7 +379,8 @@ decode = th.AttentionS2(grid_in=hp, grid_out=ll, in_channels=32, num_heads=4)
 ```
 
 The distributed layers take the *global* grid; each rank derives its own part
-of it.
+of it. A HEALPix grid is split into bands of rings along the polar group only;
+an azimuth group of more than one rank is rejected.
 
 ## Migrating from earlier versions
 
