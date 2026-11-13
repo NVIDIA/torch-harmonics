@@ -36,8 +36,9 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics._field_contract import check_field
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import GridS2, _rejects_legacy_signature
 from torch_harmonics.radial import split_radial_pair
+from torch_harmonics.sht import _require_sht_grid
 from torch_harmonics.truncation import _truncate_spectral_conv
 from torch_harmonics.utils import compile_if_supported
 
@@ -65,6 +66,14 @@ class DistributedSpectralConvS2(nn.Module):
     The spectral contraction is therefore fully local — no communication is
     needed for the channel mixing.
 
+    **HEALPix.** Either grid may be a :class:`~torch_harmonics.healpix.HealpixGrid`, whose
+    local field is this rank's band of rings of the flat ``(..., npix)`` axis (see
+    :class:`~torch_harmonics.healpix.HealpixGridShardS2`). A HEALPix grid decomposes along
+    latitude only, so the layer then requires an azimuth group of one rank and raises
+    ``NotImplementedError`` otherwise. With one azimuth rank every grid shares the same
+    spectral layout, ``l`` split across the polar ranks and all ``m`` local, so HEALPix and
+    regular grids mix freely on the two sides.
+
     .. note::
         When saving a checkpoint to a single file, the weight tensor must be
         gathered across polar ranks along the ``l`` dimension to recover the
@@ -90,11 +99,11 @@ class DistributedSpectralConvS2(nn.Module):
 
     Parameters
     ----------
-    grid_in : RegularGridS2
-        Descriptor of the input grid. It carries the resolution as well as the
+    grid_in : RegularGridS2 or HealpixGrid
+        Descriptor of the *global* input grid. It carries the resolution as well as the
         quadrature rule, so no separate shape argument is needed.
-    grid_out : RegularGridS2
-        Descriptor of the output grid.
+    grid_out : RegularGridS2 or HealpixGrid
+        Descriptor of the *global* output grid.
     in_channels : int
         Number of input channels.
     out_channels : int
@@ -115,14 +124,19 @@ class DistributedSpectralConvS2(nn.Module):
 
     Raises
     ------
-    AssertionError
+    TypeError
+        If a grid is neither a regular grid nor a HEALPix grid.
+    ValueError
         If ``in_channels`` or ``out_channels`` is not divisible by
         ``num_groups``.
+    NotImplementedError
+        If a grid is a HEALPix grid and the azimuth group has more than one rank.
 
     Returns
     -------
     torch.Tensor
-        Local output of shape ``(..., out_channels, nlat_out_local, nlon_out_local)``.
+        Local output of shape ``(..., out_channels, nlat_out_local, nlon_out_local)``, or
+        ``(..., out_channels, npix_out_local)`` on a HEALPix output grid.
 
     Notes
     -----
@@ -139,8 +153,8 @@ class DistributedSpectralConvS2(nn.Module):
     )
     def __init__(
         self,
-        grid_in: RegularGridS2,
-        grid_out: RegularGridS2,
+        grid_in: GridS2,
+        grid_out: GridS2,
         in_channels: int,
         out_channels: int,
         num_groups: Optional[int] = 1,
@@ -159,10 +173,8 @@ class DistributedSpectralConvS2(nn.Module):
         # copy inputs
         # on a pair of product grids every shell is convolved alike, see SpectralConvS2.forward
         grid_in, grid_out, self.radial = split_radial_pair(grid_in, grid_out)
-        self.grid_in = require_regular_grid(grid_in, "grid_in")
-        self.grid_out = require_regular_grid(grid_out, "grid_out")
-        self.nlat_in, self.nlon_in = self.grid_in.shape
-        self.nlat_out, self.nlon_out = self.grid_out.shape
+        self.grid_in = _require_sht_grid(grid_in)
+        self.grid_out = _require_sht_grid(grid_out)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_groups = num_groups
