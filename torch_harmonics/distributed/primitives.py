@@ -40,7 +40,7 @@ from torch_harmonics.quadrature import latitude_support_band
 from torch_harmonics.utils import check
 
 from ._amp_utils import _custom_fwd, _custom_setup_context
-from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_rank, polar_group_size
+from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_rank, polar_group_size, start_polar_group
 from .utils import config as thd_config
 
 
@@ -1238,12 +1238,12 @@ class PolarHaloPlan:
         return cls(recv_prev=before, recv_next=after, send_prev=send_prev, send_next=send_next)
 
 
-def _as_halo_plan(halo) -> PolarHaloPlan:
+def _as_halo_plan(r_lat) -> PolarHaloPlan:
     """A plan as given, or the symmetric one of this rank for an integer radius."""
-    if isinstance(halo, PolarHaloPlan):
-        plan = halo
+    if isinstance(r_lat, PolarHaloPlan):
+        plan = r_lat
     else:
-        plan = PolarHaloPlan.symmetric(halo, polar_group_rank(), polar_group_size())
+        plan = PolarHaloPlan.symmetric(r_lat, polar_group_rank(), polar_group_size())
     return plan
 
 
@@ -1287,7 +1287,10 @@ def _halo_gather(x, plan: PolarHaloPlan, lat_dim=-2):
     # Up to v0.9.3 the bottom slice was x[..., -r_lat:, :], which at r_lat == 0 is the whole
     # tensor; sent against the neighbour's 0-row receive, its surplus could be delivered to the
     # next halo receive on the polar communicator and corrupt a later layer. narrow() below no
-    # longer degenerates that way, and a side with a zero count posts nothing.
+    # longer degenerates that way, and a side with a zero count posts nothing. That can leave a
+    # rank out of the exchange altogether, which NCCL refuses in a group's first P2P call, so
+    # every rank starts the group first
+    start_polar_group(x.device)
     if plan.is_identity:
         return x
 
@@ -1326,7 +1329,9 @@ def _halo_reduce(y, plan: PolarHaloPlan, lat_dim=-2):
     :func:`_halo_gather` zero-padding there.
     """
 
-    # no halo entries to send home; skip the P2P exchange entirely, as _halo_gather does
+    # no halo entries to send home; skip the P2P exchange entirely, as _halo_gather does, once
+    # the group has been started by every rank
+    start_polar_group(y.device)
     if plan.is_identity:
         return y
 
@@ -1535,7 +1540,7 @@ def compute_polar_halo_radius(
 
 
 @torch.compiler.disable()
-def polar_halo_exchange(x, halo, lat_dim=-2):
+def polar_halo_exchange(x, r_lat, lat_dim=-2):
     """Exchange halo entries with the neighbouring polar ranks.
 
     Gathers the entries this rank borrows from each polar neighbour along ``lat_dim`` and
@@ -1547,11 +1552,11 @@ def polar_halo_exchange(x, halo, lat_dim=-2):
     x : torch.Tensor
         Input tensor of shape ``(B, C, H_local, W)``, or any shape whose split axis is
         ``lat_dim``.
-    halo : int or PolarHaloPlan
-        An integer ``r_lat`` exchanges that many rows with each neighbour and zero-pads the
-        side without one, so every rank's block grows by ``2 * r_lat``. A
-        :class:`PolarHaloPlan` gives the counts of each side, which may differ per side and
-        per rank, as on the bands of rings of a HEALPix grid.
+    r_lat : int or PolarHaloPlan
+        An integer exchanges that many rows with each neighbour and zero-pads the side
+        without one, so every rank's block grows by ``2 * r_lat``. A :class:`PolarHaloPlan`
+        gives the counts of each side, which may differ per side and per rank, as on the
+        bands of rings of a HEALPix grid.
     lat_dim : int, optional
         The split axis, by default ``-2`` (channels-first). A channels-last
         ``(B, H_local, W, C)`` tensor passes ``1``, a flat HEALPix field ``-1``.
@@ -1564,11 +1569,11 @@ def polar_halo_exchange(x, halo, lat_dim=-2):
     """
     if not is_distributed_polar():
         return x
-    return _PolarHaloExchangeFn.apply(x, _as_halo_plan(halo), lat_dim)
+    return _PolarHaloExchangeFn.apply(x, _as_halo_plan(r_lat), lat_dim)
 
 
 @torch.compiler.disable()
-def polar_halo_reduce(y, halo, nlat_local=None, lat_dim=-2):
+def polar_halo_reduce(y, r_lat, nlat_local=None, lat_dim=-2):
     """Accumulate halo entries onto their owning polar ranks.
 
     The adjoint of :func:`polar_halo_exchange`, and its mirror image: where the exchange
@@ -1582,7 +1587,7 @@ def polar_halo_reduce(y, halo, nlat_local=None, lat_dim=-2):
     y : torch.Tensor
         Halo-padded tensor, of shape ``(B, C, nlat_local + 2 * r_lat, W)`` for an integer
         halo, or any shape whose split axis ``lat_dim`` is halo-padded.
-    halo : int or PolarHaloPlan
+    r_lat : int or PolarHaloPlan
         The halo ``y`` was padded with, as for :func:`polar_halo_exchange`.
     nlat_local : int, optional
         Number of entries this rank owns, i.e. the extent of the returned tensor. It follows
@@ -1603,7 +1608,7 @@ def polar_halo_reduce(y, halo, nlat_local=None, lat_dim=-2):
     """
     if not is_distributed_polar():
         return y
-    plan = _as_halo_plan(halo)
+    plan = _as_halo_plan(r_lat)
     if nlat_local is not None:
         extent = y.shape[lat_dim] - plan.before - plan.after
         if extent != nlat_local:

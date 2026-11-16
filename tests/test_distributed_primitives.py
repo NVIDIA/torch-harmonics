@@ -909,6 +909,43 @@ class TestPolarHaloPlan(unittest.TestCase):
             ok = compare_tensors("symmetric halo after a planned one", got, expected, atol=0.0, rtol=0.0, verbose=False)
             self.assertTrue(reduce_success(ok, self.device), "symmetric halo after a planned one")
 
+    def test_a_rank_with_nothing_to_move_is_left_out_correctly(self):
+        """
+        A plan in which the last rank moves nothing at all, the case NCCL refuses as a group's first P2P call.
+
+        Every rank starts the polar group with a collective before its first exchange, so the
+        group is started afterwards, and the ranks that do exchange get their ranges.
+        """
+        comm_size, rank = thd.polar_group_size(), thd.polar_group_rank()
+        shapes = [4] * comm_size
+        starts = [4 * r for r in range(comm_size + 1)]
+        # only rank 0 reads one entry of rank 1; everyone else reads its own block
+        needs = [(starts[r], starts[r + 1] + (1 if r == 0 and comm_size > 1 else 0)) for r in range(comm_size)]
+        plan = PolarHaloPlan.from_needs(shapes, needs, rank)
+        if comm_size > 2 and rank == comm_size - 1:
+            self.assertTrue(plan.is_identity)
+
+        x_full = torch.arange(starts[-1], dtype=torch.float64, device=self.device).expand(2, -1)
+        got = polar_halo_exchange(x_full[..., starts[rank] : starts[rank + 1]].contiguous(), plan, lat_dim=-1)
+        lo, hi = needs[rank]
+        ok = compare_tensors("sparse halo", got, x_full[..., lo:hi], atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "sparse halo")
+        if comm_size > 1:
+            self.assertTrue(thd.utils._POLAR_GROUP_STARTED)
+
+    def test_radius_keyword_is_still_accepted(self):
+        """The radius keeps its keyword, r_lat, and takes a plan as well."""
+        comm_size, rank = thd.polar_group_size(), thd.polar_group_rank()
+        x = torch.randn(2, 3, 6, 4, device=self.device, dtype=torch.float64)
+        by_position = polar_halo_exchange(x, 1)
+        by_keyword = polar_halo_exchange(x, r_lat=1)
+        by_plan = polar_halo_exchange(x, r_lat=PolarHaloPlan.symmetric(1, rank, comm_size) if comm_size > 1 else 1)
+        for name, got in (("keyword", by_keyword), ("plan", by_plan)):
+            ok = compare_tensors(f"halo by {name}", got, by_position, atol=0.0, rtol=0.0, verbose=False)
+            self.assertTrue(reduce_success(ok, self.device), f"halo by {name}")
+        reduced = polar_halo_reduce(by_position, r_lat=1, nlat_local=x.shape[-2])
+        self.assertEqual(reduced.shape, x.shape)
+
     def test_exchange_backward_returns_every_contribution_home(self):
         """
         The gradient of the exchange sums every rank's contribution to an entry onto its owner.
