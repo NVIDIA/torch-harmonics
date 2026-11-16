@@ -65,8 +65,10 @@ def tearDownModule():
 def _make_grid(name, shape):
     """A grid descriptor from a row's grid name and shape: ``(nside,)`` for HEALPix, ``(nlat, nlon)`` otherwise."""
     if name == "healpix":
-        return th.HealpixGrid(nside=shape[0])
-    return th.as_grid(name, nlat=shape[0], nlon=shape[1])
+        grid = th.HealpixGrid(nside=shape[0])
+    else:
+        grid = th.as_grid(name, nlat=shape[0], nlon=shape[1])
+    return grid
 
 
 class TestDistributedSpectralConvolution(unittest.TestCase):
@@ -84,8 +86,10 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
     def _split_helper(self, tensor, sht):
         """This rank's piece of a global field on the spatial grid of ``sht``."""
         if isinstance(sht.grid, th.HealpixGrid):
-            return torch.split(tensor, sht.pixel_shapes, dim=-1)[self.hrank].contiguous()
-        return split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
+            tensor_local = torch.split(tensor, sht.pixel_shapes, dim=-1)[self.hrank].contiguous()
+        else:
+            tensor_local = split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
+        return tensor_local
 
     def _gather_helper(self, tensor, sht):
         """The global field from every rank's piece on the spatial grid of ``sht``."""
