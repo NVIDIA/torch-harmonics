@@ -40,7 +40,7 @@ from torch_harmonics.quadrature import latitude_support_band
 from torch_harmonics.utils import check
 
 from ._amp_utils import _custom_fwd, _custom_setup_context
-from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_rank, polar_group_size, start_polar_group
+from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_size, start_polar_group
 from .utils import config as thd_config
 
 
@@ -1238,15 +1238,6 @@ class PolarHaloPlan:
         return cls(recv_prev=before, recv_next=after, send_prev=send_prev, send_next=send_next)
 
 
-def _as_halo_plan(r_lat) -> PolarHaloPlan:
-    """A plan as given, or the symmetric one of this rank for an integer radius."""
-    if isinstance(r_lat, PolarHaloPlan):
-        plan = r_lat
-    else:
-        plan = PolarHaloPlan.symmetric(r_lat, polar_group_rank(), polar_group_size())
-    return plan
-
-
 def _halo_exchange_neighbours(sends, recvs):
     """
     Post the point-to-point messages of one halo exchange and wait for them.
@@ -1539,24 +1530,43 @@ def compute_polar_halo_radius(
     return r_lat
 
 
+def _require_halo_plan(halo, r_lat, name: str) -> PolarHaloPlan:
+    """The plan a halo function was given, or a TypeError naming the replacement for a radius."""
+    if r_lat is not None:
+        raise TypeError(
+            f"{name} takes a PolarHaloPlan as halo since v1.0.0; r_lat is gone. For the symmetric halo of "
+            f"radius {r_lat!r}, pass halo=PolarHaloPlan.symmetric({r_lat!r}, polar_group_rank(), polar_group_size())."
+        )
+    if not isinstance(halo, PolarHaloPlan):
+        raise TypeError(
+            f"{name} takes a PolarHaloPlan as halo since v1.0.0, got {halo!r}. For the symmetric halo of a "
+            "radius r_lat, pass PolarHaloPlan.symmetric(r_lat, polar_group_rank(), polar_group_size())."
+        )
+    return halo
+
+
 @torch.compiler.disable()
-def polar_halo_exchange(x, r_lat, lat_dim=-2):
+def polar_halo_exchange(x, halo=None, lat_dim=-2, *, r_lat=None):
     """Exchange halo entries with the neighbouring polar ranks.
 
-    Gathers the entries this rank borrows from each polar neighbour along ``lat_dim`` and
-    returns the halo-padded tensor. The operation is fully differentiable: the backward
-    pass sends halo gradients back to their owning ranks and accumulates them.
+    Gathers the entries this rank borrows from each polar neighbour along ``lat_dim``, as
+    ``halo`` lays them out, and returns the halo-padded tensor. The operation is fully
+    differentiable: the backward pass sends halo gradients back to their owning ranks and
+    accumulates them.
+
+    Every rank of the polar group has to call this together, also a rank whose plan moves
+    nothing, see :func:`~torch_harmonics.distributed.utils.start_polar_group`.
 
     Parameters
     ----------
     x : torch.Tensor
         Input tensor of shape ``(B, C, H_local, W)``, or any shape whose split axis is
         ``lat_dim``.
-    r_lat : int or PolarHaloPlan
-        An integer exchanges that many rows with each neighbour and zero-pads the side
-        without one, so every rank's block grows by ``2 * r_lat``. A :class:`PolarHaloPlan`
-        gives the counts of each side, which may differ per side and per rank, as on the
-        bands of rings of a HEALPix grid.
+    halo : PolarHaloPlan
+        What this rank receives from and sends to each neighbour, and how much it pads.
+        :meth:`PolarHaloPlan.symmetric` gives ``r_lat`` rows on each side, zero-padded at
+        the poles; :meth:`PolarHaloPlan.from_needs` counts that differ per side and per
+        rank, as on the bands of rings of a HEALPix grid.
     lat_dim : int, optional
         The split axis, by default ``-2`` (channels-first). A channels-last
         ``(B, H_local, W, C)`` tensor passes ``1``, a flat HEALPix field ``-1``.
@@ -1564,16 +1574,22 @@ def polar_halo_exchange(x, r_lat, lat_dim=-2):
     Returns
     -------
     torch.Tensor
-        Halo-padded tensor, ``plan.before`` entries longer in front and ``plan.after``
+        Halo-padded tensor, ``halo.before`` entries longer in front and ``halo.after``
         behind along ``lat_dim``.
+
+    Raises
+    ------
+    TypeError
+        If ``halo`` is not a :class:`PolarHaloPlan`, or the removed ``r_lat`` is passed.
     """
+    halo = _require_halo_plan(halo, r_lat, "polar_halo_exchange")
     if not is_distributed_polar():
         return x
-    return _PolarHaloExchangeFn.apply(x, _as_halo_plan(r_lat), lat_dim)
+    return _PolarHaloExchangeFn.apply(x, halo, lat_dim)
 
 
 @torch.compiler.disable()
-def polar_halo_reduce(y, r_lat, nlat_local=None, lat_dim=-2):
+def polar_halo_reduce(y, halo=None, lat_dim=-2, *, r_lat=None):
     """Accumulate halo entries onto their owning polar ranks.
 
     The adjoint of :func:`polar_halo_exchange`, and its mirror image: where the exchange
@@ -1585,13 +1601,10 @@ def polar_halo_reduce(y, r_lat, nlat_local=None, lat_dim=-2):
     Parameters
     ----------
     y : torch.Tensor
-        Halo-padded tensor, of shape ``(B, C, nlat_local + 2 * r_lat, W)`` for an integer
-        halo, or any shape whose split axis ``lat_dim`` is halo-padded.
-    r_lat : int or PolarHaloPlan
+        Halo-padded tensor, ``halo.before + nlat_local + halo.after`` long along
+        ``lat_dim``.
+    halo : PolarHaloPlan
         The halo ``y`` was padded with, as for :func:`polar_halo_exchange`.
-    nlat_local : int, optional
-        Number of entries this rank owns, i.e. the extent of the returned tensor. It follows
-        from ``y`` and the plan; when given, it is checked against them.
     lat_dim : int, optional
         The split axis, by default ``-2`` (channels-first). A channels-last
         ``(B, H, W, C)`` tensor passes ``1``.
@@ -1599,18 +1612,14 @@ def polar_halo_reduce(y, r_lat, nlat_local=None, lat_dim=-2):
     Returns
     -------
     torch.Tensor
-        This rank's completed entries along ``lat_dim``.
+        This rank's completed entries along ``lat_dim``, ``nlat_local`` long.
 
     Raises
     ------
-    ValueError
-        If ``nlat_local`` does not match ``y`` and the plan.
+    TypeError
+        If ``halo`` is not a :class:`PolarHaloPlan`, or the removed ``r_lat`` is passed.
     """
+    halo = _require_halo_plan(halo, r_lat, "polar_halo_reduce")
     if not is_distributed_polar():
         return y
-    plan = _as_halo_plan(r_lat)
-    if nlat_local is not None:
-        extent = y.shape[lat_dim] - plan.before - plan.after
-        if extent != nlat_local:
-            raise ValueError(f"polar_halo_reduce: y holds {extent} own entries along dim {lat_dim} for {plan}, not nlat_local={nlat_local}")
-    return _PolarHaloReduceFn.apply(y, plan, lat_dim)
+    return _PolarHaloReduceFn.apply(y, halo, lat_dim)

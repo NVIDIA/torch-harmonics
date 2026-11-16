@@ -51,6 +51,7 @@ from .kernels import (
 # distributed stuff — relative imports to avoid the circular dependency
 # through torch_harmonics.distributed.__init__.
 from .primitives import (
+    PolarHaloPlan,
     compute_polar_halo_radius,
     compute_split_shapes,
     distributed_transpose_azimuth,
@@ -402,6 +403,10 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
                     "every output latitude on every polar rank -- so its intermediate does not shrink as "
                     "polar ranks are added."
                 ) from err
+
+        # what this rank exchanges with its polar neighbours on the halo path: r_lat rows from
+        # each, zero-padded at the poles, so every rank's input chunk is 2 * r_lat rows longer
+        self.halo = PolarHaloPlan.symmetric(self.r_lat, self.comm_rank_polar, self.comm_size_polar)
 
         # set local shapes according to distributed mode
         self.nlat_in_local = self.lat_in_shapes[self.comm_rank_polar]
