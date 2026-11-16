@@ -39,9 +39,17 @@ from torch_harmonics._field_contract import check_field
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
 from torch_harmonics.radial import split_radial_pair
 from torch_harmonics.resample import _interpolate_on_taps, _ring_taps, _slerp_shortest_arc
-from torch_harmonics.utils import check, recast_buffers_for
+from torch_harmonics.utils import recast_buffers_for
 
-from .primitives import compute_split_shapes, copy_to_azimuth_region, distributed_transpose_azimuth, distributed_transpose_polar, reduce_from_azimuth_region
+from .primitives import (
+    compute_split_shapes,
+    copy_to_azimuth_region,
+    distributed_transpose_azimuth,
+    distributed_transpose_polar,
+    flatten_and_pad_leading_dims,
+    reduce_from_azimuth_region,
+    unpad_and_unflatten_leading_dims,
+)
 from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
@@ -72,6 +80,11 @@ class DistributedResampleS2(nn.Module):
     serial interpolation runs on it, and a second transpose cuts the output into this rank's
     band. A HEALPix grid decomposes along latitude only, so such a pair requires an azimuth
     group of one rank and raises ``NotImplementedError`` otherwise.
+
+    The transposes split the leading axis, so all leading dimensions (batch, channels and the
+    radial axis of a product grid) are flattened into one and zero-padded when it is shorter
+    than the larger process group, as in :class:`DistributedRealSHT`. Any batch and channel
+    count works.
 
     .. seealso::
         :class:`torch_harmonics.ResampleS2`
@@ -286,51 +299,45 @@ class DistributedResampleS2(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor):
-        # a channel axis is required: the transposes split it across the ranks
+        # a channel axis is required, as for the distributed SHTs
         check_field(x, self.shard_in, leading=(..., None), radial=self.radial)
 
         if self.skip_resampling:
             return x
 
-        # a product field (..., C, nr, *spatial): the radial axis joins the channel one,
-        # which the transposes split and which is free to merge with it
-        if self.radial is not None:
-            x = x.flatten(-2 - len(self.shard_in.shape), -1 - len(self.shard_in.shape))
-
-        # the transposes do not pad, so every rank needs a share of the channels; checked
-        # only here, since an identity resampling never splits them
-        chan_dim = -1 - len(self.shard_in.shape)
-        min_chans = max(self.comm_size_polar, self.comm_size_azimuth)
-        check(x.shape[chan_dim] >= min_chans, lambda: f"Expected at least {min_chans} channels in x.shape[{chan_dim}] to split across the ranks, got {tuple(x.shape)}")
+        # the transposes split the leading axis across the ranks of either group. Flatten every
+        # leading dim into it, the radial axis of a product field included, since every shell
+        # is resampled alike, and zero-pad it if needed (linear in the field, so the padding
+        # stays out of the result); restore the original layout before returning
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, max(self.comm_size_polar, self.comm_size_azimuth), num_trailing_dims=len(self.shard_in.shape))
 
         if self.separable:
             x = self._resample_separable(x)
         else:
             x = self._resample_taps(x)
 
-        if self.radial is not None:
-            x = x.unflatten(-1 - len(self.shard_out.shape), (-1, self.radial.nr))
+        x = unpad_and_unflatten_leading_dims(x, lead_shape, lead_size, num_trailing_dims=len(self.shard_out.shape))
 
         return x
 
     def _resample_taps(self, x: torch.Tensor) -> torch.Tensor:
         """Point-by-point interpolation on the whole field, for a pair with a ragged side."""
-        # flatten this rank's band to its run of points; the channels sit right in front
-        x = x.reshape(*x.shape[: x.dim() - len(self.shard_in.shape)], self.shard_in.npoints)
-        num_chans = x.shape[-2]
+        # flatten this rank's band to its run of points, behind the leading axis
+        x = x.reshape(x.shape[0], self.shard_in.npoints)
+        num_chans = x.shape[0]
 
         # make the whole input field local, with the channels split
         if self.comm_size_polar > 1:
             channels_shapes = compute_split_shapes(num_chans, self.comm_size_polar)
-            x = distributed_transpose_polar(x, (-2, -1), self.points_in_shapes)
+            x = distributed_transpose_polar(x, (0, 1), self.points_in_shapes)
 
         x = _interpolate_on_taps(x, self.grid_in, self.taps, self.tap_lon_weights, self.tap_lat_weights, self.mode, self.expand_poles)
 
         # cut the output into the bands of the polar ranks, with the channels whole again
         if self.comm_size_polar > 1:
-            x = distributed_transpose_polar(x, (-1, -2), channels_shapes, self.points_out_shapes)
+            x = distributed_transpose_polar(x, (1, 0), channels_shapes, self.points_out_shapes)
 
-        return x.reshape(*x.shape[:-1], *self.shard_out.shape)
+        return x.reshape(x.shape[0], *self.shard_out.shape)
 
     def _resample_separable(self, x: torch.Tensor) -> torch.Tensor:
         """Latitudes, then longitudes, each made local by a transpose over its group."""

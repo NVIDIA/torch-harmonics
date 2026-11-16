@@ -220,9 +220,10 @@ along `l` exactly as on a regular grid.
 `DistributedResampleS2` interpolates a pair with a HEALPix side point by point,
 as the serial layer does. One polar transpose makes the whole flat input field
 local, with the channels split, the serial interpolation runs on it, and a
-second transpose cuts the output into the bands of the polar ranks. So
-`batch * channels` must be at least the number of polar ranks, as for a pair of
-regular grids.
+second transpose cuts the output into the bands of the polar ranks. The
+transposes split the leading axis, so, as in the SHTs, all leading dimensions are
+flattened into one and zero-padded when it is shorter than the process group:
+any batch and channel count works, on HEALPix and regular grids alike.
 
 ## 5. Calling distributed modules
 

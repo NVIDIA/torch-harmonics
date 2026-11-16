@@ -172,6 +172,10 @@ class TestDistributedResampling(unittest.TestCase):
             [(16,), (33, 64), 4, 8, "healpix", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
             [(32, 64), (16,), 4, 8, "legendre-gauss", "healpix", "bilinear", 1e-6, 1e-7],
             [(33, 64), (8,), 2, 4, "equiangular", "healpix", "bilinear-spherical", 1e-6, 1e-7],
+            # fewer batch * channels than ranks: the leading axis is padded, as in the SHTs
+            [(65, 128), (33, 64), 1, 1, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [(16,), (8,), 1, 1, "healpix", "healpix", "bilinear", 1e-6, 1e-7],
+            [(16,), (33, 64), 4, 1, "healpix", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
         ],
         skip_on_empty=True,
     )
