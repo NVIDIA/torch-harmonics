@@ -1555,7 +1555,9 @@ def polar_halo_exchange(x, halo=None, lat_dim=-2, *, r_lat=None):
     accumulates them.
 
     Every rank of the polar group has to call this together, also a rank whose plan moves
-    nothing, see :func:`~torch_harmonics.distributed.utils.start_polar_group`.
+    nothing: before the first exchange after :func:`~torch_harmonics.distributed.init`, all
+    of them join one collective on the polar group, since NCCL requires every member of a
+    group in its first point-to-point call.
 
     Parameters
     ----------
