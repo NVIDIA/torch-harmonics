@@ -236,6 +236,39 @@ class TestDistributedTranspose(unittest.TestCase):
         self.assertEqual(x_gathered.shape, x_full.shape)
         self.assertTrue(torch.equal(x_gathered, x_full))
 
+    @parameterized.expand(
+        [
+            # B,  C,  H,  W, dim0, dim1
+            [4, 8, 32, 64, 2, 3],
+            [4, 8, 33, 65, 3, 2],
+            [2, 13, 5, 97, 1, 3],
+        ],
+        skip_on_empty=True,
+    )
+    def test_transpose_polar_with_given_shapes(self, B, C, H, W, dim0, dim1):
+        """Both dimensions in uneven chunks, as HEALPix bands are: the forward and its backward."""
+        set_seed(333)
+        comm_size = thd.polar_group_size()
+
+        def skewed(n):
+            # the first rank holds the rest, far from the natural split
+            k = max(1, n // (2 * comm_size))
+            return [n - (comm_size - 1) * k] + [k] * (comm_size - 1)
+
+        x_full = torch.randn(B, C, H, W, device=self.device)
+        g_full = torch.randn(B, C, H, W, device=self.device)
+        dim0_shapes, dim1_shapes = skewed(x_full.shape[dim0]), skewed(x_full.shape[dim1])
+
+        x_local = torch.split(x_full, dim1_shapes, dim=dim1)[self.hrank].clone().requires_grad_(True)
+        x_transposed = distributed_transpose_polar(x_local, (dim0, dim1), dim1_shapes, dim0_shapes)
+
+        # forward: this rank holds its given chunk of dim0 and the whole of dim1
+        self.assertTrue(torch.equal(x_transposed, torch.split(x_full, dim0_shapes, dim=dim0)[self.hrank]))
+
+        # backward: the gradient goes back to the chunks of dim1 the input came in
+        (x_transposed * torch.split(g_full, dim0_shapes, dim=dim0)[self.hrank]).sum().backward()
+        self.assertTrue(torch.equal(x_local.grad, torch.split(g_full, dim1_shapes, dim=dim1)[self.hrank]))
+
 
 class TestDistributedReduce(unittest.TestCase):
     """

@@ -144,22 +144,16 @@ def _attention(radial):
     return layer, (*_r(radial), *layer.shard_in.shape), lambda lead: (lead[0], _C_OUT, *_r(radial), *layer.shard_out.shape), torch.float32, (*_r(radial), *_GRID.shape)
 
 
-def _resample_free():
-    # the resampling transposes split the channel axis without padding, so it needs at
-    # least one channel per rank of either group
-    return max(thd.polar_group_size(), thd.azimuth_group_size())
-
-
 # name, factory, leading contract, smallest free extent (int, or a callable evaluated once
 # the process groups exist), whether running it needs CUDA
 _CASES = [
-    # the SHTs pad their leading axis, so a single channel works on any rank grid
+    # the SHTs and the resampling pad their leading axis, so a single channel works on any rank grid
     ["sht", _sht, (..., None), 1, False],
     ["inverse_sht", _isht, (..., None), 1, False],
     ["vector_sht", _vsht, (..., None, 2), 1, False],
     ["inverse_vector_sht", _ivsht, (..., None, 2), 1, False],
     ["quadrature", _quadrature, (...,), 1, False],
-    ["resample", _resample, (..., None), _resample_free, False],
+    ["resample", _resample, (..., None), 1, False],
     ["spectral_conv", _spectral_conv, (None, _C), 1, False],
     ["disco", _disco, (None, _C), 1, False],
     ["disco_transpose", _disco_transpose, (None, _C), 1, False],
@@ -227,16 +221,6 @@ class TestDistributedFieldContract(unittest.TestCase):
         shared = torch.randn(1, _C, *trailing, device=self.device, dtype=dtype)
         with self.assertRaisesRegex(RuntimeError, "query's batch size 2, got 1"):
             layer(query, shared, shared)
-
-    def test_resample_rejects_too_few_channels(self):
-        """The resampling transposes do not pad, so fewer channels than ranks is an error, not a hang."""
-        need = _resample_free()
-        if need == 1:
-            self.skipTest("a single rank in each group splits nothing")
-        layer = thd.DistributedResampleS2(_GRID, _GRID_OUT).to(self.device)
-        x = torch.randn(2, need - 1, *layer.shard_in.shape, device=self.device)
-        with self.assertRaisesRegex(RuntimeError, "channels"):
-            layer(x)
 
     @parameterized.expand([["forward", thd.DistributedDiscreteContinuousConvS2, "in_channels"], ["transpose", thd.DistributedDiscreteContinuousConvTransposeS2, "out_channels"]])
     def test_disco_rejects_channels_the_azimuth_split_cannot_share(self, _, cls, name):
