@@ -115,9 +115,9 @@ def _distributed_disco_fwd_a2a(layer, x: torch.Tensor) -> torch.Tensor:
         x = distributed_transpose_azimuth(x, (1, -1), layer.lon_in_shapes)
 
     # Borrow the input rows this rank's output rows reach into. psi's columns were keyed to
-    # the padded band at construction, so the contraction below reads it directly. As in the
-    # attention layer, skipped when r_lat == 0 (support within the local rows, e.g. a coarse
-    # output grid): there is nothing to borrow, and the call would only post empty P2Ps.
+    # the padded band at construction, so the contraction below reads it directly. With
+    # r_lat == 0 (support within the local rows, e.g. a coarse output grid) the plan is the
+    # identity and the exchange posts nothing.
     if use_halo and comm_size_polar > 1:
         x = polar_halo_exchange(x, layer.halo)
 

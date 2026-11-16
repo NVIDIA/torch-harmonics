@@ -40,7 +40,7 @@ from torch_harmonics.quadrature import latitude_support_band
 from torch_harmonics.utils import check
 
 from ._amp_utils import _custom_fwd, _custom_setup_context
-from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_size, start_polar_group
+from .utils import _start_polar_group, azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_size
 from .utils import config as thd_config
 
 
@@ -1156,9 +1156,25 @@ class PolarHaloPlan:
         ``r_lat`` entries from each neighbour, zero-padded where there is none.
 
         Every rank's halo-padded block is then ``2 * r_lat`` longer than its own, at the
-        poles too, which is the layout of the regular grids' localized operators.
+        poles too, which is the layout of the regular grids' localized operators. A single
+        polar rank holds the whole axis and exchanges nothing, so its plan is the identity,
+        as the exchange is without a polar split.
+
+        Parameters
+        ----------
+        r_lat : int
+            Entries borrowed from each neighbour.
+        rank, size : int
+            This rank's position in the polar group, and the group's size.
+
+        Returns
+        -------
+        PolarHaloPlan
+            The plan of ``rank``.
         """
         r_lat = int(r_lat)
+        if size == 1:
+            return cls()
         has_prev, has_next = rank > 0, rank < size - 1
         return cls(
             recv_prev=r_lat if has_prev else 0,
@@ -1180,9 +1196,9 @@ class PolarHaloPlan:
             Entries every polar rank holds, ordered by rank. The blocks are contiguous and
             in rank order, so they tile ``[0, sum(shapes))``.
         needs : List[Tuple[int, int]]
-            For every rank, the half-open global range ``[lo, hi)`` its operator reads. It
-            must contain the rank's own block, which an empty block of reads is taken to
-            mean, and reach no further than the neighbours' blocks.
+            For every rank, the half-open global range ``[lo, hi)`` its operator reads. The
+            part of it beyond the rank's own block has to lie within the neighbours' blocks;
+            a range within the own block, or an empty one, needs no halo.
         rank : int
             The rank to build the plan of.
 
@@ -1238,6 +1254,20 @@ class PolarHaloPlan:
         return cls(recv_prev=before, recv_next=after, send_prev=send_prev, send_next=send_next)
 
 
+def _halo_slice(x, dim, start, n):
+    """``n`` entries of ``x`` from ``start`` along ``dim``, contiguous for sending, or ``None`` if there are none."""
+    return x.narrow(dim, start, n).contiguous() if n > 0 else None
+
+
+def _halo_zeros(x, dim, n):
+    """``n`` zero entries shaped like ``x`` along ``dim``, as padding or a receive buffer, or ``None`` if there are none."""
+    if n == 0:
+        return None
+    shape = list(x.shape)
+    shape[dim] = n
+    return torch.zeros(shape, device=x.device, dtype=x.dtype)
+
+
 def _halo_exchange_neighbours(sends, recvs):
     """
     Post the point-to-point messages of one halo exchange and wait for them.
@@ -1281,7 +1311,7 @@ def _halo_gather(x, plan: PolarHaloPlan, lat_dim=-2):
     # longer degenerates that way, and a side with a zero count posts nothing. That can leave a
     # rank out of the exchange altogether, which NCCL refuses in a group's first P2P call, so
     # every rank starts the group first
-    start_polar_group(x.device)
+    _start_polar_group(x.device)
     if plan.is_identity:
         return x
 
@@ -1290,21 +1320,13 @@ def _halo_gather(x, plan: PolarHaloPlan, lat_dim=-2):
     if plan.send_prev > H or plan.send_next > H:
         raise ValueError(f"halo plan {plan} sends more entries than the {H} this rank holds along dim {lat_dim}")
 
-    def block(n):
-        shape = list(x.shape)
-        shape[lat_dim] = n
-        return torch.zeros(shape, device=x.device, dtype=x.dtype)
-
     # the edges of the own block lent to the neighbours, and room for what they lend
-    sends = (
-        x.narrow(lat_dim, 0, plan.send_prev).contiguous() if plan.send_prev > 0 else None,
-        x.narrow(lat_dim, H - plan.send_next, plan.send_next).contiguous() if plan.send_next > 0 else None,
-    )
-    recvs = (block(plan.recv_prev) if plan.recv_prev > 0 else None, block(plan.recv_next) if plan.recv_next > 0 else None)
+    sends = (_halo_slice(x, lat_dim, 0, plan.send_prev), _halo_slice(x, lat_dim, H - plan.send_next, plan.send_next))
+    recvs = (_halo_zeros(x, lat_dim, plan.recv_prev), _halo_zeros(x, lat_dim, plan.recv_next))
     _halo_exchange_neighbours(sends, recvs)
 
-    parts = [block(plan.pad_prev), *(t for t in recvs[:1] if t is not None), x, *(t for t in recvs[1:] if t is not None), block(plan.pad_next)]
-    return torch.cat(parts, dim=lat_dim).contiguous()
+    parts = [_halo_zeros(x, lat_dim, plan.pad_prev), recvs[0], x, recvs[1], _halo_zeros(x, lat_dim, plan.pad_next)]
+    return torch.cat([t for t in parts if t is not None], dim=lat_dim).contiguous()
 
 
 def _halo_reduce(y, plan: PolarHaloPlan, lat_dim=-2):
@@ -1322,29 +1344,21 @@ def _halo_reduce(y, plan: PolarHaloPlan, lat_dim=-2):
 
     # no halo entries to send home; skip the P2P exchange entirely, as _halo_gather does, once
     # the group has been started by every rank
-    start_polar_group(y.device)
+    _start_polar_group(y.device)
     if plan.is_identity:
         return y
 
     lat_dim = lat_dim % y.dim()
     H = y.shape[lat_dim] - plan.before - plan.after
-    if H < max(plan.send_prev, plan.send_next, 0):
+    if H < max(plan.send_prev, plan.send_next):
         raise ValueError(f"halo plan {plan} does not fit a halo-padded extent of {y.shape[lat_dim]} along dim {lat_dim}")
-
-    def block(n):
-        shape = list(y.shape)
-        shape[lat_dim] = n
-        return torch.zeros(shape, device=y.device, dtype=y.dtype)
 
     # the own entries pass straight through
     out = y.narrow(lat_dim, plan.before, H).contiguous().clone()
 
     # the received halo goes back where it came from, and what was lent comes back
-    sends = (
-        y.narrow(lat_dim, plan.pad_prev, plan.recv_prev).contiguous() if plan.recv_prev > 0 else None,
-        y.narrow(lat_dim, plan.before + H, plan.recv_next).contiguous() if plan.recv_next > 0 else None,
-    )
-    recvs = (block(plan.send_prev) if plan.send_prev > 0 else None, block(plan.send_next) if plan.send_next > 0 else None)
+    sends = (_halo_slice(y, lat_dim, plan.pad_prev, plan.recv_prev), _halo_slice(y, lat_dim, plan.before + H, plan.recv_next))
+    recvs = (_halo_zeros(y, lat_dim, plan.send_prev), _halo_zeros(y, lat_dim, plan.send_next))
     _halo_exchange_neighbours(sends, recvs)
 
     if recvs[0] is not None:
@@ -1453,8 +1467,8 @@ def compute_polar_halo_radius(
     ``theta_cutoff``, a contiguous band given by :func:`~torch_harmonics.quadrature.latitude_support_band`.
     A polar rank owns a contiguous range of both axes, so the rows it must borrow are exactly
     those where the band of its output range runs past its own input range. This returns the
-    largest such overhang over all ranks, which is the halo width
-    :func:`polar_halo_exchange` has to move.
+    largest such overhang over all ranks: the radius of the halo the regular grids' layers
+    exchange, as :meth:`PolarHaloPlan.symmetric` lays it out.
 
     The result is computed from the geometry alone and is identical on every rank; no
     communication is involved.

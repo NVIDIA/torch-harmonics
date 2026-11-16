@@ -854,8 +854,8 @@ class TestPolarHaloPlan(unittest.TestCase):
         setup_class_from_context(cls, _DIST_CTX)
 
     def test_symmetric_plan_pads_where_there_is_no_neighbour(self):
-        """An integer radius is the symmetric plan: received on the inside, zero-padded at the poles."""
-        self.assertEqual(PolarHaloPlan.symmetric(2, 0, 1), PolarHaloPlan(pad_prev=2, pad_next=2))
+        """The symmetric plan: received on the inside, zero-padded at the poles, and the identity on a single rank."""
+        self.assertTrue(PolarHaloPlan.symmetric(2, 0, 1).is_identity)
         self.assertEqual(PolarHaloPlan.symmetric(2, 0, 3), PolarHaloPlan(recv_next=2, send_next=2, pad_prev=2))
         self.assertEqual(PolarHaloPlan.symmetric(2, 1, 3), PolarHaloPlan(recv_prev=2, recv_next=2, send_prev=2, send_next=2))
         self.assertTrue(PolarHaloPlan.symmetric(0, 1, 3).is_identity)

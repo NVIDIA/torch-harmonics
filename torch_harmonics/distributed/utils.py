@@ -40,7 +40,7 @@ _POLAR_PARALLEL_GROUP = None
 _AZIMUTH_PARALLEL_GROUP = None
 _IS_INITIALIZED = False
 
-# whether the polar group has run a collective that every member joined, see start_polar_group
+# whether the polar group has run a collective that every member joined, see _start_polar_group
 _POLAR_GROUP_STARTED = False
 
 
@@ -170,7 +170,7 @@ def finalize():
     _IS_INITIALIZED = False
 
 
-def start_polar_group(device: torch.device) -> None:
+def _start_polar_group(device: torch.device) -> None:
     """
     Run one collective on the polar group that every member joins, once per :func:`init`.
 
