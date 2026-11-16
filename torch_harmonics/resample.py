@@ -167,6 +167,36 @@ def _ring_taps(grid_in: GridS2, grid_out: GridS2, expand_poles: bool):
     return torch.stack([lo_left, lo_right, hi_left, hi_right]), torch.stack([w_lo, w_hi]), lat_weights
 
 
+def _interpolate_on_taps(x: torch.Tensor, grid_in: GridS2, taps: torch.Tensor, lon_weights: torch.Tensor, lat_weights: torch.Tensor, mode: str, expand_poles: bool) -> torch.Tensor:
+    """
+    Interpolate a whole flat field ``(..., npoints_in)`` onto the points the taps address.
+
+    The taps and weights are those of :func:`_ring_taps`; the result is flat, ``(..., npoints_out)``.
+    Shared by :class:`ResampleS2` and its distributed counterpart, which calls it once the input
+    field is local.
+    """
+    if expand_poles:
+        # each pole is one extra point, the mean of its adjacent ring (see _ring_taps)
+        offsets = grid_in.lon_offsets
+        north, south = x[..., offsets[0] : offsets[1]], x[..., offsets[-2] : offsets[-1]]
+        if mode == "bilinear":
+            poles = [north.mean(dim=-1, keepdim=True), south.mean(dim=-1, keepdim=True)]
+        else:
+            poles = [_circular_mean(north, keepdim=True), _circular_mean(south, keepdim=True)]
+        x = torch.cat([x, *poles], dim=-1)
+
+    # interpolate in the precision of x, along the two rings and then between them
+    lon, lat = lon_weights.to(x.dtype), lat_weights.to(x.dtype)
+    lo_left, lo_right, hi_left, hi_right = taps
+    if mode == "bilinear":
+        lerp = torch.lerp
+    else:
+        lerp = _slerp_shortest_arc
+    lower = lerp(x[..., lo_left], x[..., lo_right], lon[0])
+    upper = lerp(x[..., hi_left], x[..., hi_right], lon[1])
+    return lerp(lower, upper, lat)
+
+
 class ResampleS2(nn.Module):
     r"""
     Resampling module for signals on the 2-sphere :math:`S^2`.
@@ -405,27 +435,8 @@ class ResampleS2(nn.Module):
         # a field on a dense grid is flattened to the ring-major layout the taps address
         lead = x.shape[: x.dim() - len(self.grid_in.shape)]
         x = x.reshape(*lead, self.grid_in.npoints)
-
-        if self.expand_poles:
-            # each pole is one extra point, the mean of its adjacent ring (see _ring_taps)
-            offsets = self.grid_in.lon_offsets
-            north, south = x[..., offsets[0] : offsets[1]], x[..., offsets[-2] : offsets[-1]]
-            if self.mode == "bilinear":
-                poles = [north.mean(dim=-1, keepdim=True), south.mean(dim=-1, keepdim=True)]
-            else:
-                poles = [_circular_mean(north, keepdim=True), _circular_mean(south, keepdim=True)]
-            x = torch.cat([x, *poles], dim=-1)
-
-        # interpolate in the precision of x, along the two rings and then between them
-        lon, lat = self.tap_lon_weights.to(x.dtype), self.tap_lat_weights.to(x.dtype)
-        lo_left, lo_right, hi_left, hi_right = self.taps
-        if self.mode == "bilinear":
-            lerp = torch.lerp
-        else:
-            lerp = _slerp_shortest_arc
-        lower = lerp(x[..., lo_left], x[..., lo_right], lon[0])
-        upper = lerp(x[..., hi_left], x[..., hi_right], lon[1])
-        return lerp(lower, upper, lat).reshape(*lead, *self.grid_out.shape)
+        x = _interpolate_on_taps(x, self.grid_in, self.taps, self.tap_lon_weights, self.tap_lat_weights, self.mode, self.expand_poles)
+        return x.reshape(*lead, *self.grid_out.shape)
 
     def forward(self, x: torch.Tensor):
         """

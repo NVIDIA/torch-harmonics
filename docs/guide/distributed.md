@@ -209,13 +209,20 @@ x_local = torch.split(x_global, pixel_shapes, dim=-1)[polar_rank]
 ```
 
 The distributed SHTs (`DistributedRealSHT`, `DistributedInverseRealSHT` and
-their vector variants), `DistributedSpectralConvS2` and `DistributedQuadratureS2`
-accept HEALPix; the other distributed layers still require a latitude-longitude
-grid. The spectral layout of the SHTs is the same as on a latitude-longitude grid
+their vector variants), `DistributedSpectralConvS2`, `DistributedResampleS2` and
+`DistributedQuadratureS2` accept HEALPix; the other distributed layers still
+require a latitude-longitude grid. The spectral layout of the SHTs is the same as on a latitude-longitude grid
 with one azimuth rank: degrees `l` split across the polar ranks, all orders `m`
 local. So `DistributedSpectralConvS2` can map between HEALPix and a
 latitude-longitude grid as well as within either, and its weights are split
 along `l` exactly as on a regular grid.
+
+`DistributedResampleS2` interpolates a pair with a HEALPix side point by point,
+as the serial layer does. One polar transpose makes the whole flat input field
+local, with the channels split, the serial interpolation runs on it, and a
+second transpose cuts the output into the bands of the polar ranks. So
+`batch * channels` must be at least the number of polar ranks, as for a pair of
+regular grids.
 
 ## 5. Calling distributed modules
 

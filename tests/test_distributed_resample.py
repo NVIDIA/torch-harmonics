@@ -59,6 +59,15 @@ def tearDownModule():
     teardown_module(_DIST_CTX)
 
 
+def _make_grid(name, shape):
+    """A grid descriptor from a row's grid name and shape: ``(nside,)`` for HEALPix, ``(nlat, nlon)`` otherwise."""
+    if name == "healpix":
+        grid = th.HealpixGrid(nside=shape[0])
+    else:
+        grid = th.as_grid(name, nlat=shape[0], nlon=shape[1])
+    return grid
+
+
 class TestDistributedResampling(unittest.TestCase):
     """Test the distributed resampling module (CPU/CUDA if available)."""
 
@@ -66,44 +75,38 @@ class TestDistributedResampling(unittest.TestCase):
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
 
-    def _split_helper(self, tensor):
-        return split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
+    def _skip_unless_decomposable(self, *grids):
+        """HEALPix decomposes along latitude only; a layer on it refuses an azimuth group, see test_healpix_refuses_an_azimuthal_decomposition."""
+        if self.grid_size_w > 1 and any(isinstance(g, th.HealpixGrid) for g in grids):
+            self.skipTest("HEALPix decomposes along latitude only")
 
-    def _gather_helper_fwd(self, tensor, resampling_dist):
+    def _split_helper(self, tensor, shard):
+        """This rank's piece of a global field, as ``shard`` describes it."""
+        if isinstance(shard.grid, th.HealpixGrid):
+            tensor_local = torch.split(tensor, list(shard.pixel_shapes), dim=-1)[self.hrank].contiguous()
+        else:
+            tensor_local = split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
+        return tensor_local
 
-        tensor_gather = gather_tensor_hw(
+    def _gather_helper(self, tensor, shard):
+        """The global field from every rank's piece, as ``shard`` describes them."""
+        if isinstance(shard.grid, th.HealpixGrid):
+            hdim, hshapes, wshapes, wsize = -1, list(shard.pixel_shapes), [], 1
+        else:
+            hdim, hshapes, wshapes, wsize = -2, list(shard.lat_shapes), list(shard.lon_shapes), self.grid_size_w
+        return gather_tensor_hw(
             tensor,
-            hdim=-2,
+            hdim=hdim,
             wdim=-1,
-            hshapes=resampling_dist.lat_out_shapes,
-            wshapes=resampling_dist.lon_out_shapes,
+            hshapes=hshapes,
+            wshapes=wshapes,
             hsize=self.grid_size_h,
-            wsize=self.grid_size_w,
+            wsize=wsize,
             hrank=self.hrank,
             wrank=self.wrank,
             hgroup=self.h_group,
             wgroup=self.w_group,
         )
-
-        return tensor_gather
-
-    def _gather_helper_bwd(self, tensor, resampling_dist):
-
-        tensor_gather = gather_tensor_hw(
-            tensor,
-            hdim=-2,
-            wdim=-1,
-            hshapes=resampling_dist.lat_in_shapes,
-            wshapes=resampling_dist.lon_in_shapes,
-            hsize=self.grid_size_h,
-            wsize=self.grid_size_w,
-            hrank=self.hrank,
-            wrank=self.wrank,
-            hgroup=self.h_group,
-            wgroup=self.w_group,
-        )
-
-        return tensor_gather
 
     @parameterized.expand(
         [[mode, nlon_out] for mode in ("bilinear", "bilinear-spherical") for nlon_out in (1, 7)],
@@ -131,19 +134,19 @@ class TestDistributedResampling(unittest.TestCase):
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        inp_local = self._split_helper(inp_full.detach().clone())
+        inp_local = self._split_helper(inp_full.detach().clone(), res_dist.shard_in)
         inp_local.requires_grad = True
         out_local = res_dist(inp_local)
-        ograd_local = self._split_helper(ograd_full)
+        ograd_local = self._split_helper(ograd_full, res_dist.shard_out)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
         verbose = verbose and self.world_rank == 0
-        out_gather_full = self._gather_helper_fwd(out_local, res_dist)
+        out_gather_full = self._gather_helper(out_local, res_dist.shard_out)
         ok = compare_tensors("single-longitude output", out_gather_full, out_full, atol=1e-6, rtol=1e-5, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "single-longitude output")
 
-        igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
+        igrad_gather_full = self._gather_helper(igrad_local, res_dist.shard_in)
         ok = compare_tensors("single-longitude gradients", igrad_gather_full, igrad_full, atol=1e-6, rtol=1e-5, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "single-longitude gradients")
         self.assertTrue(reduce_success(bool(torch.isfinite(igrad_local).all()), self.device), "finite gradients")
@@ -154,35 +157,40 @@ class TestDistributedResampling(unittest.TestCase):
 
     @parameterized.expand(
         [
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
-            [64, 128, 128, 256, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
-            [128, 256, 64, 128, 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
-            [129, 256, 65, 128, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
-            [65, 128, 129, 256, 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
-            [129, 256, 65, 128, 32, 8, "equiangular", "legendre-gauss", "bilinear", 1e-6, 1e-7],
-            [65, 128, 129, 256, 32, 8, "legendre-gauss", "equiangular", "bilinear", 1e-6, 1e-7],
+            [(64, 128), (128, 256), 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [(128, 256), (64, 128), 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [(64, 128), (128, 256), 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
+            [(128, 256), (64, 128), 32, 8, "equiangular", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
+            [(129, 256), (65, 128), 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [(65, 128), (129, 256), 32, 8, "equiangular", "equiangular", "bilinear", 1e-6, 1e-7],
+            [(129, 256), (65, 128), 32, 8, "equiangular", "legendre-gauss", "bilinear", 1e-6, 1e-7],
+            [(65, 128), (129, 256), 32, 8, "legendre-gauss", "equiangular", "bilinear", 1e-6, 1e-7],
+            # HEALPix, on one side or both; shapes are (nside,). Interpolated point by point
+            [(8,), (16,), 4, 8, "healpix", "healpix", "bilinear", 1e-6, 1e-7],
+            [(16,), (8,), 4, 8, "healpix", "healpix", "bilinear-spherical", 1e-6, 1e-7],
+            [(16,), (33, 64), 4, 8, "healpix", "equiangular", "bilinear", 1e-6, 1e-7],  # reaches the poles
+            [(16,), (33, 64), 4, 8, "healpix", "equiangular", "bilinear-spherical", 1e-6, 1e-7],
+            [(32, 64), (16,), 4, 8, "legendre-gauss", "healpix", "bilinear", 1e-6, 1e-7],
+            [(33, 64), (8,), 2, 4, "equiangular", "healpix", "bilinear-spherical", 1e-6, 1e-7],
         ],
         skip_on_empty=True,
     )
-    def test_distributed_resampling(self, nlat_in, nlon_in, nlat_out, nlon_out, batch_size, num_chan, grid_in, grid_out, mode, atol, rtol, verbose=False):
+    def test_distributed_resampling(self, in_shape, out_shape, batch_size, num_chan, grid_in, grid_out, mode, atol, rtol, verbose=False):
 
         set_seed(333)
 
-        B, C, H, W = batch_size, num_chan, nlat_in, nlon_in
+        B, C = batch_size, num_chan
+        gin, gout = _make_grid(grid_in, in_shape), _make_grid(grid_out, out_shape)
+        self._skip_unless_decomposable(gin, gout)
 
-        res_args = dict(
-            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
-            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-            mode=mode,
-        )
+        res_args = dict(grid_in=gin, grid_out=gout, mode=mode)
 
         # set up handlesD
         res_local = th.ResampleS2(**res_args).to(self.device)
         res_dist = thd.DistributedResampleS2(**res_args).to(self.device)
 
         # create tensors
-        inp_full = torch.randn((B, C, H, W), dtype=torch.float32, device=self.device)
+        inp_full = torch.randn((B, C, *gin.shape), dtype=torch.float32, device=self.device)
 
         # local conv
         # FWD pass
@@ -200,13 +208,12 @@ class TestDistributedResampling(unittest.TestCase):
 
         # distributed conv
         # FWD pass
-        inp_local = self._split_helper(inp_full.detach().clone())
+        inp_local = self._split_helper(inp_full.detach().clone(), res_dist.shard_in)
         inp_local.requires_grad = True
         out_local = res_dist(inp_local)
 
         # BWD pass
-        ograd_local = self._split_helper(ograd_full)
-        out_local = res_dist(inp_local)
+        ograd_local = self._split_helper(ograd_full, res_dist.shard_out)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
@@ -215,11 +222,27 @@ class TestDistributedResampling(unittest.TestCase):
         verbose = verbose and self.world_rank == 0
 
         # evaluate FWD pass
-        out_gather_full = self._gather_helper_fwd(out_local, res_dist)
+        out_gather_full = self._gather_helper(out_local, res_dist.shard_out)
         ok = compare_tensors("output", out_gather_full, out_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
         # evaluate BWD pass
-        igrad_gather_full = self._gather_helper_bwd(igrad_local, res_dist)
+        igrad_gather_full = self._gather_helper(igrad_local, res_dist.shard_in)
         ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
+
+    @parameterized.expand(
+        [
+            ["healpix", "healpix"],
+            ["healpix", "equiangular"],
+            ["equiangular", "healpix"],
+        ]
+    )
+    def test_healpix_refuses_an_azimuthal_decomposition(self, grid_in, grid_out):
+        """A HEALPix grid on either side cannot be cut along the azimuth; the layer says so at construction."""
+        if self.grid_size_w == 1:
+            self.skipTest("needs an azimuth group of more than one rank")
+        gin = _make_grid(grid_in, (8,) if grid_in == "healpix" else (17, 32))
+        gout = _make_grid(grid_out, (8,) if grid_out == "healpix" else (17, 32))
+        with self.assertRaises(NotImplementedError):
+            thd.DistributedResampleS2(gin, gout)

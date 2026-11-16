@@ -18,7 +18,7 @@ which do not.
 | `DiscreteContinuousConvS2`          | `DistributedDiscreteContinuousConvS2`          |                                          |
 | `DiscreteContinuousConvTransposeS2` | `DistributedDiscreteContinuousConvTransposeS2` |                                          |
 | `NeighborhoodAttentionS2`           | `DistributedNeighborhoodAttentionS2`           |                                          |
-| `ResampleS2`                        | `DistributedResampleS2`                        |                                          |
+| `ResampleS2`                        | `DistributedResampleS2`                        | HEALPix, polar ranks only                |
 | `QuadratureS2`                      | `DistributedQuadratureS2`                      | HEALPix, polar ranks only                |
 | `QuadratureVolume`                  | `DistributedQuadratureVolume`                  |                                          |
 | `AttentionS2`                       | —                                              | Global attention; no distributed version |

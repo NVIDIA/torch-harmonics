@@ -240,7 +240,7 @@ def _trim_to(tensor: torch.Tensor, sizes: dict) -> torch.Tensor:
     return tensor[tuple(slicer)].contiguous()
 
 
-def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=None):
+def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False, verify_shapes=None, dim0_split_sizes=None):
 
     if verify_shapes is None:
         verify_shapes = thd_config.debug
@@ -262,8 +262,8 @@ def _transpose(tensor, dim0, dim1, dim1_split_sizes, group=None, async_op=False,
         sizes_gather = [stens.item() for stens in stens_gather]
         _check_shapes("_transpose: error, dim1_split_sizes", sizes_gather, dim1_split_sizes)
 
-    # split and local transposition
-    tsplit = split_tensor_along_dim(tensor, num_chunks=comm_size, dim=dim0)
+    # split and local transposition: the natural split of dim0, or the given one
+    tsplit = _split_chunks(tensor, dim0, comm_size, dim0_split_sizes)
     x_send = [y.contiguous() for y in tsplit]
     x_send_shapes = [x.shape for x in x_send]
     x_recv = []
@@ -307,22 +307,25 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
-    def forward(x, dims, dim1_split_sizes):
+    def forward(x, dims, dim1_split_sizes, dim0_split_sizes=None):
         x = x.contiguous()
 
         if not is_distributed_azimuth():
             return x
 
-        xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group())
+        xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=azimuth_group(), dim0_split_sizes=dim0_split_sizes)
         return torch.cat(xlist, dim=dims[1]).contiguous()
 
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        x, dims, _ = inputs
+        x, dims, dim1_split_sizes, dim0_split_sizes = inputs
         ctx.dims = dims
         if is_distributed_azimuth():
-            ctx.dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], azimuth_group_size())
+            if dim0_split_sizes is None:
+                dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], azimuth_group_size())
+            ctx.dim0_split_sizes = list(dim0_split_sizes)
+            ctx.dim1_split_sizes = list(dim1_split_sizes)
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
@@ -330,32 +333,37 @@ class _DistributeTransposeAzimuth(torch.autograd.Function):
         go = go.contiguous()
 
         if not is_distributed_azimuth():
-            return go, None, None
+            return go, None, None, None
 
+        # the reverse transpose: dim0 comes back whole in the chunks it was split into, and dim1
+        # goes back out in the chunks it arrived in, which need not be the natural split
         dims = ctx.dims
-        return _DistributeTransposeAzimuth.apply(go, (dims[1], dims[0]), ctx.dim0_split_sizes), None, None
+        return _DistributeTransposeAzimuth.apply(go, (dims[1], dims[0]), ctx.dim0_split_sizes, ctx.dim1_split_sizes), None, None, None
 
 
 class _DistributeTransposePolar(torch.autograd.Function):
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
-    def forward(x, dims, dim1_split_sizes):
+    def forward(x, dims, dim1_split_sizes, dim0_split_sizes=None):
         x = x.contiguous()
 
         if not is_distributed_polar():
             return x
 
-        xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=polar_group())
+        xlist, _, _ = _transpose(x, dims[0], dims[1], dim1_split_sizes, group=polar_group(), dim0_split_sizes=dim0_split_sizes)
         return torch.cat(xlist, dim=dims[1]).contiguous()
 
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        x, dims, _ = inputs
+        x, dims, dim1_split_sizes, dim0_split_sizes = inputs
         ctx.dims = dims
         if is_distributed_polar():
-            ctx.dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], polar_group_size())
+            if dim0_split_sizes is None:
+                dim0_split_sizes = compute_split_shapes(x.shape[dims[0]], polar_group_size())
+            ctx.dim0_split_sizes = list(dim0_split_sizes)
+            ctx.dim1_split_sizes = list(dim1_split_sizes)
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
@@ -363,10 +371,12 @@ class _DistributeTransposePolar(torch.autograd.Function):
         go = go.contiguous()
 
         if not is_distributed_polar():
-            return go, None, None
+            return go, None, None, None
 
+        # the reverse transpose: dim0 comes back whole in the chunks it was split into, and dim1
+        # goes back out in the chunks it arrived in, which need not be the natural split
         dims = ctx.dims
-        return _DistributeTransposePolar.apply(go, (dims[1], dims[0]), ctx.dim0_split_sizes), None, None
+        return _DistributeTransposePolar.apply(go, (dims[1], dims[0]), ctx.dim0_split_sizes, ctx.dim1_split_sizes), None, None, None
 
 
 # we need those additional primitives for distributed matrix multiplications
@@ -820,34 +830,38 @@ class _GatherFromCopyToAzimuthRegion(torch.autograd.Function):
 
 
 @torch.compiler.disable()
-def distributed_transpose_azimuth(input_, dims_, shapes_):
+def distributed_transpose_azimuth(input_, dims_, shapes_, split_shapes_=None):
     """All-to-all transpose across the azimuth process group.
 
-    Redistributes ``input_`` so that data sharded along ``dims_[0]`` becomes
-    sharded along ``dims_[1]``.  This is the core communication pattern used
+    Redistributes ``input_`` so that data sharded along ``dims_[1]`` becomes
+    sharded along ``dims_[0]``: every rank scatters its ``dims_[0]`` in chunks and
+    gathers the whole of ``dims_[1]``. This is the core communication pattern used
     when switching between spatial and spectral partitioning of the longitude
     axis.
 
     Parameters
     ----------
     input_ : torch.Tensor
-        Input tensor, partitioned along ``dims_[0]``.
+        Input tensor, partitioned along ``dims_[1]``.
     dims_ : tuple[int, int]
-        ``(source_dim, target_dim)`` — the dimension to scatter from and the
-        dimension to gather into.
+        ``(scatter_dim, gather_dim)`` — the dimension to scatter and the
+        dimension to gather.
     shapes_ : list[int]
         Per-rank sizes along ``dims_[1]`` (i.e. the expected receive sizes).
+    split_shapes_ : list[int], optional
+        Per-rank sizes to scatter ``dims_[0]`` in, by default its natural split
+        (:func:`compute_split_shapes`).
 
     Returns
     -------
     torch.Tensor
         Transposed tensor, now partitioned along ``dims_[1]``.
     """
-    return _DistributeTransposeAzimuth.apply(input_, dims_, shapes_)
+    return _DistributeTransposeAzimuth.apply(input_, dims_, shapes_, split_shapes_)
 
 
 @torch.compiler.disable()
-def distributed_transpose_polar(input_, dims_, shapes_):
+def distributed_transpose_polar(input_, dims_, shapes_, split_shapes_=None):
     """All-to-all transpose across the polar process group.
 
     Same semantics as :func:`distributed_transpose_azimuth` but operates on
@@ -856,18 +870,22 @@ def distributed_transpose_polar(input_, dims_, shapes_):
     Parameters
     ----------
     input_ : torch.Tensor
-        Input tensor, partitioned along ``dims_[0]``.
+        Input tensor, partitioned along ``dims_[1]``.
     dims_ : tuple[int, int]
-        ``(source_dim, target_dim)``.
+        ``(scatter_dim, gather_dim)``.
     shapes_ : list[int]
         Per-rank sizes along ``dims_[1]``.
+    split_shapes_ : list[int], optional
+        Per-rank sizes to scatter ``dims_[0]`` in, by default its natural split.
+        A HEALPix band of rings is cut by pixel count, so its chunks can differ
+        by more than one.
 
     Returns
     -------
     torch.Tensor
-        Transposed tensor, now partitioned along ``dims_[1]``.
+        Transposed tensor, now partitioned along ``dims_[0]``.
     """
-    return _DistributeTransposePolar.apply(input_, dims_, shapes_)
+    return _DistributeTransposePolar.apply(input_, dims_, shapes_, split_shapes_)
 
 
 @torch.compiler.disable()
