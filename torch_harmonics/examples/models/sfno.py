@@ -34,7 +34,15 @@ import torch
 import torch.nn as nn
 
 from torch_harmonics import InverseRealSHT, RealSHT
-from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
+from torch_harmonics.examples.models._layers import (
+    MLP,
+    DropPath,
+    LayerScale,
+    LearnablePositionEmbedding,
+    SequencePositionEmbedding,
+    SpectralConvS2,
+    SpectralPositionEmbedding,
+)
 from torch_harmonics.grid import require_regular_grid
 
 
@@ -70,6 +78,10 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         Whether to use MLP layers, by default True
     bias : bool, optional
         Whether to use bias, by default False
+    checkpointing : bool, optional
+        Whether to use gradient checkpointing in the MLP, by default False
+    layer_scale : float, optional
+        Initial value of a per-channel LayerScale on the branch, by default None (off)
 
     Returns
     -------
@@ -92,6 +104,8 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         outer_skip="identity",
         use_mlp=True,
         bias=False,
+        checkpointing=False,
+        layer_scale=None,
     ):
         super().__init__()
 
@@ -137,7 +151,13 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         if use_mlp == True:
             mlp_hidden_dim = int(output_dim * mlp_ratio)
             self.mlp = MLP(
-                in_features=output_dim, out_features=input_dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop_rate=drop_rate, checkpointing=False, gain=gain_factor
+                in_features=output_dim,
+                out_features=input_dim,
+                hidden_features=mlp_hidden_dim,
+                act_layer=act_layer,
+                drop_rate=drop_rate,
+                checkpointing=checkpointing,
+                gain=gain_factor,
             )
 
         if outer_skip == "linear":
@@ -152,6 +172,14 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {outer_skip}")
 
+        # LayerScale as in CaiT on the branch, so that with a small initial value the block starts close to its outer skip
+        if layer_scale is not None:
+            if outer_skip == "none":
+                raise ValueError("layer_scale needs an outer skip")
+            self.layer_scale = LayerScale(output_dim, init_value=layer_scale)
+        else:
+            self.layer_scale = nn.Identity()
+
     def forward(self, x):
 
         x, residual = self.global_conv(x)
@@ -163,6 +191,8 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         if hasattr(self, "mlp"):
             x = self.mlp(x)
+
+        x = self.layer_scale(x)
 
         x = self.drop_path(x)
 
@@ -217,6 +247,10 @@ class SphericalFourierNeuralOperator(nn.Module):
         Type of positional embedding to use, by default "none"
     bias : bool, optional
         Whether to use a bias, by default False
+    checkpointing : bool, optional
+        Whether to use gradient checkpointing in the block MLPs, by default False
+    layer_scale : float, optional
+        Initial value of a per-channel LayerScale on each block branch, by default None (off)
 
     Examples
     --------
@@ -256,6 +290,8 @@ class SphericalFourierNeuralOperator(nn.Module):
         residual_prediction=False,
         pos_embed="none",
         bias=False,
+        checkpointing=False,
+        layer_scale=None,
     ):
 
         super().__init__()
@@ -303,28 +339,11 @@ class SphericalFourierNeuralOperator(nn.Module):
         else:
             raise ValueError(f"Unknown position embedding type {pos_embed}")
 
-        # construct an encoder with num_encoder_layers
-        num_encoder_layers = 1
-        encoder_hidden_dim = int(self.embed_dim * mlp_ratio)
-        current_dim = self.in_chans
-        encoder_layers = []
-        for l in range(num_encoder_layers - 1):
-            fc = nn.Conv2d(current_dim, encoder_hidden_dim, 1, bias=True)
-            # initialize the weights correctly
-            scale = math.sqrt(2.0 / current_dim)
-            nn.init.normal_(fc.weight, mean=0.0, std=scale)
-            if fc.bias is not None:
-                nn.init.constant_(fc.bias, 0.0)
-            encoder_layers.append(fc)
-            encoder_layers.append(self.activation_function())
-            current_dim = encoder_hidden_dim
-        fc = nn.Conv2d(current_dim, self.embed_dim, 1, bias=bias)
-        scale = math.sqrt(1.0 / current_dim)
-        nn.init.normal_(fc.weight, mean=0.0, std=scale)
-        if fc.bias is not None:
-            nn.init.constant_(fc.bias, 0.0)
-        encoder_layers.append(fc)
-        self.encoder = nn.Sequential(*encoder_layers)
+        # store inner sequential of encoder and decoder for backward compatibility with old checkpoints
+        hidden_dim = int(self.embed_dim * mlp_ratio)
+        self.encoder = MLP(
+            self.in_chans, hidden_features=hidden_dim, out_features=self.embed_dim, act_layer=self.activation_function, output_bias=bias, num_layers=self.encoder_layers
+        ).fwd
 
         # compute the modes for the sht
         modes_lat = self.h
@@ -356,32 +375,13 @@ class SphericalFourierNeuralOperator(nn.Module):
                 norm_layer=self.normalization_layer,
                 use_mlp=use_mlp,
                 bias=bias,
+                checkpointing=checkpointing,
+                layer_scale=layer_scale,
             )
 
             self.blocks.append(block)
 
-        # construct an decoder with num_decoder_layers
-        num_decoder_layers = 1
-        decoder_hidden_dim = int(self.embed_dim * mlp_ratio)
-        current_dim = self.embed_dim
-        decoder_layers = []
-        for l in range(num_decoder_layers - 1):
-            fc = nn.Conv2d(current_dim, decoder_hidden_dim, 1, bias=True)
-            # initialize the weights correctly
-            scale = math.sqrt(2.0 / current_dim)
-            nn.init.normal_(fc.weight, mean=0.0, std=scale)
-            if fc.bias is not None:
-                nn.init.constant_(fc.bias, 0.0)
-            decoder_layers.append(fc)
-            decoder_layers.append(self.activation_function())
-            current_dim = decoder_hidden_dim
-        fc = nn.Conv2d(current_dim, self.out_chans, 1, bias=bias)
-        scale = math.sqrt(1.0 / current_dim)
-        nn.init.normal_(fc.weight, mean=0.0, std=scale)
-        if fc.bias is not None:
-            nn.init.constant_(fc.bias, 0.0)
-        decoder_layers.append(fc)
-        self.decoder = nn.Sequential(*decoder_layers)
+        self.decoder = MLP(self.embed_dim, hidden_features=hidden_dim, out_features=self.out_chans, act_layer=self.activation_function, output_bias=bias, num_layers=1).fwd
 
         # residual projection for when in_chans != out_chans
         if self.residual_prediction and self.in_chans != self.out_chans:

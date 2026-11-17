@@ -208,8 +208,8 @@ class MLP(nn.Module):
     """
     Multi-layer perceptron with optional checkpointing.
 
-    This module implements a feed-forward network with two linear layers
-    and an activation function, with optional dropout and gradient checkpointing.
+    This module implements a feed-forward network of pointwise (1x1) convolutions
+    with activations in between, with optional dropout and gradient checkpointing.
 
     Parameters
     ----------
@@ -229,50 +229,82 @@ class MLP(nn.Module):
         Whether to use gradient checkpointing, by default False
     gain : float, optional
         Gain factor for weight initialization, by default 1.0
+    num_layers : int, optional
+        Number of convolutions, by default 2
     """
 
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.ReLU, output_bias=False, drop_rate=0.0, checkpointing=False, gain=1.0):
-        super(MLP, self).__init__()
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.ReLU, output_bias=False, drop_rate=0.0, checkpointing=False, gain=1.0, num_layers=2):
+        super().__init__()
+
+        if num_layers < 1:
+            raise ValueError(f"num_layers ({num_layers}) must be at least 1")
+
         self.checkpointing = checkpointing
+        self.num_layers = num_layers
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
 
-        # Fist dense layer
-        fc1 = nn.Conv2d(in_features, hidden_features, 1, bias=True)
-        # initialize the weights correctly
-        scale = math.sqrt(2.0 / in_features)
-        nn.init.normal_(fc1.weight, mean=0.0, std=scale)
-        if fc1.bias is not None:
-            nn.init.constant_(fc1.bias, 0.0)
+        layers = []
+        current = in_features
+        for _ in range(num_layers - 1):
+            fc = nn.Conv2d(current, hidden_features, 1, bias=True)
+            nn.init.normal_(fc.weight, mean=0.0, std=math.sqrt(2.0 / current))
+            nn.init.constant_(fc.bias, 0.0)
+            layers += [fc, act_layer()]
+            if drop_rate > 0.0:
+                layers.append(nn.Dropout2d(drop_rate))
+            current = hidden_features
 
-        # activation
-        act = act_layer()
-
-        # output layer
-        fc2 = nn.Conv2d(hidden_features, out_features, 1, bias=output_bias)
-        # gain factor for the output determines the scaling of the output init
-        scale = math.sqrt(gain / hidden_features)
-        nn.init.normal_(fc2.weight, mean=0.0, std=scale)
-        if fc2.bias is not None:
-            nn.init.constant_(fc2.bias, 0.0)
-
+        fc = nn.Conv2d(current, out_features, 1, bias=output_bias)
+        nn.init.normal_(fc.weight, mean=0.0, std=math.sqrt(gain / current))
+        if fc.bias is not None:
+            nn.init.constant_(fc.bias, 0.0)
+        layers.append(fc)
         if drop_rate > 0.0:
-            drop = nn.Dropout2d(drop_rate)
-            self.fwd = nn.Sequential(fc1, act, drop, fc2, drop)
-        else:
-            self.fwd = nn.Sequential(fc1, act, fc2)
+            layers.append(nn.Dropout2d(drop_rate))
+
+        self.fwd = nn.Sequential(*layers)
 
     @torch.compiler.disable
     def checkpoint_forward(self, x):
 
-        return checkpoint(self.fwd, x)
+        return checkpoint(self.fwd, x, use_reentrant=False)
 
     def forward(self, x):
 
-        if self.checkpointing:
+        # a single layer stores no hidden activations, and without grad there is nothing to store
+        if self.checkpointing and self.num_layers > 1 and torch.is_grad_enabled():
             return self.checkpoint_forward(x)
         else:
             return self.fwd(x)
+
+
+class LayerScale(nn.Module):
+    """
+    Learned per-channel rescaling of a residual branch.
+
+    Multiplies each channel by its own learned scalar, initialized to a small
+    value so the branch starts out contributing almost nothing and the block
+    behaves like an identity at initialization. The network then learns how much
+    of each branch to admit, which is what makes very deep residual stacks train
+    stably.
+
+    Parameters
+    ----------
+    num_chans : int, optional
+        Number of channels, by default 3
+    init_value : float, optional
+        Initial value of the scale, by default 0.1
+    """
+
+    def __init__(self, num_chans=3, init_value=0.1):
+        super().__init__()
+
+        self.weight = nn.Parameter(init_value * torch.ones(num_chans))
+
+    def forward(self, x):
+
+        return x * self.weight.view(1, -1, *([1] * (x.ndim - 2)))
 
 
 class RealFFT2(nn.Module):
