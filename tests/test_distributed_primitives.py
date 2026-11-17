@@ -52,6 +52,7 @@ from testutils import (
 import torch_harmonics.distributed as thd
 import torch_harmonics.distributed.primitives as _primitives
 from torch_harmonics.distributed import (
+    PolarHaloPlan,
     compute_split_shapes,
     copy_to_azimuth_region,
     copy_to_polar_region,
@@ -682,6 +683,11 @@ class TestRingExchange(unittest.TestCase):
             vw_chunk = recv_vw.clone()
 
 
+def _symmetric_halo(r_lat):
+    """This rank's symmetric halo of radius ``r_lat``, as the regular grids' layers build it."""
+    return PolarHaloPlan.symmetric(r_lat, thd.polar_group_rank(), thd.polar_group_size())
+
+
 class TestPolarHalo(unittest.TestCase):
     """Test the latitude halo exchange and its adjoint across the polar group."""
 
@@ -724,8 +730,8 @@ class TestPolarHalo(unittest.TestCase):
         x = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
         y = torch.randn(B, C, H + 2 * r_lat, W, device=self.device, dtype=torch.float64)
 
-        lhs = torch.sum(polar_halo_exchange(x, r_lat) * y)
-        rhs = torch.sum(x * polar_halo_reduce(y, r_lat, H))
+        lhs = torch.sum(polar_halo_exchange(x, _symmetric_halo(r_lat)) * y)
+        rhs = torch.sum(x * polar_halo_reduce(y, _symmetric_halo(r_lat)))
 
         dist.all_reduce(lhs, group=thd.polar_group())
         dist.all_reduce(rhs, group=thd.polar_group())
@@ -758,7 +764,7 @@ class TestPolarHalo(unittest.TestCase):
         offset = sum(shapes[:rank])
         x_local = x_full[:, :, offset : offset + shapes[rank], :].contiguous()
 
-        got = polar_halo_exchange(x_local, r_lat)
+        got = polar_halo_exchange(x_local, _symmetric_halo(r_lat))
 
         top = got[:, :, :r_lat, :]
         if rank == 0:
@@ -803,9 +809,9 @@ class TestPolarHalo(unittest.TestCase):
             self.skipTest("halo exchange is an identity on a single polar rank")
 
         x0 = torch.randn(B, C, H, W, device=self.device, dtype=torch.float64)
-        ok = compare_tensors("zero halo gather", polar_halo_exchange(x0, 0), x0, atol=0.0, rtol=0.0, verbose=False)
+        ok = compare_tensors("zero halo gather", polar_halo_exchange(x0, _symmetric_halo(0)), x0, atol=0.0, rtol=0.0, verbose=False)
         self.assertTrue(reduce_success(ok, self.device), "zero-width halo gather is not the identity")
-        ok = compare_tensors("zero halo reduce", polar_halo_reduce(x0, 0, H), x0, atol=0.0, rtol=0.0, verbose=False)
+        ok = compare_tensors("zero halo reduce", polar_halo_reduce(x0, _symmetric_halo(0)), x0, atol=0.0, rtol=0.0, verbose=False)
         self.assertTrue(reduce_success(ok, self.device), "zero-width halo reduce is not the identity")
 
         # the exchange that follows on the same communicator must see only its own data
@@ -813,7 +819,7 @@ class TestPolarHalo(unittest.TestCase):
         x_full = torch.randn(B, C, H * comm_size, W, device=self.device, dtype=torch.float64)
         offset = sum(shapes[:rank])
         end = offset + shapes[rank]
-        got = polar_halo_exchange(x_full[:, :, offset:end, :].contiguous(), r_lat_next)
+        got = polar_halo_exchange(x_full[:, :, offset:end, :].contiguous(), _symmetric_halo(r_lat_next))
 
         expected_top = torch.zeros_like(got[:, :, :r_lat_next, :]) if rank == 0 else x_full[:, :, offset - r_lat_next : offset, :]
         expected_bot = torch.zeros_like(got[:, :, -r_lat_next:, :]) if rank == comm_size - 1 else x_full[:, :, end : end + r_lat_next, :]
@@ -821,6 +827,159 @@ class TestPolarHalo(unittest.TestCase):
         self.assertTrue(reduce_success(ok, self.device), "halo top rows after a zero-width exchange")
         ok = compare_tensors("halo bottom after zero halo", got[:, :, -r_lat_next:, :], expected_bot, atol=0.0, rtol=0.0, verbose=False)
         self.assertTrue(reduce_success(ok, self.device), "halo bottom rows after a zero-width exchange")
+
+
+def _uneven_halo_case(comm_size):
+    """
+    Extents of a flat axis split unevenly, and a read range per rank that differs per side.
+
+    The ranges reach 0, 1 or 2 entries into a neighbour, so some sides move nothing at all,
+    and the two sides of a boundary move different amounts, as the bands of a HEALPix grid do.
+    """
+    shapes = [3 + 2 * (r % 3) for r in range(comm_size)]
+    starts = [sum(shapes[:r]) for r in range(comm_size + 1)]
+    needs = []
+    for r in range(comm_size):
+        before = min(shapes[r - 1], r % 2 + 1) if r > 0 else 0
+        after = min(shapes[r + 1], (r + 1) % 3) if r < comm_size - 1 else 0
+        needs.append((starts[r] - before, starts[r + 1] + after))
+    return shapes, starts, needs
+
+
+class TestPolarHaloPlan(unittest.TestCase):
+    """A halo plan with different counts per side and per rank, on a flat axis."""
+
+    @classmethod
+    def setUpClass(cls):
+        setup_class_from_context(cls, _DIST_CTX)
+
+    def test_symmetric_plan_pads_where_there_is_no_neighbour(self):
+        """The symmetric plan: received on the inside, zero-padded at the poles, and the identity on a single rank."""
+        self.assertTrue(PolarHaloPlan.symmetric(2, 0, 1).is_identity)
+        self.assertEqual(PolarHaloPlan.symmetric(2, 0, 3), PolarHaloPlan(recv_next=2, send_next=2, pad_prev=2))
+        self.assertEqual(PolarHaloPlan.symmetric(2, 1, 3), PolarHaloPlan(recv_prev=2, recv_next=2, send_prev=2, send_next=2))
+        self.assertTrue(PolarHaloPlan.symmetric(0, 1, 3).is_identity)
+
+    def test_plans_of_neighbours_match(self):
+        """What a rank sends to a neighbour is what that neighbour receives from it."""
+        for comm_size in (1, 2, 3, 5):
+            shapes, starts, needs = _uneven_halo_case(comm_size)
+            plans = [PolarHaloPlan.from_needs(shapes, needs, r) for r in range(comm_size)]
+            for r, plan in enumerate(plans):
+                lo, hi = needs[r]
+                self.assertEqual((plan.before, plan.after), (starts[r] - lo, hi - starts[r + 1]))
+                self.assertEqual((plan.pad_prev, plan.pad_next), (0, 0))
+                if r > 0:
+                    self.assertEqual(plan.send_prev, plans[r - 1].recv_next)
+                if r < comm_size - 1:
+                    self.assertEqual(plan.send_next, plans[r + 1].recv_prev)
+            self.assertEqual((plans[0].send_prev, plans[0].recv_prev, plans[-1].send_next, plans[-1].recv_next), (0, 0, 0, 0))
+
+    def test_a_range_past_a_neighbour_is_refused(self):
+        """The exchange reaches immediate neighbours only; a wider range, or one past the axis, raises."""
+        shapes = [4, 2, 4]
+        with self.assertRaisesRegex(ValueError, "immediate neighbours"):
+            PolarHaloPlan.from_needs(shapes, [(0, 4), (4, 6), (1, 10)], 0)  # rank 2 needs 3 of rank 1's 2
+        with self.assertRaisesRegex(ValueError, "immediate neighbours"):
+            PolarHaloPlan.from_needs(shapes, [(0, 7), (4, 6), (6, 10)], 1)  # rank 0 needs past rank 1
+        with self.assertRaisesRegex(ValueError, "immediate neighbours"):
+            PolarHaloPlan.from_needs(shapes, [(-1, 4), (4, 6), (6, 10)], 0)  # before the start of the axis
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            PolarHaloPlan(recv_prev=-1)
+
+    def test_exchange_gathers_exactly_the_needed_range(self):
+        """The halo-padded block is the global range the rank asked for, and a later exchange is unaffected."""
+        set_seed(333)
+        comm_size, rank = thd.polar_group_size(), thd.polar_group_rank()
+        shapes, starts, needs = _uneven_halo_case(comm_size)
+        plan = PolarHaloPlan.from_needs(shapes, needs, rank)
+
+        x_full = torch.randn(2, 3, starts[-1], device=self.device, dtype=torch.float64)
+        x_local = x_full[..., starts[rank] : starts[rank + 1]].contiguous()
+        lo, hi = needs[rank]
+        ok = compare_tensors("planned halo", polar_halo_exchange(x_local, plan, lat_dim=-1), x_full[..., lo:hi], atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "planned halo")
+
+        # sides with a zero count posted nothing, so the next exchange sees only its own data
+        if min(shapes) >= 1 and comm_size > 1:
+            got = polar_halo_exchange(x_local, _symmetric_halo(1), lat_dim=-1)
+            expected = torch.cat(
+                [
+                    torch.zeros_like(x_local[..., :1]) if rank == 0 else x_full[..., starts[rank] - 1 : starts[rank]],
+                    x_local,
+                    torch.zeros_like(x_local[..., :1]) if rank == comm_size - 1 else x_full[..., starts[rank + 1] : starts[rank + 1] + 1],
+                ],
+                dim=-1,
+            )
+            ok = compare_tensors("symmetric halo after a planned one", got, expected, atol=0.0, rtol=0.0, verbose=False)
+            self.assertTrue(reduce_success(ok, self.device), "symmetric halo after a planned one")
+
+    def test_a_rank_with_nothing_to_move_is_left_out_correctly(self):
+        """
+        A plan in which the last rank moves nothing at all, the case NCCL refuses as a group's first P2P call.
+
+        Every rank starts the polar group with a collective before its first exchange, so the
+        group is started afterwards, and the ranks that do exchange get their ranges.
+        """
+        comm_size, rank = thd.polar_group_size(), thd.polar_group_rank()
+        shapes = [4] * comm_size
+        starts = [4 * r for r in range(comm_size + 1)]
+        # only rank 0 reads one entry of rank 1; everyone else reads its own block
+        needs = [(starts[r], starts[r + 1] + (1 if r == 0 and comm_size > 1 else 0)) for r in range(comm_size)]
+        plan = PolarHaloPlan.from_needs(shapes, needs, rank)
+        if comm_size > 2 and rank == comm_size - 1:
+            self.assertTrue(plan.is_identity)
+
+        x_full = torch.arange(starts[-1], dtype=torch.float64, device=self.device).expand(2, -1)
+        got = polar_halo_exchange(x_full[..., starts[rank] : starts[rank + 1]].contiguous(), plan, lat_dim=-1)
+        lo, hi = needs[rank]
+        ok = compare_tensors("sparse halo", got, x_full[..., lo:hi], atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "sparse halo")
+        if comm_size > 1:
+            self.assertTrue(thd.utils._POLAR_GROUP_STARTED)
+
+    def test_a_radius_is_refused_with_the_replacement_named(self):
+        """The halo functions take a plan only; a radius, by position or as r_lat, names PolarHaloPlan.symmetric."""
+        x = torch.randn(2, 3, 6, 4, device=self.device, dtype=torch.float64)
+        for fn in (polar_halo_exchange, polar_halo_reduce):
+            with self.subTest(fn=fn.__name__):
+                with self.assertRaisesRegex(TypeError, r"PolarHaloPlan\.symmetric"):
+                    fn(x, 1)
+                with self.assertRaisesRegex(TypeError, r"PolarHaloPlan\.symmetric\(1,"):
+                    fn(x, r_lat=1)
+        # the old reduce signature (y, r_lat, nlat_local) is caught at the radius, not taken as lat_dim
+        with self.assertRaisesRegex(TypeError, "PolarHaloPlan"):
+            polar_halo_reduce(x, 1, x.shape[-2])
+        # by keyword, the plan is halo
+        got = polar_halo_exchange(x, halo=_symmetric_halo(1))
+        self.assertEqual(polar_halo_reduce(got, halo=_symmetric_halo(1)).shape, x.shape)
+
+    def test_exchange_backward_returns_every_contribution_home(self):
+        """
+        The gradient of the exchange sums every rank's contribution to an entry onto its owner.
+
+        The upstream gradients are small integers, drawn alike on every rank for every rank, so
+        each rank can form the exact global sum itself and the comparison is exact.
+        """
+        comm_size, rank = thd.polar_group_size(), thd.polar_group_rank()
+        shapes, starts, needs = _uneven_halo_case(comm_size)
+        plan = PolarHaloPlan.from_needs(shapes, needs, rank)
+
+        generator = torch.Generator().manual_seed(333)
+        upstream = [torch.randint(-8, 9, (2, 3, hi - lo), generator=generator).to(torch.float64) for lo, hi in needs]
+        expected = torch.zeros(2, 3, starts[-1], dtype=torch.float64)
+        for (lo, hi), g in zip(needs, upstream):
+            expected[..., lo:hi] += g
+
+        x_local = torch.randn(2, 3, shapes[rank], device=self.device, dtype=torch.float64, requires_grad=True)
+        (polar_halo_exchange(x_local, plan, lat_dim=-1) * upstream[rank].to(self.device)).sum().backward()
+        ok = compare_tensors("halo gradient", x_local.grad, expected[..., starts[rank] : starts[rank + 1]].to(self.device), atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "halo gradient")
+
+        # the reduce is the same map
+        reduced = polar_halo_reduce(upstream[rank].to(self.device), plan, lat_dim=-1)
+        ok = compare_tensors("halo reduce", reduced, expected[..., starts[rank] : starts[rank + 1]].to(self.device), atol=0.0, rtol=0.0, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), "halo reduce")
 
 
 # Error budget in ULPs of the largest reference entry, in the dtype of the case, for the
@@ -1195,7 +1354,7 @@ class TestDoubleBackward(unittest.TestCase):
             return torch.sum(torch.tanh((_stencil(F.pad(x @ p, (0, 0, r_lat, r_lat)), w, H) @ n)))
 
         def loss_dist(x):
-            return reduce_from_polar_region(torch.sum(torch.tanh((_stencil(polar_halo_exchange(x @ p, r_lat), w, x.shape[-2]) @ n))))
+            return reduce_from_polar_region(torch.sum(torch.tanh((_stencil(polar_halo_exchange(x @ p, _symmetric_halo(r_lat)), w, x.shape[-2]) @ n))))
 
         self._check("polar_halo_exchange", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose)
 
@@ -1217,7 +1376,7 @@ class TestDoubleBackward(unittest.TestCase):
             return torch.sum(torch.tanh((_stencil_transpose(x @ p, w, r_lat).narrow(-2, r_lat, H) @ n)))
 
         def loss_dist(x):
-            y = polar_halo_reduce(_stencil_transpose(x @ p, w, r_lat), r_lat, x.shape[-2])
+            y = polar_halo_reduce(_stencil_transpose(x @ p, w, r_lat), _symmetric_halo(r_lat))
             return reduce_from_polar_region(torch.sum(torch.tanh((y @ n))))
 
         self._check("polar_halo_reduce", x, self._shard_lat, loss_serial, loss_dist, reduce_from_polar_region, dtype, thd.polar_group_size(), verbose)

@@ -32,12 +32,16 @@
 # we need this in order to enable distributed
 import os
 
+import torch
 import torch.distributed as dist
 
 # those need to be global
 _POLAR_PARALLEL_GROUP = None
 _AZIMUTH_PARALLEL_GROUP = None
 _IS_INITIALIZED = False
+
+# whether the polar group has run a collective that every member joined, see _start_polar_group
+_POLAR_GROUP_STARTED = False
 
 
 class _DistributedConfig:
@@ -135,9 +139,11 @@ def init(polar_process_group, azimuth_process_group):
     global _POLAR_PARALLEL_GROUP
     global _AZIMUTH_PARALLEL_GROUP
     global _IS_INITIALIZED
+    global _POLAR_GROUP_STARTED
     _POLAR_PARALLEL_GROUP = polar_process_group
     _AZIMUTH_PARALLEL_GROUP = azimuth_process_group
     _IS_INITIALIZED = True
+    _POLAR_GROUP_STARTED = False
 
 
 def finalize():
@@ -152,6 +158,8 @@ def finalize():
     global _POLAR_PARALLEL_GROUP
     global _AZIMUTH_PARALLEL_GROUP
     global _IS_INITIALIZED
+    global _POLAR_GROUP_STARTED
+    _POLAR_GROUP_STARTED = False
     if is_initialized():
         if is_distributed_polar():
             dist.destroy_process_group(_POLAR_PARALLEL_GROUP)
@@ -160,6 +168,29 @@ def finalize():
             dist.destroy_process_group(_AZIMUTH_PARALLEL_GROUP)
             _AZIMUTH_PARALLEL_GROUP = None
     _IS_INITIALIZED = False
+
+
+def _start_polar_group(device: torch.device) -> None:
+    """
+    Run one collective on the polar group that every member joins, once per :func:`init`.
+
+    With NCCL, the first ``batch_isend_irecv`` on a group has to involve every member of
+    it; only later calls may involve a subset. A halo exchange whose plan leaves a rank
+    nothing to move posts nothing on that rank, so it must not be the group's first call.
+    Every member calls this at the start of every halo exchange, which the layers do in
+    lockstep, and the first call is a one-element all-reduce they all join. Later calls
+    return at once.
+
+    Parameters
+    ----------
+    device : torch.device
+        Where the exchanged tensors live, which for NCCL is this rank's GPU.
+    """
+    global _POLAR_GROUP_STARTED
+    if _POLAR_GROUP_STARTED or not is_distributed_polar():
+        return
+    dist.all_reduce(torch.zeros(1, device=device), group=_POLAR_PARALLEL_GROUP)
+    _POLAR_GROUP_STARTED = True
 
 
 def is_initialized() -> bool:

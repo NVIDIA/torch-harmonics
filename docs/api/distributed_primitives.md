@@ -61,6 +61,7 @@ through distributed computations.
    :toctree: generated
    :nosignatures:
 
+   PolarHaloPlan
    polar_halo_exchange
    polar_halo_reduce
    compute_polar_halo_radius

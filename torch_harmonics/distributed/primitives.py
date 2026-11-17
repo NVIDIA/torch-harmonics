@@ -29,7 +29,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-from typing import List
+from dataclasses import dataclass
+from typing import List, Tuple
 
 import torch
 import torch.distributed as dist
@@ -39,7 +40,7 @@ from torch_harmonics.quadrature import latitude_support_band
 from torch_harmonics.utils import check
 
 from ._amp_utils import _custom_fwd, _custom_setup_context
-from .utils import azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_rank, polar_group_size
+from .utils import _start_polar_group, azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_size
 from .utils import config as thd_config
 
 
@@ -1088,14 +1089,214 @@ def gather_from_copy_to_polar_region(input_, dim_, shapes_):
 # ---------------------------------------------------------------------------
 # nearest neighbor exchange algorithms
 # ---------------------------------------------------------------------------
-def _halo_gather(x, r_lat, lat_dim=-2):
+@dataclass(frozen=True)
+class PolarHaloPlan:
     r"""
-    Pad ``x`` with ``r_lat`` latitude rows borrowed from each polar neighbour.
+    What one polar rank exchanges with its two neighbours along the axis its shard splits.
 
-    ``[B, C, H, W]`` -> ``[B, C, H + 2 * r_lat, W]`` for the default ``lat_dim``; any other
-    dimension can be named as the latitude axis, which is how a channels-last
-    ``[B, H, W, C]`` tensor is exchanged without a layout round trip. Ranks at the polar
-    boundary have no neighbour on the missing side and are zero-padded there.
+    A halo exchange lets a rank read entries its neighbours own: it receives ``recv_prev``
+    entries from the end of rank ``r - 1``'s block and ``recv_next`` from the start of rank
+    ``r + 1``'s, and sends ``send_prev`` entries from the start of its own block to
+    ``r - 1`` and ``send_next`` from its end to ``r + 1``. ``pad_prev`` and ``pad_next``
+    zero entries go outside the received ones, so a layout can stay uniform across ranks
+    where there is no neighbour to receive from. The halo-padded block is::
+
+        [pad_prev zeros | recv_prev | own block | recv_next | pad_next zeros]
+
+    Only immediate neighbours are involved, so every count is at most the extent the
+    neighbour holds. The counts of two neighbours have to match: rank ``r``'s ``send_prev``
+    is rank ``r - 1``'s ``recv_next``. The constructors build the plans of all ranks from
+    the same global data, which guarantees that; a side whose counts are zero posts no
+    message at all.
+
+    An entry is whatever the axis indexes: a latitude row of a regular grid, or a pixel of
+    the flat axis of a HEALPix field, whose bands of rings differ in length.
+
+    Parameters
+    ----------
+    recv_prev, recv_next : int
+        Entries received from the previous and the next polar rank.
+    send_prev, send_next : int
+        Entries sent to the previous and the next polar rank.
+    pad_prev, pad_next : int
+        Zero entries added before and after the received ones.
+    """
+
+    recv_prev: int = 0
+    recv_next: int = 0
+    send_prev: int = 0
+    send_next: int = 0
+    pad_prev: int = 0
+    pad_next: int = 0
+
+    def __post_init__(self):
+        for name in ("recv_prev", "recv_next", "send_prev", "send_next", "pad_prev", "pad_next"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"PolarHaloPlan.{name} must be a non-negative integer, got {value!r}")
+
+    @property
+    def before(self) -> int:
+        """Entries in front of the own block in the halo-padded one."""
+        return self.pad_prev + self.recv_prev
+
+    @property
+    def after(self) -> int:
+        """Entries behind the own block in the halo-padded one."""
+        return self.recv_next + self.pad_next
+
+    @property
+    def is_identity(self) -> bool:
+        """Whether the exchange leaves the block as it is and posts no message."""
+        return self.before == 0 and self.after == 0 and self.send_prev == 0 and self.send_next == 0
+
+    @classmethod
+    def symmetric(cls, r_lat: int, rank: int, size: int) -> "PolarHaloPlan":
+        """
+        ``r_lat`` entries from each neighbour, zero-padded where there is none.
+
+        Every rank's halo-padded block is then ``2 * r_lat`` longer than its own, at the
+        poles too, which is the layout of the regular grids' localized operators. A single
+        polar rank holds the whole axis and exchanges nothing, so its plan is the identity,
+        as the exchange is without a polar split.
+
+        Parameters
+        ----------
+        r_lat : int
+            Entries borrowed from each neighbour.
+        rank, size : int
+            This rank's position in the polar group, and the group's size.
+
+        Returns
+        -------
+        PolarHaloPlan
+            The plan of ``rank``.
+        """
+        r_lat = int(r_lat)
+        if size == 1:
+            return cls()
+        has_prev, has_next = rank > 0, rank < size - 1
+        return cls(
+            recv_prev=r_lat if has_prev else 0,
+            recv_next=r_lat if has_next else 0,
+            send_prev=r_lat if has_prev else 0,
+            send_next=r_lat if has_next else 0,
+            pad_prev=0 if has_prev else r_lat,
+            pad_next=0 if has_next else r_lat,
+        )
+
+    @classmethod
+    def from_needs(cls, shapes: List[int], needs: List[Tuple[int, int]], rank: int) -> "PolarHaloPlan":
+        r"""
+        The plan of ``rank`` when every rank names the range it has to read.
+
+        Parameters
+        ----------
+        shapes : List[int]
+            Entries every polar rank holds, ordered by rank. The blocks are contiguous and
+            in rank order, so they tile ``[0, sum(shapes))``.
+        needs : List[Tuple[int, int]]
+            For every rank, the half-open global range ``[lo, hi)`` its operator reads. The
+            part of it beyond the rank's own block has to lie within the neighbours' blocks;
+            a range within the own block, or an empty one, needs no halo.
+        rank : int
+            The rank to build the plan of.
+
+        Returns
+        -------
+        PolarHaloPlan
+            Without padding: at the ends of the axis nothing is received, and the
+            halo-padded block is exactly ``[lo, hi)``.
+
+        Raises
+        ------
+        ValueError
+            If any rank's range reaches past an immediate neighbour, or past either end of
+            the axis. The exchange talks to immediate neighbours only, so such a range would
+            need data from a rank further out; the decomposition is too fine for the operator
+            then. Every rank checks every range, so all of them raise together.
+        """
+        size = len(shapes)
+        if len(needs) != size:
+            raise ValueError(f"needs one range per rank: got {len(needs)} for {size} ranks")
+        if not 0 <= rank < size:
+            raise ValueError(f"rank must lie in [0, {size}), got {rank}")
+
+        starts = [0]
+        for n in shapes:
+            starts.append(starts[-1] + int(n))
+
+        def overhang(r):
+            lo, hi = (int(v) for v in needs[r])
+            start, end = starts[r], starts[r + 1]
+            if hi <= lo:
+                # reads nothing beyond its block
+                return 0, 0
+            before, after = max(start - lo, 0), max(hi - end, 0)
+            prev_extent = shapes[r - 1] if r > 0 else 0
+            next_extent = shapes[r + 1] if r < size - 1 else 0
+            if before > prev_extent or after > next_extent:
+                raise ValueError(
+                    f"polar rank {r} holds [{start}, {end}) and needs [{lo}, {hi}), which reaches past its "
+                    f"immediate neighbours (blocks of {prev_extent} before and {next_extent} after; extents "
+                    f"{list(shapes)}). The halo is exchanged with immediate neighbours only, so the polar "
+                    "decomposition is too fine for the operator's support: use fewer polar ranks, a finer "
+                    "grid or a smaller cutoff."
+                )
+            return before, after
+
+        # every rank checks every range, not only its own and its neighbours': a range that
+        # one rank refused and another accepted would leave the second waiting for a message
+        overhangs = [overhang(r) for r in range(size)]
+        before, after = overhangs[rank]
+        send_prev = overhangs[rank - 1][1] if rank > 0 else 0
+        send_next = overhangs[rank + 1][0] if rank < size - 1 else 0
+        return cls(recv_prev=before, recv_next=after, send_prev=send_prev, send_next=send_next)
+
+
+def _halo_slice(x, dim, start, n):
+    """``n`` entries of ``x`` from ``start`` along ``dim``, contiguous for sending, or ``None`` if there are none."""
+    return x.narrow(dim, start, n).contiguous() if n > 0 else None
+
+
+def _halo_zeros(x, dim, n):
+    """``n`` zero entries shaped like ``x`` along ``dim``, as padding or a receive buffer, or ``None`` if there are none."""
+    if n == 0:
+        return None
+    shape = list(x.shape)
+    shape[dim] = n
+    return torch.zeros(shape, device=x.device, dtype=x.dtype)
+
+
+def _halo_exchange_neighbours(sends, recvs):
+    """
+    Post the point-to-point messages of one halo exchange and wait for them.
+
+    ``sends`` and ``recvs`` are ``(prev, next)`` pairs of tensors or ``None``. A side with
+    nothing to move posts nothing: every message has to be matched by the neighbour, and an
+    unmatched one could be delivered to a later exchange on the polar communicator.
+    """
+    prev_rank, next_rank = get_group_neighbors(polar_group())
+    ops = []
+    for peer, send, recv in ((prev_rank, sends[0], recvs[0]), (next_rank, sends[1], recvs[1])):
+        if send is not None:
+            ops.append(dist.P2POp(dist.isend, send, peer, polar_group()))
+        if recv is not None:
+            ops.append(dist.P2POp(dist.irecv, recv, peer, polar_group()))
+    if ops:
+        reqs = dist.batch_isend_irecv(ops)
+        for req in reqs:
+            req.wait()
+
+
+def _halo_gather(x, plan: PolarHaloPlan, lat_dim=-2):
+    r"""
+    Pad ``x`` along ``lat_dim`` with the entries the plan borrows from the polar neighbours.
+
+    ``[B, C, H, W]`` -> ``[B, C, plan.before + H + plan.after, W]`` for the default
+    ``lat_dim``; any other dimension can be named, which is how a channels-last
+    ``[B, H, W, C]`` tensor, or the flat pixel axis of a HEALPix field, is exchanged
+    without a layout round trip.
 
     This is the linear map whose adjoint is :func:`_halo_reduce`. The two are used as each
     other's forward and backward by :class:`_PolarHaloExchangeFn` (gather forward) and
@@ -1107,141 +1308,96 @@ def _halo_gather(x, r_lat, lat_dim=-2):
     # Up to v0.9.3 the bottom slice was x[..., -r_lat:, :], which at r_lat == 0 is the whole
     # tensor; sent against the neighbour's 0-row receive, its surplus could be delivered to the
     # next halo receive on the polar communicator and corrupt a later layer. narrow() below no
-    # longer degenerates that way, but an empty exchange is still pointless, so skip it.
-    if r_lat == 0:
+    # longer degenerates that way, and a side with a zero count posts nothing. That can leave a
+    # rank out of the exchange altogether, which NCCL refuses in a group's first P2P call, so
+    # every rank starts the group first
+    _start_polar_group(x.device)
+    if plan.is_identity:
         return x
-
-    group_size = polar_group_size()
-    group_rank = polar_group_rank()
-    prev_rank, next_rank = get_group_neighbors(polar_group())
 
     lat_dim = lat_dim % x.dim()
     H = x.shape[lat_dim]
-    device, dtype = x.device, x.dtype
+    if plan.send_prev > H or plan.send_next > H:
+        raise ValueError(f"halo plan {plan} sends more entries than the {H} this rank holds along dim {lat_dim}")
 
-    # setup send buffers
-    send_top = x.narrow(lat_dim, 0, r_lat).contiguous()  # top r_lat rows → rank-1
-    send_bot = x.narrow(lat_dim, H - r_lat, r_lat).contiguous()  # bottom r_lat rows → rank+1
+    # the edges of the own block lent to the neighbours, and room for what they lend
+    sends = (_halo_slice(x, lat_dim, 0, plan.send_prev), _halo_slice(x, lat_dim, H - plan.send_next, plan.send_next))
+    recvs = (_halo_zeros(x, lat_dim, plan.recv_prev), _halo_zeros(x, lat_dim, plan.recv_next))
+    _halo_exchange_neighbours(sends, recvs)
 
-    # setup recv buffers
-    halo_shape = list(x.shape)
-    halo_shape[lat_dim] = r_lat
-    recv_top = torch.zeros(halo_shape, device=device, dtype=dtype)
-    recv_bot = torch.zeros(halo_shape, device=device, dtype=dtype)
-
-    ops = []
-    if group_rank > 0:
-        ops.append(dist.P2POp(dist.isend, send_top, prev_rank, polar_group()))
-        ops.append(dist.P2POp(dist.irecv, recv_top, prev_rank, polar_group()))
-    if group_rank < group_size - 1:
-        ops.append(dist.P2POp(dist.isend, send_bot, next_rank, polar_group()))
-        ops.append(dist.P2POp(dist.irecv, recv_bot, next_rank, polar_group()))
-
-    if ops:
-        reqs = dist.batch_isend_irecv(ops)
-        for req in reqs:
-            req.wait()
-
-    return torch.cat([recv_top, x, recv_bot], dim=lat_dim).contiguous()
+    parts = [_halo_zeros(x, lat_dim, plan.pad_prev), recvs[0], x, recvs[1], _halo_zeros(x, lat_dim, plan.pad_next)]
+    return torch.cat([t for t in parts if t is not None], dim=lat_dim).contiguous()
 
 
-def _halo_reduce(y, r_lat, H, lat_dim=-2):
+def _halo_reduce(y, plan: PolarHaloPlan, lat_dim=-2):
     r"""
-    Adjoint of :func:`_halo_gather`: send the halo rows of ``y`` home and accumulate them.
+    Adjoint of :func:`_halo_gather`: send the halo entries of ``y`` home and accumulate them.
 
-    ``[B, C, H + 2 * r_lat, W]`` -> ``[B, C, H, W]`` for the default ``lat_dim``. The halo slices of ``y`` hold
-    contributions to rows owned by the neighbours, so they are sent back and added onto the
-    owner's rows; symmetrically, each rank receives the contributions its neighbours hold for
-    the rows it lent them.
+    ``[B, C, plan.before + H + plan.after, W]`` -> ``[B, C, H, W]`` for the default ``lat_dim``.
+    The halo slices of ``y`` hold contributions to entries owned by the neighbours, so they are
+    sent back and added onto the owner's entries; symmetrically, each rank receives the
+    contributions its neighbours hold for the entries it lent them.
 
-    At the polar boundary the outward slice has no owner and is dropped, which is exactly the
-    adjoint of :func:`_halo_gather` zero-padding that side.
+    The padding has no owner and is dropped, which is exactly the adjoint of
+    :func:`_halo_gather` zero-padding there.
     """
 
-    # no halo rows to send home; skip the P2P exchange entirely, as _halo_gather does
-    if r_lat == 0:
+    # no halo entries to send home; skip the P2P exchange entirely, as _halo_gather does, once
+    # the group has been started by every rank
+    _start_polar_group(y.device)
+    if plan.is_identity:
         return y
 
-    group_size = polar_group_size()
-    group_rank = polar_group_rank()
-    prev_rank, next_rank = get_group_neighbors(polar_group())
-
     lat_dim = lat_dim % y.dim()
-    device, dtype = y.device, y.dtype
+    H = y.shape[lat_dim] - plan.before - plan.after
+    if H < max(plan.send_prev, plan.send_next):
+        raise ValueError(f"halo plan {plan} does not fit a halo-padded extent of {y.shape[lat_dim]} along dim {lat_dim}")
 
-    # the local (non-halo) rows pass straight through
-    out = y.narrow(lat_dim, r_lat, H).contiguous().clone()
+    # the own entries pass straight through
+    out = y.narrow(lat_dim, plan.before, H).contiguous().clone()
 
-    #   rows [0, r_lat)             → belong to rank-1
-    #   rows [r_lat + H, H + 2 r_lat) → belong to rank+1
-    send_to_prev = y.narrow(lat_dim, 0, r_lat).contiguous()
-    send_to_next = y.narrow(lat_dim, r_lat + H, r_lat).contiguous()
+    # the received halo goes back where it came from, and what was lent comes back
+    sends = (_halo_slice(y, lat_dim, plan.pad_prev, plan.recv_prev), _halo_slice(y, lat_dim, plan.before + H, plan.recv_next))
+    recvs = (_halo_zeros(y, lat_dim, plan.send_prev), _halo_zeros(y, lat_dim, plan.send_next))
+    _halo_exchange_neighbours(sends, recvs)
 
-    halo_shape = list(y.shape)
-    halo_shape[lat_dim] = r_lat
-    recv_from_prev = torch.zeros(halo_shape, device=device, dtype=dtype)
-    recv_from_next = torch.zeros(halo_shape, device=device, dtype=dtype)
-
-    ops = []
-    if group_rank > 0:
-        ops.append(dist.P2POp(dist.isend, send_to_prev, prev_rank, polar_group()))
-        ops.append(dist.P2POp(dist.irecv, recv_from_prev, prev_rank, polar_group()))
-    if group_rank < group_size - 1:
-        ops.append(dist.P2POp(dist.isend, send_to_next, next_rank, polar_group()))
-        ops.append(dist.P2POp(dist.irecv, recv_from_next, next_rank, polar_group()))
-
-    if ops:
-        reqs = dist.batch_isend_irecv(ops)
-        for req in reqs:
-            req.wait()
-
-    # recv_from_prev = contribution to our top r_lat rows (prev rank's recv_bot region)
-    # recv_from_next = contribution to our bottom r_lat rows (next rank's recv_top region)
-    if group_rank > 0:
-        out.narrow(lat_dim, 0, r_lat).add_(recv_from_prev)
-    if group_rank < group_size - 1:
-        out.narrow(lat_dim, H - r_lat, r_lat).add_(recv_from_next)
+    if recvs[0] is not None:
+        out.narrow(lat_dim, 0, plan.send_prev).add_(recvs[0])
+    if recvs[1] is not None:
+        out.narrow(lat_dim, H - plan.send_next, plan.send_next).add_(recvs[1])
 
     return out
 
 
 class _PolarHaloExchangeFn(torch.autograd.Function):
-    """Differentiable lat halo exchange for polar-distributed tensors.
+    """Differentiable halo exchange for polar-distributed tensors.
 
-    Forward: gathers r_lat rows from neighbouring polar ranks and returns a
-             tensor r_lat rows longer on each side of ``lat_dim``, e.g.
-             [B, C, H_local, W] -> [B, C, H_local + 2*r_lat, W] channels-first.
+    Forward: gathers the entries the plan borrows from the neighbouring polar ranks along
+             ``lat_dim``, e.g. [B, C, H_local, W] -> [B, C, H_local + 2*r_lat, W]
+             channels-first for a symmetric plan.
     Backward: communicates halo gradient contributions back to their owning
               ranks and accumulates them onto the local input gradient.
 
-    Ranks at the polar boundary (rank 0 / rank group_size-1) receive
-    zero-padding on the missing side in the forward pass; the corresponding
-    halo-gradient portion is discarded in the backward (no neighbour to send
-    it to), which is the correct adjoint of padding with zeros.
+    The padding the plan adds where a rank has no neighbour holds zeros in the forward
+    pass; the corresponding gradient is discarded in the backward, which is the correct
+    adjoint of padding with zeros.
     """
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
-    def forward(x, r_lat, lat_dim):
+    def forward(x, plan, lat_dim):
 
         if not is_distributed_polar():
             return x
 
-        return _halo_gather(x, r_lat, lat_dim)
+        return _halo_gather(x, plan, lat_dim)
 
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        x, r_lat, lat_dim = inputs
-        ctx.r_lat = r_lat
+        _, plan, lat_dim = inputs
+        ctx.plan = plan
         ctx.lat_dim = lat_dim
-        ctx.H = x.shape[lat_dim]
-        if is_distributed_polar():
-            ctx.group_size = polar_group_size()
-            ctx.group_rank = polar_group_rank()
-            prev_rank, next_rank = get_group_neighbors(polar_group())
-            ctx.prev_rank = prev_rank
-            ctx.next_rank = next_rank
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
@@ -1251,20 +1407,19 @@ class _PolarHaloExchangeFn(torch.autograd.Function):
             return dout, None, None
 
         # The halo slices of the incoming gradient belong to the neighbouring ranks, and each
-        # neighbour holds the gradient it owes us for the rows we lent it: exactly the adjoint
-        # of the gather performed in the forward.
-        # Gradients for r_lat and lat_dim are None (not tensors / non-differentiable).
-        return _PolarHaloReduceFn.apply(dout, ctx.r_lat, ctx.H, ctx.lat_dim), None, None
+        # neighbour holds the gradient it owes us for the entries we lent it: exactly the
+        # adjoint of the gather performed in the forward.
+        return _PolarHaloReduceFn.apply(dout, ctx.plan, ctx.lat_dim), None, None
 
 
 class _PolarHaloReduceFn(torch.autograd.Function):
     """Adjoint of :class:`_PolarHaloExchangeFn`: halo reduce forward, halo gather backward.
 
-    Forward: takes a halo-padded tensor whose halo rows hold contributions to latitudes
-             owned by the neighbours, sends them home and accumulates, returning the local
-             rows only along ``lat_dim`` -- ``[B, C, H_local + 2*r_lat, W]`` -> ``[B, C, H_local, W]``
-             channels-first.
-    Backward: gathers the halo rows back, the same operation the exchange performs forward.
+    Forward: takes a halo-padded tensor whose halo entries hold contributions to entries
+             owned by the neighbours, sends them home and accumulates, returning the own
+             entries only along ``lat_dim`` -- ``[B, C, H_local + 2*r_lat, W]`` -> ``[B, C, H_local, W]``
+             channels-first for a symmetric plan.
+    Backward: gathers the halo back, the same operation the exchange performs forward.
 
     This is the direction a *scatter*-shaped operator needs: the transpose DISCO convolution
     writes into output latitudes that may belong to a neighbour, so its forward accumulates
@@ -1273,18 +1428,18 @@ class _PolarHaloReduceFn(torch.autograd.Function):
 
     @staticmethod
     @_custom_fwd(device_type="cuda")
-    def forward(y, r_lat, H, lat_dim):
+    def forward(y, plan, lat_dim):
 
         if not is_distributed_polar():
             return y
 
-        return _halo_reduce(y, r_lat, H, lat_dim)
+        return _halo_reduce(y, plan, lat_dim)
 
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        _, r_lat, _, lat_dim = inputs
-        ctx.r_lat = r_lat
+        _, plan, lat_dim = inputs
+        ctx.plan = plan
         ctx.lat_dim = lat_dim
 
     @staticmethod
@@ -1292,10 +1447,9 @@ class _PolarHaloReduceFn(torch.autograd.Function):
     def backward(ctx, dout):
 
         if not is_distributed_polar():
-            return dout, None, None, None
+            return dout, None, None
 
-        # Gradients for r_lat, H and lat_dim are None (not tensors / non-differentiable).
-        return _PolarHaloExchangeFn.apply(dout, ctx.r_lat, ctx.lat_dim), None, None, None
+        return _PolarHaloExchangeFn.apply(dout, ctx.plan, ctx.lat_dim), None, None
 
 
 @torch.compiler.disable()
@@ -1313,8 +1467,8 @@ def compute_polar_halo_radius(
     ``theta_cutoff``, a contiguous band given by :func:`~torch_harmonics.quadrature.latitude_support_band`.
     A polar rank owns a contiguous range of both axes, so the rows it must borrow are exactly
     those where the band of its output range runs past its own input range. This returns the
-    largest such overhang over all ranks, which is the halo width
-    :func:`polar_halo_exchange` has to move.
+    largest such overhang over all ranks: the radius of the halo the regular grids' layers
+    exchange, as :meth:`PolarHaloPlan.symmetric` lays it out.
 
     The result is computed from the geometry alone and is identical on every rank; no
     communication is involved.
@@ -1390,60 +1544,98 @@ def compute_polar_halo_radius(
     return r_lat
 
 
-@torch.compiler.disable()
-def polar_halo_exchange(x, r_lat, lat_dim=-2):
-    """Exchange ``r_lat`` halo rows with neighbouring polar ranks.
+def _require_halo_plan(halo, r_lat, name: str) -> PolarHaloPlan:
+    """The plan a halo function was given, or a TypeError naming the replacement for a radius."""
+    if r_lat is not None:
+        raise TypeError(
+            f"{name} takes a PolarHaloPlan as halo since v1.0.0; r_lat is gone. For the symmetric halo of "
+            f"radius {r_lat!r}, pass halo=PolarHaloPlan.symmetric({r_lat!r}, polar_group_rank(), polar_group_size())."
+        )
+    if not isinstance(halo, PolarHaloPlan):
+        raise TypeError(
+            f"{name} takes a PolarHaloPlan as halo since v1.0.0, got {halo!r}. For the symmetric halo of a "
+            "radius r_lat, pass PolarHaloPlan.symmetric(r_lat, polar_group_rank(), polar_group_size())."
+        )
+    return halo
 
-    Gathers ``r_lat`` latitude rows from each polar neighbour and returns a
-    halo-padded tensor.  Boundary ranks receive zero-padding on the missing
-    side.  The operation is fully differentiable: the backward pass sends
-    halo gradients back to their owning ranks and accumulates them.
+
+@torch.compiler.disable()
+def polar_halo_exchange(x, halo=None, lat_dim=-2, *, r_lat=None):
+    """Exchange halo entries with the neighbouring polar ranks.
+
+    Gathers the entries this rank borrows from each polar neighbour along ``lat_dim``, as
+    ``halo`` lays them out, and returns the halo-padded tensor. The operation is fully
+    differentiable: the backward pass sends halo gradients back to their owning ranks and
+    accumulates them.
+
+    Every rank of the polar group has to call this together, also a rank whose plan moves
+    nothing: before the first exchange after :func:`~torch_harmonics.distributed.init`, all
+    of them join one collective on the polar group, since NCCL requires every member of a
+    group in its first point-to-point call.
 
     Parameters
     ----------
     x : torch.Tensor
-        Input tensor of shape ``(B, C, H_local, W)``, or any shape whose latitude axis is
+        Input tensor of shape ``(B, C, H_local, W)``, or any shape whose split axis is
         ``lat_dim``.
-    r_lat : int
-        Number of halo rows to exchange on each side.
+    halo : PolarHaloPlan
+        What this rank receives from and sends to each neighbour, and how much it pads.
+        :meth:`PolarHaloPlan.symmetric` gives ``r_lat`` rows on each side, zero-padded at
+        the poles; :meth:`PolarHaloPlan.from_needs` counts that differ per side and per
+        rank, as on the bands of rings of a HEALPix grid.
     lat_dim : int, optional
-        The latitude axis, by default ``-2`` (channels-first). A channels-last
-        ``(B, H_local, W, C)`` tensor passes ``1``.
+        The split axis, by default ``-2`` (channels-first). A channels-last
+        ``(B, H_local, W, C)`` tensor passes ``1``, a flat HEALPix field ``-1``.
 
     Returns
     -------
     torch.Tensor
-        Halo-padded tensor, ``r_lat`` rows longer on each side of ``lat_dim``.
+        Halo-padded tensor, ``halo.before`` entries longer in front and ``halo.after``
+        behind along ``lat_dim``.
+
+    Raises
+    ------
+    TypeError
+        If ``halo`` is not a :class:`PolarHaloPlan`, or the removed ``r_lat`` is passed.
     """
-    return _PolarHaloExchangeFn.apply(x, r_lat, lat_dim)
+    halo = _require_halo_plan(halo, r_lat, "polar_halo_exchange")
+    if not is_distributed_polar():
+        return x
+    return _PolarHaloExchangeFn.apply(x, halo, lat_dim)
 
 
 @torch.compiler.disable()
-def polar_halo_reduce(y, r_lat, nlat_local, lat_dim=-2):
-    """Accumulate ``r_lat`` halo rows onto their owning polar ranks.
+def polar_halo_reduce(y, halo=None, lat_dim=-2, *, r_lat=None):
+    """Accumulate halo entries onto their owning polar ranks.
 
     The adjoint of :func:`polar_halo_exchange`, and its mirror image: where the exchange
-    *borrows* rows from the neighbours before a gather-shaped operator reads them, this
-    *returns* rows to the neighbours after a scatter-shaped operator has written them.
-    Boundary ranks drop the outward halo, matching the zero-padding the exchange applies
-    there. Fully differentiable; the backward is the exchange.
+    *borrows* entries from the neighbours before a gather-shaped operator reads them, this
+    *returns* entries to the neighbours after a scatter-shaped operator has written them.
+    The padding is dropped, matching the zeros the exchange puts there. Fully
+    differentiable; the backward is the exchange.
 
     Parameters
     ----------
     y : torch.Tensor
-        Halo-padded tensor of shape ``(B, C, nlat_local + 2 * r_lat, W)``, or any shape
-        whose latitude axis ``lat_dim`` has ``nlat_local + 2 * r_lat`` entries.
-    r_lat : int
-        Number of halo rows on each side.
-    nlat_local : int
-        Number of latitudes this rank owns, i.e. the extent of the returned tensor.
+        Halo-padded tensor, ``halo.before + nlat_local + halo.after`` long along
+        ``lat_dim``.
+    halo : PolarHaloPlan
+        The halo ``y`` was padded with, as for :func:`polar_halo_exchange`.
     lat_dim : int, optional
-        The latitude axis, by default ``-2`` (channels-first). A channels-last
+        The split axis, by default ``-2`` (channels-first). A channels-last
         ``(B, H, W, C)`` tensor passes ``1``.
 
     Returns
     -------
     torch.Tensor
-        This rank's completed rows, ``nlat_local`` long along ``lat_dim``.
+        This rank's completed entries along ``lat_dim``, ``nlat_local`` long.
+
+    Raises
+    ------
+    TypeError
+        If ``halo`` is not a :class:`PolarHaloPlan`, or the removed ``r_lat`` is passed.
     """
-    return _PolarHaloReduceFn.apply(y, r_lat, nlat_local, lat_dim)
+    halo = _require_halo_plan(halo, r_lat, "polar_halo_reduce")
+    if not is_distributed_polar():
+        return y
+    return _PolarHaloReduceFn.apply(y, halo, lat_dim)

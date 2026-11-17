@@ -47,7 +47,7 @@ from torch_harmonics.quadrature import effective_theta_cutoff
 from torch_harmonics.radial import split_radial
 from torch_harmonics.utils import check
 
-from .primitives import compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
+from .primitives import PolarHaloPlan, compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
 from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 # ---------------------------------------------------------------------------
@@ -890,9 +890,9 @@ def _cast_and_halo(layer: "DistributedNeighborhoodAttentionS2", key: torch.Tenso
     """
     key, value, query_scaled = _cast_to_autocast_dtype(key, value, query_scaled)
 
-    if layer.r_lat > 0 and layer.comm_size_polar > 1:
-        key = polar_halo_exchange(key, layer.r_lat, lat_dim=1)
-        value = polar_halo_exchange(value, layer.r_lat, lat_dim=1)
+    if layer.comm_size_polar > 1:
+        key = polar_halo_exchange(key, layer.halo, lat_dim=1)
+        value = polar_halo_exchange(value, layer.halo, lat_dim=1)
 
     return key, value, query_scaled
 
@@ -1290,8 +1290,12 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             self.lat_out_shapes,
         )
 
+        # what this rank exchanges with its polar neighbours: r_lat rows from each, zero-padded
+        # at the poles, so every rank's K/V chunk is 2 * r_lat rows longer than its own
+        self.halo = PolarHaloPlan.symmetric(self.r_lat, self.comm_rank_polar, self.comm_size_polar)
+
         # global lat index of the first halo row, which is where the K/V chunks start
-        self.lat_halo_start = self.shard_in.lat_offset - self.r_lat
+        self.lat_halo_start = self.shard_in.lat_offset - self.halo.before
 
     def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
         """The serial contract, against this rank's shard rather than the global grid."""
