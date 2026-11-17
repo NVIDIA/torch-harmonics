@@ -669,12 +669,12 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         self.assertEqual(set(attn._backend_state), names)
 
         if attn.ragged:
-            npoints_band = attn.band_hi - attn.band_lo
+            npoints_band = attn.point_range_in[1] - attn.point_range_in[0]
             self.assertEqual(npoints_band, attn.npoints_in_local + attn.halo.before + attn.halo.after)
             if backend == "ragged-halo-optimized":
                 self.assertEqual(attn.psi_seg_off.numel(), attn.npoints_out_local + 1)
                 self.assertEqual(int(attn.psi_seg_off[-1]), attn.psi_seg.shape[0])
-                self.assertEqual(attn.ring_weights.numel(), attn.band_ring_hi - attn.band_ring_lo)
+                self.assertEqual(attn.ring_weights.numel(), attn.ring_range_in[1] - attn.ring_range_in[0])
                 self.assertEqual(int(attn.psi_ring_base[0]), 0)
                 self.assertEqual(int(attn.psi_ring_size.sum()), npoints_band)
             else:

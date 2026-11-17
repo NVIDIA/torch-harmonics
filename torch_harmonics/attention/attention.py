@@ -46,7 +46,7 @@ from torch_harmonics.attention._layout import to_nchw, to_nhwc
 from torch_harmonics.attention.backends import BACKENDS
 from torch_harmonics.cache import SharedBufferMixin, shared_table
 from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature, require_grid
-from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2
+from torch_harmonics.neighborhood import precompute_neighborhood_arcs_s2, precompute_neighborhood_csr_s2
 from torch_harmonics.radial import split_radial_pair, unfold_radius
 from torch_harmonics.truncation import truncate_support
 
@@ -533,6 +533,16 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         self.npoints_in = self.grid_in.npoints
         self.npoints_out = self.grid_out.npoints
 
+        # The block of the problem this layer computes, which on a serial layer is all of it:
+        # the descriptors its fields are shaped on, its output points, and the input rings and
+        # points its kernels index. A distributed layer narrows them to its shard in _setup,
+        # and since the checks and the backends read these rather than the grids, the same
+        # code serves both.
+        self._field_in, self._field_out = self.grid_in, self.grid_out
+        self.npoints_out_local = self.npoints_out
+        self.ring_range_in = (0, self.grid_in.nrings)
+        self.point_range_in = (0, self.npoints_in)
+
         if self.ragged:
             # nlat/nlon exist only on a regular grid; keep them where they are defined so
             # that a consumer reaching for them on a ragged side fails rather than
@@ -681,6 +691,14 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         # same condition stated once.
         return precompute_neighborhood_arcs_s2(self._arcs_src, self._arcs_dst, theta_cutoff=self.theta_cutoff, fold_longitude=not self.ragged)
 
+    def _local_arcs(self):
+        """The arcs of this layer's output points, over the input rings it indexes; all of them on a serial layer."""
+        return self._neighborhood_arcs()
+
+    def _local_csr(self):
+        """The neighbourhood of this layer's output points as a column list, over the input points it indexes. Cached."""
+        return precompute_neighborhood_csr_s2(self.grid_in, self.grid_out, self.theta_cutoff)
+
     def _shard_key(self) -> tuple:
         """What identifies this layer's block of the neighbourhood beyond its grids and support: nothing on a serial layer."""
         return ()
@@ -726,11 +744,12 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
 
         query is sampled on the output grid and key/value on the input grid, so a mixed
         pair gives the two sides different ranks; each is checked against its own grid
-        rather than against one rank for the layer.
+        rather than against one rank for the layer. The grids are this layer's block of
+        them: the whole grids serially, the rank's shards on a distributed layer.
         """
-        check_field(query, self.grid_out, leading=(None, self.in_channels), name="query", radial=self.radial)
-        check_field(key, self.grid_in, leading=(None, self.in_channels), name="key", radial=self.radial)
-        check_field(value, self.grid_in, leading=(None, self.in_channels), name="value", radial=self.radial)
+        check_field(query, self._field_out, leading=(None, self.in_channels), name="query", radial=self.radial)
+        check_field(key, self._field_in, leading=(None, self.in_channels), name="key", radial=self.radial)
+        check_field(value, self._field_in, leading=(None, self.in_channels), name="value", radial=self.radial)
         _check_batches_match(query, key, value)
         _check_dtypes_match((query, key, value))
 
@@ -761,7 +780,7 @@ class NeighborhoodAttentionS2(BackendSelectionMixin, nn.Module):
         tensor = tensor.transpose(1, 2).contiguous()
         if not self.ragged_out:
             # restore the two spatial axes the caller handed in
-            tensor = tensor.unflatten(-1, (self.nlat_out, self.nlon_out))
+            tensor = tensor.unflatten(-1, tuple(self._field_out.shape))
         return tensor
 
     def forward(self, query: torch.Tensor, key: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None) -> torch.Tensor:
