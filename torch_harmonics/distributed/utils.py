@@ -31,9 +31,12 @@
 
 # we need this in order to enable distributed
 import os
+from typing import List
 
 import torch
 import torch.distributed as dist
+
+from torch_harmonics.grid import RegularGridS2
 
 # those need to be global
 _POLAR_PARALLEL_GROUP = None
@@ -238,3 +241,26 @@ def azimuth_group_rank() -> int:
         return 0
     else:
         return dist.get_rank(group=_AZIMUTH_PARALLEL_GROUP)
+
+
+def _point_shapes(shard) -> List[int]:
+    """
+    The flat point count every polar rank holds: whole rows of a regular band, whole rings of a HEALPix one.
+
+    Meaningful without an azimuth split only, which a field that is flat across the
+    polar group, as on HEALPix, has anyway.
+    """
+    if isinstance(shard.grid, RegularGridS2):
+        shapes = [nlat * shard.grid.nlon for nlat in shard.lat_shapes]
+    else:
+        shapes = list(shard.pixel_shapes)
+    return shapes
+
+
+def _ring_shapes(shard) -> List[int]:
+    """The rings every polar rank holds: the latitudes of a regular band, the rings of a HEALPix one."""
+    if isinstance(shard.grid, RegularGridS2):
+        shapes = list(shard.lat_shapes)
+    else:
+        shapes = list(shard.ring_shapes)
+    return shapes

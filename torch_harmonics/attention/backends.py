@@ -65,7 +65,6 @@ from torch_harmonics._backend import BackendS2, _kernel_device_types, _reference
 from torch_harmonics.attention.kernels_torch.attention_ragged_torch import _neighborhood_s2_attention_ragged_torch
 from torch_harmonics.attention.kernels_torch.attention_regular_torch import _neighborhood_s2_attention_regular_torch
 from torch_harmonics.attention.optimized.attention_optimized import _neighborhood_s2_attention_ragged_optimized, _neighborhood_s2_attention_regular_optimized
-from torch_harmonics.neighborhood import precompute_neighborhood_csr_s2
 
 if TYPE_CHECKING:  # pragma: no cover
     from torch_harmonics.attention.attention import NeighborhoodAttentionS2
@@ -131,7 +130,9 @@ class RaggedOptimizedBackend(AttentionBackendS2):
     """
     The compiled ragged kernels, CPU or CUDA.
 
-    Takes the arc form of the neighbourhood and the ring tables, and no column list:
+    Reads the layer's own block of the problem (``_local_arcs``, ``ring_range_in``,
+    ``npoints_out_local``) rather than the whole grids, which is what lets the distributed
+    layer run it on a halo-padded band unchanged. Takes the arc form of the neighbourhood and the ring tables, and no column list:
     the kernel derives a neighbour's index by counting along an arc, so the columns
     would be several MB of tensor it never reads. At nside=64 that is 3.6 MB against
     2.8 MB for everything else the layer holds.
@@ -151,9 +152,10 @@ class RaggedOptimizedBackend(AttentionBackendS2):
         return layer.ragged and layer.optimized_kernel and device.type in _RAGGED_DEVICES and layer.dtype != torch.float64
 
     def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
-        arcs = layer._neighborhood_arcs()
+        arcs = layer._local_arcs()
+        lo, hi = layer.ring_range_in
         return {
-            "ring_weights": _ring_weights(layer, device),
+            "ring_weights": _ring_weights(layer, device)[lo:hi],
             "psi_seg": arcs.segments.contiguous().to(device),
             "psi_seg_off": arcs.offsets.contiguous().to(device),
             "psi_ring_base": arcs.ring_base.contiguous().to(device),
@@ -173,7 +175,7 @@ class RaggedOptimizedBackend(AttentionBackendS2):
             layer.psi_ring_base,
             layer.psi_ring_size,
             layer.num_heads,
-            layer.npoints_out,
+            layer.npoints_out_local,
         )[0]
 
 
@@ -181,6 +183,7 @@ class RaggedReferenceBackend(AttentionBackendS2):
     """
     The torch reference, in terms of an explicit column list.
 
+    Reads the layer's own block of the problem, as :class:`RaggedOptimizedBackend` does.
     The fallback for a ragged grid: it asks nothing of the device, so it is what a build
     without the kernels gets, or a layer with ``optimized_kernel=False``. It walks a neighbour list
     in Python, which is what makes it readable and also what makes it slow -- it is the
@@ -195,8 +198,9 @@ class RaggedReferenceBackend(AttentionBackendS2):
         return layer.ragged
 
     def prepare(self, layer: "NeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
-        col_idx, roff_idx = precompute_neighborhood_csr_s2(layer.grid_in, layer.grid_out, layer.theta_cutoff)
-        return {"point_weights": _point_weights(layer, device, _reference_state_dtype(layer)), "psi_col_idx": col_idx.to(device), "psi_roff_idx": roff_idx.to(device)}
+        col_idx, roff_idx = layer._local_csr()
+        lo, hi = layer.point_range_in
+        return {"point_weights": _point_weights(layer, device, _reference_state_dtype(layer))[lo:hi], "psi_col_idx": col_idx.to(device), "psi_roff_idx": roff_idx.to(device)}
 
     def __call__(self, layer, key, value, query_scaled):
         return _neighborhood_s2_attention_ragged_torch(
@@ -207,7 +211,7 @@ class RaggedReferenceBackend(AttentionBackendS2):
             layer.psi_col_idx,
             layer.psi_roff_idx,
             layer.num_heads,
-            layer.npoints_out,
+            layer.npoints_out_local,
         )
 
 

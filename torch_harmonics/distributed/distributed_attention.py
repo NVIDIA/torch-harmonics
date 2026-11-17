@@ -36,19 +36,19 @@ import torch.distributed as dist
 from attention_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import _kernel_device_types
-from torch_harmonics._field_contract import check_field
 from torch_harmonics.attention import attention_kernels
-from torch_harmonics.attention._attention_utils import _check_batches_match, _check_dtypes_match, _reciprocal_or_zero
+from torch_harmonics.attention._attention_utils import _reciprocal_or_zero
 from torch_harmonics.attention.attention import NeighborhoodAttentionS2
-from torch_harmonics.attention.backends import AttentionBackendS2, _ring_weights
+from torch_harmonics.attention.backends import AttentionBackendS2, RaggedOptimizedBackend, RaggedReferenceBackend, _ring_weights
 from torch_harmonics.distributed._amp_utils import _cast_to_autocast_dtype, _custom_fwd, _custom_setup_context
-from torch_harmonics.grid import RegularGridS2, _rejects_legacy_signature, require_regular_grid
+from torch_harmonics.grid import GridS2, RegularGridS2, _rejects_legacy_signature
+from torch_harmonics.neighborhood import NeighborhoodArcsS2
 from torch_harmonics.quadrature import effective_theta_cutoff
 from torch_harmonics.radial import split_radial
 from torch_harmonics.utils import check
 
 from .primitives import PolarHaloPlan, compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
-from .utils import azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
+from .utils import _point_shapes, _ring_shapes, azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 # ---------------------------------------------------------------------------
 # autograd.Function for the ring-step attention kernel calls
@@ -884,9 +884,10 @@ def _cast_and_halo(layer: "DistributedNeighborhoodAttentionS2", key: torch.Tenso
     produce the autocast dtype, so this is usually a no-op; it covers an fp32-producing
     upstream. Casting first means the halo rows travel in that dtype too, not in fp32.
 
-    key/value arrive as ``[B, H_in_local, W_in_local, C]``, latitude on dim 1. The halo
-    exchange is differentiable and dtype-agnostic, and only runs when there is an actual
-    polar split; otherwise it is the identity.
+    key/value arrive as ``[B, H_in_local, W_in_local, C]``, latitude on dim 1, or on a
+    ragged layer as ``[B, P_in_local, C]``, the flat points of whole rings on dim 1. The
+    halo exchange is differentiable and dtype-agnostic, and only runs when there is an
+    actual polar split; otherwise it is the identity.
     """
     key, value, query_scaled = _cast_to_autocast_dtype(key, value, query_scaled)
 
@@ -976,7 +977,7 @@ class RingGatherBackend(AttentionBackendS2):
     # reference to fall back to either; __call__ refuses a device without the kernels.
     @classmethod
     def available(cls, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> bool:
-        return not layer.upsample
+        return not layer.ragged and not layer.upsample
 
     def prepare(self, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
         lat_lo = layer.lat_lo_out
@@ -1049,7 +1050,7 @@ class RingUpsampleBackend(AttentionBackendS2):
     # no device test; see RingGatherBackend
     @classmethod
     def available(cls, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> bool:
-        return layer.upsample
+        return not layer.ragged and layer.upsample
 
     def prepare(self, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
         nlon_out = layer.nlon_out
@@ -1118,6 +1119,41 @@ class RingUpsampleBackend(AttentionBackendS2):
 
 
 # ---------------------------------------------------------------------------
+# Ragged backends: HEALPix, or a regular grid paired with one
+# ---------------------------------------------------------------------------
+
+
+class _HaloMixin:
+    """
+    Run a serial ragged backend on this rank's band: borrow the halo, then hand over.
+
+    The serial backends read the layer's block of the problem -- its arcs, the input rings
+    and points they index, its output points -- and the distributed layer narrows that
+    block to its band, so they need nothing else. A ragged grid decomposes along latitude
+    only, so there is no azimuth ring: every neighbour of a local output point lies in this
+    rank's band of input rings or in the whole rings its polar neighbours lend it. The
+    ragged kernels only ever gather, in either direction, so the halo is on K/V alone, and
+    its backward, which returns the borrowed gradients to their owners, is the exchange's
+    own.
+    """
+
+    def __call__(self, layer, key, value, query_scaled):
+        return super().__call__(layer, *_cast_and_halo(layer, key, value, query_scaled))
+
+
+class RaggedHaloOptimizedBackend(_HaloMixin, RaggedOptimizedBackend):
+    """The serial compiled ragged kernels, CPU or CUDA, on this rank's halo-padded band; see :class:`_HaloMixin`."""
+
+    name = "ragged-halo-optimized"
+
+
+class RaggedHaloReferenceBackend(_HaloMixin, RaggedReferenceBackend):
+    """The serial ragged torch reference on this rank's halo-padded band; see :class:`_HaloMixin`."""
+
+    name = "ragged-halo-reference"
+
+
+# ---------------------------------------------------------------------------
 # Distributed Neighborhood Attention on the 2-sphere
 # ---------------------------------------------------------------------------
 
@@ -1139,14 +1175,23 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     azimuth ranks while queries and the softmax state stay local. Parameters are the
     same as for the serial layer.
 
-    Requires the compiled kernels; ``optimized_kernel`` must be ``True``.
+    On a pair of regular grids this requires the compiled kernels; ``optimized_kernel``
+    must be ``True``.
+
+    A :class:`~torch_harmonics.healpix.HealpixGrid` on either side makes the layer ragged,
+    as in the serial layer. A ragged grid is split along latitude only, into bands of whole
+    rings, so the layer then requires an azimuth group of size one. Each rank borrows the
+    whole input rings its output points reach from its polar neighbours, through a
+    :class:`~torch_harmonics.distributed.PolarHaloPlan` built from those ranges, and runs
+    the serial ragged backends on its band: the compiled kernels, on CPU or CUDA, or the
+    torch reference with ``optimized_kernel=False`` or a float64 layer.
 
     .. seealso::
         :class:`torch_harmonics.NeighborhoodAttentionS2`
             Serial counterpart with full parameter documentation.
     """
 
-    _backends = (RingGatherBackend, RingUpsampleBackend)
+    _backends = (RaggedHaloOptimizedBackend, RaggedHaloReferenceBackend, RingGatherBackend, RingUpsampleBackend)
 
     @_rejects_legacy_signature(
         'in_channels, in_shape, out_shape, grid_in="equiangular", grid_out="equiangular", num_heads=1, scale=None, '
@@ -1156,8 +1201,8 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     )
     def __init__(
         self,
-        grid_in: RegularGridS2,
-        grid_out: RegularGridS2,
+        grid_in: GridS2,
+        grid_out: GridS2,
         in_channels: int,
         num_heads: Optional[int] = 1,
         scale: Optional[Union[float, torch.Tensor]] = None,
@@ -1168,23 +1213,19 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         out_channels: Optional[int] = None,
         optimized_kernel: Optional[bool] = True,
     ):
-        # the ring exchange is implemented only in the compiled kernels; refuse a request for
-        # the reference path rather than silently running the optimized one instead
-        if not optimized_kernel:
-            raise ValueError("DistributedNeighborhoodAttentionS2 has no reference implementation; optimized_kernel=False is not supported.")
-        if not optimized_kernels_is_available():
-            raise RuntimeError("Optimized kernels are required to run DistributedNeighborhoodAttentionS2.")
-
-        # The base class accepts any GridS2, because the serial layer has a ragged path.
-        # This one does not: the ring backends re-shift arc starts by pscale * lon_lo,
-        # and the ring kernels shift them by pscale * wo, which is the p-shift of a
-        # regular grid. On a grid whose rings differ in length none of that arithmetic
-        # means anything -- it would not raise, it would silently address the wrong
-        # points. So the assumption is stated here rather than inherited, as it is in
-        # DistributedDiscreteContinuousConvS2.
-        # of the angular grids, on a product; the base class keeps the radial one
-        require_regular_grid(split_radial(grid_in)[0], "grid_in")
-        require_regular_grid(split_radial(grid_out)[0], "grid_out")
+        # On a pair of regular grids the ring backends re-shift arc starts by pscale * lon_lo,
+        # and the ring kernels shift them by pscale * wo, which is the p-shift of a regular
+        # grid. A ragged grid on either side takes the serial ragged path instead, as the
+        # serial layer does, and that has a reference, so only the regular pair needs the
+        # compiled kernels. Decided on the angular grids, on a product.
+        ragged = not all(isinstance(split_radial(grid)[0], RegularGridS2) for grid in (grid_in, grid_out))
+        if not ragged:
+            # the ring exchange is implemented only in the compiled kernels; refuse a request for
+            # the reference path rather than silently running the optimized one instead
+            if not optimized_kernel:
+                raise ValueError("DistributedNeighborhoodAttentionS2 has no reference implementation on a pair of regular grids; optimized_kernel=False is not supported.")
+            if not optimized_kernels_is_available():
+                raise RuntimeError("Optimized kernels are required to run DistributedNeighborhoodAttentionS2 on a pair of regular grids.")
 
         # the decomposition is settled in _setup, which the base class calls just before
         # it selects a backend
@@ -1199,15 +1240,15 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             theta_cutoff=theta_cutoff,
             k_channels=k_channels,
             out_channels=out_channels,
-            optimized_kernel=True,
+            optimized_kernel=optimized_kernel if ragged else True,
         )
 
     def _shard_key(self):
         # this rank's block: its place in the process grid and the halo it borrows
-        return (self.comm_rank_polar, self.comm_size_polar, self.comm_rank_azimuth, self.comm_size_azimuth, self.r_lat)
+        return (self.comm_rank_polar, self.comm_size_polar, self.comm_rank_azimuth, self.comm_size_azimuth, self.halo)
 
     def _setup(self) -> None:
-        """Split the grids across the polar and azimuth groups, and size the latitude halo."""
+        """Split the grids across the polar group, and the azimuth group on a pair of regular grids, and plan the halo."""
 
         # ---- distributed info ----
         self.comm_size_polar = polar_group_size()
@@ -1215,8 +1256,10 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         self.comm_size_azimuth = azimuth_group_size()
         self.comm_rank_azimuth = azimuth_group_rank()
 
-        # each grid decomposes itself. The ring and the halo exchange need every
-        # rank's extent, not just this one's, which is what the shape lists carry.
+        # each grid decomposes itself, and the fields are checked and shaped against the
+        # shards. The ring and the halo exchange need every rank's extent, not just this
+        # one's, which is what the shape lists carry. A HEALPix shard refuses an azimuth
+        # split, which is how a ragged layer refuses one.
         self.shard_in = self.grid_in.shard(
             polar=(self.comm_rank_polar, self.comm_size_polar),
             azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
@@ -1225,6 +1268,16 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             polar=(self.comm_rank_polar, self.comm_size_polar),
             azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
         )
+        self._field_in, self._field_out = self.shard_in, self.shard_out
+
+        if self.ragged:
+            self._setup_ragged()
+        else:
+            self._setup_regular()
+
+    def _setup_regular(self) -> None:
+        """The ring path's extents on a pair of regular grids, its uniform-pscale check, and the latitude halo."""
+
         self.lat_in_shapes = list(self.shard_in.lat_shapes)
         self.lon_in_shapes = list(self.shard_in.lon_shapes)
         self.lat_out_shapes = list(self.shard_out.lat_shapes)
@@ -1297,10 +1350,82 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         # global lat index of the first halo row, which is where the K/V chunks start
         self.lat_halo_start = self.shard_in.lat_offset - self.halo.before
 
-    def _check_inputs(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
-        """The serial contract, against this rank's shard rather than the global grid."""
-        check_field(query, self.shard_out, leading=(None, self.in_channels), name="query", radial=self.radial)
-        check_field(key, self.shard_in, leading=(None, self.in_channels), name="key", radial=self.radial)
-        check_field(value, self.shard_in, leading=(None, self.in_channels), name="value", radial=self.radial)
-        _check_batches_match(query, key, value)
-        _check_dtypes_match((query, key, value))
+    def _setup_ragged(self) -> None:
+        """
+        Plan the halo of a ragged pair from the input rings each polar band reads.
+
+        No radius is derived here, unlike on the regular path: the arcs already say which
+        input rings every output point reaches. Each rank's band is its own rings widened to
+        those, in whole rings, because an arc addresses its ring through the ring tables and
+        wraps at the ring's end, and the bands are cut on ring boundaries anyway. Every rank
+        computes every rank's band from the same global arcs, which is what
+        PolarHaloPlan.from_needs needs to agree on the messages; the band in flat points is
+        the halo-padded K/V block the plan produces.
+        """
+        # flat points every polar rank holds, on either side, and the input rings
+        in_shapes = _point_shapes(self.shard_in)
+        out_shapes = _point_shapes(self.shard_out)
+        out_starts = list(accumulate([0] + out_shapes))
+        ring_starts = list(accumulate([0] + _ring_shapes(self.shard_in)))
+
+        arcs = self._neighborhood_arcs()
+        offsets = arcs.offsets.to(torch.int64)
+        seg_ring = arcs.segments[:, 0].to(torch.int64)
+        # where every input ring starts in flat order, and where the last one ends
+        ring_bounds = arcs.ring_base.tolist() + [int(arcs.ring_base[-1] + arcs.ring_size[-1])]
+
+        # every rank's band of input rings: its own, widened to the rings its output points reach
+        ring_bands = []
+        for r in range(self.comm_size_polar):
+            lo, hi = ring_starts[r], ring_starts[r + 1]
+            s0, s1 = int(offsets[out_starts[r]]), int(offsets[out_starts[r + 1]])
+            if s1 > s0:
+                rings = seg_ring[s0:s1]
+                lo, hi = min(lo, int(rings.min())), max(hi, int(rings.max()) + 1)
+            ring_bands.append((lo, hi))
+        needs = [(ring_bounds[lo], ring_bounds[hi]) for lo, hi in ring_bands]
+
+        try:
+            self.halo = PolarHaloPlan.from_needs(in_shapes, needs, self.comm_rank_polar)
+        except ValueError as err:
+            raise ValueError(f"DistributedNeighborhoodAttentionS2: theta_cutoff={self.theta_cutoff} is too wide for this polar decomposition. {err}") from err
+
+        rank = self.comm_rank_polar
+        self.npoints_in_local = in_shapes[rank]
+        self.npoints_out_local = out_shapes[rank]
+        self.point_lo_out = out_starts[rank]
+
+        # the block of the input the serial backends index, see NeighborhoodAttentionS2: the
+        # halo-padded K/V block, which is exactly this rank's band
+        self.ring_range_in = ring_bands[rank]
+        self.point_range_in = needs[rank]
+
+    def _local_arcs(self) -> NeighborhoodArcsS2:
+        """
+        This rank's rows of the serial arcs, over the halo-padded input band.
+
+        Rows are cut to the local output points, which are contiguous in flat order, and
+        the ring tables to the band's rings, rebased so that the band's first point is 0.
+        That is all the serial ragged backends need to treat the band as their whole input.
+        Only the ragged backends ask for it; the ring backends cut the global arcs themselves.
+        """
+        arcs = self._neighborhood_arcs()
+        p0, p1 = self.point_lo_out, self.point_lo_out + self.npoints_out_local
+        s0, s1 = int(arcs.offsets[p0]), int(arcs.offsets[p1])
+        ring_lo, ring_hi = self.ring_range_in
+
+        segments = arcs.segments[s0:s1].clone()
+        segments[:, 0] -= ring_lo
+        if segments.numel() and (int(segments[:, 0].min()) < 0 or int(segments[:, 0].max()) >= ring_hi - ring_lo):
+            raise RuntimeError("DistributedNeighborhoodAttentionS2: an arc of this rank reaches outside its halo band; this is a bug in the halo plan.")
+
+        return arcs._replace(
+            segments=segments,
+            offsets=arcs.offsets[p0 : p1 + 1] - arcs.offsets[p0],
+            ring_base=arcs.ring_base[ring_lo:ring_hi] - arcs.ring_base[ring_lo],
+            ring_size=arcs.ring_size[ring_lo:ring_hi],
+        )
+
+    def _local_csr(self):
+        """This rank's block of the neighbourhood as a column list over the band; see :meth:`_local_arcs`."""
+        return self._local_arcs().to_csr()

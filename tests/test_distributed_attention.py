@@ -29,6 +29,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import math
 import os
 import unittest
 
@@ -36,16 +37,16 @@ import torch
 import torch.distributed as dist
 from parameterized import parameterized
 from testutils import (
+    ShardedFieldMixin,
     amp_ulps,
     compare_tensors,
-    gather_tensor_hw,
+    make_grid,
     maybe_autocast,
     param_grad_ulps,
     reduce_success,
     set_seed,
     setup_class_from_context,
     setup_module,
-    split_tensor_hw,
     teardown_module,
 )
 
@@ -88,7 +89,7 @@ def tearDownModule():
     teardown_module(_DIST_CTX)
 
 
-class TestDistributedNeighborhoodAttention(unittest.TestCase):
+class TestDistributedNeighborhoodAttention(ShardedFieldMixin, unittest.TestCase):
     """
     Compare serial NeighborhoodAttentionS2 against DistributedNeighborhoodAttentionS2.
 
@@ -106,60 +107,26 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         On a device without the ring kernels, assert that the layer refuses to run and
         says why, rather than failing in the op dispatcher, and report that there is
         nothing to compare. On a device with them, report that there is.
+
+        Only a pair of regular grids takes the ring kernels: a ragged layer runs the serial
+        ragged backends, compiled for CPU and CUDA, with the reference everywhere else.
         """
         devices = _RING_UPSAMPLE_DEVICES if attn_dist.upsample else _RING_GATHER_DEVICES
-        if self.device.type in devices:
-            return False
+        refuses = not attn_dist.ragged and self.device.type not in devices
 
-        C = attn_dist.in_channels
-        q = torch.randn(1, C, attn_dist.nlat_out_local, attn_dist.nlon_out_local, device=self.device)
-        k = torch.randn(1, C, attn_dist.nlat_in_local, attn_dist.nlon_in_local, device=self.device)
-        with self.assertRaisesRegex(RuntimeError, "ring kernels run on CUDA only"):
-            attn_dist(q, k, k)
-        return True
+        if refuses:
+            C = attn_dist.in_channels
+            q = torch.randn(1, C, *attn_dist.shard_out.shape, device=self.device)
+            k = torch.randn(1, C, *attn_dist.shard_in.shape, device=self.device)
+            with self.assertRaisesRegex(RuntimeError, "ring kernels run on CUDA only"):
+                attn_dist(q, k, k)
 
-    def _split_helper(self, tensor):
-        return split_tensor_hw(
-            tensor,
-            hdim=-2,
-            wdim=-1,
-            hsize=self.grid_size_h,
-            wsize=self.grid_size_w,
-            hrank=self.hrank,
-            wrank=self.wrank,
-        )
+        return refuses
 
-    def _gather_helper_fwd(self, tensor, attn_dist):
-        return gather_tensor_hw(
-            tensor,
-            hdim=-2,
-            wdim=-1,
-            hshapes=attn_dist.lat_out_shapes,
-            wshapes=attn_dist.lon_out_shapes,
-            hsize=self.grid_size_h,
-            wsize=self.grid_size_w,
-            hrank=self.hrank,
-            wrank=self.wrank,
-            hgroup=self.h_group,
-            wgroup=self.w_group,
-        )
-
-    def _gather_helper_bwd(self, tensor, attn_dist, use_out_shapes=False):
-        hshapes = attn_dist.lat_out_shapes if use_out_shapes else attn_dist.lat_in_shapes
-        wshapes = attn_dist.lon_out_shapes if use_out_shapes else attn_dist.lon_in_shapes
-        return gather_tensor_hw(
-            tensor,
-            hdim=-2,
-            wdim=-1,
-            hshapes=hshapes,
-            wshapes=wshapes,
-            hsize=self.grid_size_h,
-            wsize=self.grid_size_w,
-            hrank=self.hrank,
-            wrank=self.wrank,
-            hgroup=self.h_group,
-            wgroup=self.w_group,
-        )
+    def _sync(self):
+        """Wait for the device, where there is one to wait for."""
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
 
     def _allreduce_param_grad(self, tensor):
         """
@@ -179,12 +146,13 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # nlat_in, nlon_in, nlat_out, nlon_out, batch_size, in_channels, num_heads, k_channels, out_channels, grid_in, grid_out, use_qknorm, dtype[, trainable_scale]
+            # grid_in, in_shape, grid_out, out_shape, batch_size, in_channels, num_heads, k_channels, out_channels, use_qknorm, dtype[, trainable_scale, optimized_kernel, theta_cutoff]
+            # shapes are (nlat, nlon), or (nside,) for HEALPix
             # same shape tests
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32],
-            [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", False, torch.float32],
-            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 2, None, None, False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, 8, 8, False, torch.float32],
+            ["equiangular", (65, 128), "equiangular", (65, 128), 2, 16, 1, None, None, False, torch.float32],
             # Realistic ERA5-like grid with strongly unbalanced rows: near the poles the
             # neighbourhood disk covers the whole longitude ring, so pole rows hold
             # thousands of neighbours while mid-latitude rows hold tens, and pole arcs
@@ -192,141 +160,153 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             # 721x1440 x B=2 x C=16 fp32 ~250 MB per major tensor; expect a few GB
             # working-set including halos and gradient buffers. Splittable up to 2x4
             # (uneven polar shard for odd nlat is handled by the test framework).
-            [721, 1440, 721, 1440, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (721, 1440), "equiangular", (721, 1440), 2, 16, 1, None, None, False, torch.float32],
             # downsampling tests, pscale=2 (lat+lon)
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
-            [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 1, None, None, False, torch.float32],
+            ["equiangular", (65, 128), "equiangular", (33, 64), 2, 16, 1, None, None, False, torch.float32],
             # pscale=3 downsampling (exercises pscale*wo kernel arithmetic)
-            [64, 96, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 96), "equiangular", (32, 32), 2, 16, 1, None, None, False, torch.float32],
             # pscale=4 downsampling
-            [64, 128, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 32), 2, 16, 1, None, None, False, torch.float32],
             # lon-only downsampling (same nlat; isolates azimuth ring with pscale_lon=2, no lat halo)
-            [64, 128, 64, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 64), 2, 16, 1, None, None, False, torch.float32],
             # lat-only downsampling (same nlon, pscale_lon=1; isolates polar halo exchange)
-            [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 128), 2, 16, 1, None, None, False, torch.float32],
             # odd nlat_in -> even nlat_out, pscale_lon=2
-            [65, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (65, 128), "equiangular", (32, 64), 2, 16, 1, None, None, False, torch.float32],
             # legendre-gauss grid (same-shape + downsampling)
-            [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, torch.float32],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, torch.float32],
+            ["legendre-gauss", (64, 128), "legendre-gauss", (64, 128), 2, 16, 1, None, None, False, torch.float32],
+            ["legendre-gauss", (64, 128), "legendre-gauss", (32, 64), 2, 16, 1, None, None, False, torch.float32],
             # mixed grid: equiangular input -> legendre-gauss output
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32],
+            ["equiangular", (64, 128), "legendre-gauss", (64, 128), 2, 16, 1, None, None, False, torch.float32],
+            ["equiangular", (64, 128), "legendre-gauss", (32, 64), 2, 16, 1, None, None, False, torch.float32],
             # Realistic ERA5-like downsample (equi -> LG, ~2x lat/lon). The default cutoff
             # spans a few input latitudes, so pole rows hold several x nlon_in entries
             # while equator rows stay short -- the same imbalance as above, combined with
             # pscale>1 and a mixed grid. Same memory caveat as the 721x1440 case above.
-            [721, 1440, 360, 720, 2, 16, 1, None, None, "equiangular", "legendre-gauss", False, torch.float32],
+            ["equiangular", (721, 1440), "legendre-gauss", (360, 720), 2, 16, 1, None, None, False, torch.float32],
             # heads=4 with asymmetric channels (k=32, out=16; in=16)
-            [64, 128, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32],
-            [64, 128, 32, 64, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 4, 32, 16, False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 4, 32, 16, False, torch.float32],
             # same cases with QK norm enabled
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, torch.float32],
-            [64, 128, 64, 128, 2, 16, 1, 8, 8, "equiangular", "equiangular", True, torch.float32],
-            [65, 128, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, None, None, True, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 2, None, None, True, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, 8, 8, True, torch.float32],
+            ["equiangular", (65, 128), "equiangular", (65, 128), 2, 16, 1, None, None, True, torch.float32],
             # downsampling tests with QK norm enabled, pscale=2
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
-            [65, 128, 33, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 1, None, None, True, torch.float32],
+            ["equiangular", (65, 128), "equiangular", (33, 64), 2, 16, 1, None, None, True, torch.float32],
             # pscale=3 / pscale=4 downsampling with QK norm
-            [64, 96, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
-            [64, 128, 32, 32, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
+            ["equiangular", (64, 96), "equiangular", (32, 32), 2, 16, 1, None, None, True, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 32), 2, 16, 1, None, None, True, torch.float32],
             # lon-only / lat-only downsampling with QK norm
-            [64, 128, 64, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
-            [64, 128, 32, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 64), 2, 16, 1, None, None, True, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 128), 2, 16, 1, None, None, True, torch.float32],
             # odd nlat_in -> even nlat_out with QK norm
-            [65, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
+            ["equiangular", (65, 128), "equiangular", (32, 64), 2, 16, 1, None, None, True, torch.float32],
             # legendre-gauss grid with QK norm
-            [64, 128, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, torch.float32],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", True, torch.float32],
+            ["legendre-gauss", (64, 128), "legendre-gauss", (64, 128), 2, 16, 1, None, None, True, torch.float32],
+            ["legendre-gauss", (64, 128), "legendre-gauss", (32, 64), 2, 16, 1, None, None, True, torch.float32],
             # scalar (non-vectorized) path: per-head channels not divisible by 4
             # same-shape, CHOUT_AS_IN=True (nchans_in=nchans_out=10)
-            [64, 128, 64, 128, 2, 10, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 10, 1, None, None, False, torch.float32],
             # downsampling pscale=2, CHOUT_AS_IN=True
-            [64, 128, 32, 64, 2, 10, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 10, 1, None, None, False, torch.float32],
             # CHOUT_AS_IN=False, scalar path (nchans_in=5, nchans_out=3 per head)
-            [64, 128, 64, 128, 2, 16, 4, 20, 12, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 4, 20, 12, False, torch.float32],
             # downsampling pscale=2, CHOUT_AS_IN=False, scalar path
-            [64, 128, 32, 64, 2, 16, 4, 20, 12, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 4, 20, 12, False, torch.float32],
             # BDIM_X dispatch coverage. The kernel picks BDIM_X = next_pow2(max(32, ceil(nchans/16))),
             # where FWD uses nchans_out and BWD pass1/pass2 use nchans_in. With heads=1 and default
             # k_channels/out_channels, all three dispatches land in the same bucket. Spatial dims are
             # kept small to bound memory; only one row per bucket since the same kernel template
             # is exercised regardless of grid/pscale.
             # BDIM_X=64   (per-head 513..1024)
-            [32, 64, 32, 64, 2, 576, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (32, 64), "equiangular", (32, 64), 2, 576, 1, None, None, False, torch.float32],
             # BDIM_X=128  (per-head 1025..2048)
-            [32, 64, 32, 64, 2, 1280, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (32, 64), "equiangular", (32, 64), 2, 1280, 1, None, None, False, torch.float32],
             # BDIM_X=256  (per-head 2049..4096)
-            [16, 32, 16, 32, 2, 2560, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (16, 32), "equiangular", (16, 32), 2, 2560, 1, None, None, False, torch.float32],
             # BDIM_X=512  (per-head 4097..8192)
-            [16, 32, 16, 32, 2, 4608, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (16, 32), "equiangular", (16, 32), 2, 4608, 1, None, None, False, torch.float32],
             # top of the BDIM_X=512 bucket: the ring bwd pass-2 request,
             # ``sizeof(float) * (nchans_in + nchans_out)``, is 64 KiB here, above the default
             # 48 KiB, so this also covers the opt-in (launch_dyn_shmem). Per-head counts
             # past 8192 take the generic kernels, whose pass-1 request (32 B per channel)
             # exceeds every device's per-block maximum.
-            [8, 16, 8, 16, 2, 8192, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (8, 16), "equiangular", (8, 16), 2, 8192, 1, None, None, False, torch.float32],
             # upsampling tests (scatter ring kernels), pscale_out=2 (lat+lon)
-            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
-            [33, 64, 65, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float32],
+            ["equiangular", (33, 64), "equiangular", (65, 128), 2, 16, 1, None, None, False, torch.float32],
             # pscale_out=3 upsampling (exercises pscale_out*wi kernel arithmetic)
-            [32, 32, 64, 96, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (32, 32), "equiangular", (64, 96), 2, 16, 1, None, None, False, torch.float32],
             # pscale_out=4 upsampling
-            [32, 32, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (32, 32), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float32],
             # lon-only upsampling (same nlat; isolates the azimuth ring scatter, no lat halo)
-            [64, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (64, 64), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float32],
             # odd nlat_in -> even nlat_out, pscale_out=2
-            [33, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (33, 64), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float32],
             # legendre-gauss / mixed grid upsampling
-            [32, 64, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "legendre-gauss", False, torch.float32],
-            [32, 64, 64, 128, 2, 16, 1, None, None, "legendre-gauss", "equiangular", False, torch.float32],
+            ["legendre-gauss", (32, 64), "legendre-gauss", (64, 128), 2, 16, 1, None, None, False, torch.float32],
+            ["legendre-gauss", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float32],
             # heads=4 with asymmetric channels (k=32, out=16; in=16), upsampling
-            [32, 64, 64, 128, 2, 16, 4, 32, 16, "equiangular", "equiangular", False, torch.float32],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 4, 32, 16, False, torch.float32],
             # upsampling with QK norm
-            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", True, torch.float32],
-            [32, 64, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, torch.float32],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, True, torch.float32],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 2, None, None, True, torch.float32],
             # upsampling AMP coverage (see the AMP note below)
-            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float16],
-            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.bfloat16],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float16],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.bfloat16],
             # AMP coverage — one row per dtype on a downsample config. The bf16/fp16
             # rounding of the einsum operands and outputs dominates, see _ulps.
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float16],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.bfloat16],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 1, None, None, False, torch.float16],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 1, None, None, False, torch.bfloat16],
             # same-resolution gather (self-attention) — the path the downsample rows skip
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float16],
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.bfloat16],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float16],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.bfloat16],
             # multi-head same-resolution gather
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float16],
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.bfloat16],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 2, None, None, False, torch.float16],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 2, None, None, False, torch.bfloat16],
             # a trainable scale: its gradient is partial per rank like every other parameter's,
             # on the gather (same-shape, downsample) and scatter (upsample) paths, and with QK norm
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", False, torch.float32, True],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, True],
-            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", False, torch.float32, True],
-            [64, 128, 64, 128, 2, 16, 2, None, None, "equiangular", "equiangular", True, torch.float32, True],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 2, None, None, False, torch.float32, True],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 1, None, None, False, torch.float32, True],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, False, torch.float32, True],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 2, None, None, True, torch.float32, True],
+            # HEALPix, on one side or both: polar bands of whole rings, a halo planned from the
+            # neighbourhood, and the serial ragged backends, which run on CPU and CUDA
+            ["healpix", (8,), "healpix", (8,), 2, 8, 1, None, None, False, torch.float32],
+            ["healpix", (8,), "healpix", (8,), 2, 8, 2, None, None, False, torch.float64, False, False],  # the reference, in float64
+            ["healpix", (8,), "healpix", (4,), 2, 8, 2, None, None, False, torch.float32],  # downsampling
+            ["healpix", (4,), "healpix", (8,), 2, 8, 2, None, None, False, torch.float32],  # upsampling: still a gather on the ragged path
+            ["healpix", (8,), "equiangular", (17, 32), 2, 8, 2, None, None, False, torch.float32],  # onto a regular grid, which reaches the poles
+            ["legendre-gauss", (16, 32), "healpix", (8,), 2, 8, 2, None, None, False, torch.float64, False, False],  # from a regular grid
+            ["healpix", (8,), "healpix", (8,), 2, 8, 1, None, None, False, torch.float32, False, True, 0.5],  # a wide cutoff: a halo of several rings
+            ["healpix+radial", (8,), "healpix+radial", (8,), 2, 8, 2, None, None, False, torch.float32],  # a product grid, shells folded into the batch
+            ["healpix", (8,), "healpix", (8,), 2, 16, 4, 32, 16, True, torch.float32, True],  # QK norm, asymmetric channels, a trainable scale
+            ["healpix", (8,), "healpix", (4,), 2, 16, 1, None, None, False, torch.bfloat16],  # AMP
         ],
         skip_on_empty=True,
     )
     def test_distributed_neighborhood_attention(
         self,
-        nlat_in,
-        nlon_in,
-        nlat_out,
-        nlon_out,
+        grid_in,
+        in_shape,
+        grid_out,
+        out_shape,
         batch_size,
         in_channels,
         num_heads,
         k_channels,
         out_channels,
-        grid_in,
-        grid_out,
         use_qknorm,
         dtype,
         trainable_scale=False,
+        optimized_kernel=True,
+        theta_cutoff=None,
         verbose=True,
     ):
-        if (nlat_in, nlon_in, nlat_out, nlon_out) in _SLOW_ATTN_SHAPES and not _run_slow_tests:
+        if (*in_shape, *out_shape) in _SLOW_ATTN_SHAPES and not _run_slow_tests:
             self.skipTest("slow test; set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
 
         # Without the ring kernels these cases only check the refusal, which the small ones
@@ -337,18 +317,26 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         set_seed(333)
 
-        B, C, Hi, Wi, Ho, Wo = batch_size, in_channels, nlat_in, nlon_in, nlat_out, nlon_out
+        B, C = batch_size, in_channels
+        gin, gout = make_grid(grid_in, in_shape), make_grid(grid_out, out_shape)
+        self.skip_unless_decomposable(gin, gout)
 
         attn_args = dict(
             in_channels=C,
-            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
-            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
+            grid_in=gin,
+            grid_out=gout,
             num_heads=num_heads,
             bias=True,
             use_qknorm=use_qknorm,
             k_channels=k_channels,
             out_channels=out_channels,
+            theta_cutoff=theta_cutoff,
+            optimized_kernel=optimized_kernel,
         )
+
+        # modules and inputs stay fp32 under autocast, see below; float64 is not autocast
+        # but the layer's own precision, which only the ragged path accepts
+        param_dtype = torch.float64 if dtype == torch.float64 else torch.float32
 
         # A trainable scale, one per layer, so the two backward passes do not accumulate into
         # the same .grad; it starts at the default value, so only its gradient is new
@@ -359,8 +347,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             return {"scale": torch.nn.Parameter(torch.tensor(per_head**-0.5))}
 
         # build serial and distributed modules with identical weights
-        attn_serial = th.NeighborhoodAttentionS2(**attn_args, **scale()).to(self.device)
-        attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args, **scale()).to(self.device)
+        attn_serial = th.NeighborhoodAttentionS2(**attn_args, **scale()).to(self.device, param_dtype)
+        attn_dist = thd.DistributedNeighborhoodAttentionS2(**attn_args, **scale()).to(self.device, param_dtype)
         if self._refuses_device(attn_dist):
             return
 
@@ -381,10 +369,12 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # Helper: create inputs
         inp_full = {
-            "k": torch.randn(B, C, Hi, Wi, requires_grad=True, device=self.device, dtype=torch.float32),
-            "v": torch.randn(B, C, Hi, Wi, requires_grad=True, device=self.device, dtype=torch.float32),
-            "q": torch.randn(B, C, Ho, Wo, requires_grad=True, device=self.device, dtype=torch.float32),
+            "k": torch.randn(B, C, *gin.shape, requires_grad=True, device=self.device, dtype=param_dtype),
+            "v": torch.randn(B, C, *gin.shape, requires_grad=True, device=self.device, dtype=param_dtype),
+            "q": torch.randn(B, C, *gout.shape, requires_grad=True, device=self.device, dtype=param_dtype),
         }
+        # the shard each input is split by: queries live on the output grid
+        shards = {"k": attn_dist.shard_in, "v": attn_dist.shard_in, "q": attn_dist.shard_out}
 
         # ---- serial forward ----
         # Modules + inputs stay fp32; maybe_autocast wraps fwd in autocast(dtype)
@@ -393,7 +383,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         with maybe_autocast(self.device.type, dtype):
             out_full = attn_serial(inp_full["q"], inp_full["k"], inp_full["v"])
 
-        torch.cuda.synchronize()
+        self._sync()
 
         # ---- serial backward ----
         with torch.no_grad():
@@ -404,41 +394,40 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         for inp in ["q", "k", "v"]:
             igrad_full[inp] = inp_full[inp].grad.clone()
 
-        torch.cuda.synchronize()
+        self._sync()
 
         # ---- distributed forward ----
         inp_local = {}
         for inp in ["q", "k", "v"]:
-            inp_local[inp] = self._split_helper(inp_full[inp].detach())
+            inp_local[inp] = self.split_field(inp_full[inp].detach(), shards[inp])
             inp_local[inp].requires_grad_(True)
         with maybe_autocast(self.device.type, dtype):
             out_local = attn_dist(inp_local["q"], inp_local["k"], inp_local["v"])
 
-        torch.cuda.synchronize()
+        self._sync()
 
         # ---- distributed backward ----
-        ograd_local = self._split_helper(ograd_full)
+        ograd_local = self.split_field(ograd_full, attn_dist.shard_out)
         out_local.backward(ograd_local)
 
         igrad_local = {}
         for inp in ["q", "k", "v"]:
             igrad_local[inp] = inp_local[inp].grad.clone()
 
-        torch.cuda.synchronize()
+        self._sync()
 
         # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
         # rank so a failure on any rank fails the test consistently (see reduce_success).
         verbose = verbose and self.world_rank == 0
 
         # ---- compare forward ----
-        out_gather = self._gather_helper_fwd(out_local, attn_dist)
+        out_gather = self.gather_field(out_local, attn_dist.shard_out)
         ok = compare_tensors("forward output", out_gather, out_full, atol=0.0, rtol=0.0, ulps=_ulps(dtype), eps_dtype=dtype, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output")
 
         # ---- compare backward ----
         for inp in ["q", "k", "v"]:
-            use_out = inp == "q"
-            igrad_gather = self._gather_helper_bwd(igrad_local[inp], attn_dist, use_out_shapes=use_out)
+            igrad_gather = self.gather_field(igrad_local[inp], shards[inp])
             ok = compare_tensors(f"input gradient {inp}", igrad_gather, igrad_full[inp], atol=0.0, rtol=0.0, ulps=_ulps(dtype), eps_dtype=dtype, verbose=verbose)
             self.assertTrue(reduce_success(ok, self.device), f"input gradient {inp}")
 
@@ -447,7 +436,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         # _allreduce_param_grad). A parameter gradient sums over every point, so the two
         # sides add the same terms in different orders: atol scales with the gradient's
         # range, see param_grad_ulps.
-        pg_ulps = param_grad_ulps(B * max(Hi * Wi, Ho * Wo), dtype)
+        pg_ulps = param_grad_ulps(B * max(math.prod(gin.shape), math.prod(gout.shape)), dtype)
         named_serial = dict(attn_serial.named_parameters())
         named_dist = dict(attn_dist.named_parameters())
         self.assertEqual(sorted(named_serial), sorted(named_dist), "the two layers have different parameters")
@@ -459,34 +448,36 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
     @parameterized.expand(
         [
-            # (nlat_in, nlon_in, nlat_out, nlon_out, batch, in_chans, heads, k_chans, out_chans, grid_in, grid_out, frozen)
+            # (grid_in, in_shape, grid_out, out_shape, batch, in_chans, heads, k_chans, out_chans, frozen)
             # one same-shape config and one downsample config (pscale=2), each with each branch frozen in turn.
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "k"],
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "v"],
-            [64, 128, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "q"],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", "k"],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", "v"],
-            [64, 128, 32, 64, 2, 16, 1, None, None, "equiangular", "equiangular", "q"],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, None, None, "k"],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, None, None, "v"],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 2, 16, 1, None, None, "q"],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 1, None, None, "k"],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 1, None, None, "v"],
+            ["equiangular", (64, 128), "equiangular", (32, 64), 2, 16, 1, None, None, "q"],
             # upsample config (pscale_out=2), each branch frozen in turn
-            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "k"],
-            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "v"],
-            [32, 64, 64, 128, 2, 16, 1, None, None, "equiangular", "equiangular", "q"],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, "k"],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, "v"],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 2, 16, 1, None, None, "q"],
+            # HEALPix: the ragged kernels' backward, through the halo exchange's
+            ["healpix", (8,), "healpix", (8,), 2, 16, 1, None, None, "k"],
+            ["healpix", (8,), "healpix", (8,), 2, 16, 1, None, None, "v"],
+            ["healpix", (8,), "healpix", (8,), 2, 16, 1, None, None, "q"],
         ],
         skip_on_empty=True,
     )
     def test_distributed_neighborhood_attention_selective_requires_grad(
         self,
-        nlat_in,
-        nlon_in,
-        nlat_out,
-        nlon_out,
+        grid_in,
+        in_shape,
+        grid_out,
+        out_shape,
         batch_size,
         in_channels,
         num_heads,
         k_channels,
         out_channels,
-        grid_in,
-        grid_out,
         frozen,
         verbose=True,
     ):
@@ -502,12 +493,14 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         """
         set_seed(333)
 
-        B, C, Hi, Wi, Ho, Wo = batch_size, in_channels, nlat_in, nlon_in, nlat_out, nlon_out
+        B, C = batch_size, in_channels
+        gin, gout = make_grid(grid_in, in_shape), make_grid(grid_out, out_shape)
+        self.skip_unless_decomposable(gin, gout)
 
         attn_args = dict(
             in_channels=C,
-            grid_in=th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
-            grid_out=th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
+            grid_in=gin,
+            grid_out=gout,
             num_heads=num_heads,
             bias=True,
             use_qknorm=False,
@@ -538,39 +531,41 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         # Build full inputs; the frozen branch's input has requires_grad=False.
         inp_full = {}
-        for name, shape in (("k", (B, C, Hi, Wi)), ("v", (B, C, Hi, Wi)), ("q", (B, C, Ho, Wo))):
+        for name, shape in (("k", (B, C, *gin.shape)), ("v", (B, C, *gin.shape)), ("q", (B, C, *gout.shape))):
             t = torch.randn(*shape, device=self.device, dtype=torch.float32)
             t.requires_grad_(name != frozen)
             inp_full[name] = t
 
         # ---- serial forward / backward ----
         out_full = attn_serial(inp_full["q"], inp_full["k"], inp_full["v"])
-        torch.cuda.synchronize()
+        self._sync()
         with torch.no_grad():
             ograd_full = torch.randn_like(out_full)
         out_full.backward(ograd_full)
         igrad_full = {n: (inp_full[n].grad.clone() if inp_full[n].grad is not None else None) for n in ("k", "v", "q")}
-        torch.cuda.synchronize()
+        self._sync()
 
         # ---- distributed forward / backward ----
+        # the shard each input is split by: queries live on the output grid
+        shards = {"k": attn_dist.shard_in, "v": attn_dist.shard_in, "q": attn_dist.shard_out}
         inp_local = {}
         for n in ("k", "v", "q"):
-            inp_local[n] = self._split_helper(inp_full[n].detach())
+            inp_local[n] = self.split_field(inp_full[n].detach(), shards[n])
             inp_local[n].requires_grad_(n != frozen)
         out_local = attn_dist(inp_local["q"], inp_local["k"], inp_local["v"])
-        torch.cuda.synchronize()
+        self._sync()
 
-        ograd_local = self._split_helper(ograd_full)
+        ograd_local = self.split_field(ograd_full, attn_dist.shard_out)
         out_local.backward(ograd_local)
         igrad_local = {n: (inp_local[n].grad.clone() if inp_local[n].grad is not None else None) for n in ("k", "v", "q")}
-        torch.cuda.synchronize()
+        self._sync()
 
         # Print diagnostics from rank 0 only; assert the all-reduced verdict on every
         # rank so a failure on any rank fails the test consistently (see reduce_success).
         verbose = verbose and self.world_rank == 0
 
         # ---- compare forward ----
-        out_gather = self._gather_helper_fwd(out_local, attn_dist)
+        out_gather = self.gather_field(out_local, attn_dist.shard_out)
         ok = compare_tensors("forward output", out_gather, out_full, atol=0.0, rtol=0.0, ulps=_ulps(torch.float32), verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output")
 
@@ -592,8 +587,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
                 continue
             self.assertIsNotNone(igrad_full[n], f"serial: unfrozen input {n} should have a grad")
             self.assertIsNotNone(igrad_local[n], f"distributed: unfrozen input {n} should have a grad")
-            use_out = n == "q"
-            igrad_gather = self._gather_helper_bwd(igrad_local[n], attn_dist, use_out_shapes=use_out)
+            igrad_gather = self.gather_field(igrad_local[n], shards[n])
             ok = compare_tensors(
                 f"input grad {n} (frozen={frozen})",
                 igrad_gather,
@@ -605,51 +599,79 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
             )
             self.assertTrue(reduce_success(ok, self.device), f"input grad {n} (frozen={frozen})")
 
+    def _check_backend_state(self, attn, backend):
+        """
+        The layer holds exactly the state of ``backend``, sized to this rank's block.
+
+        The ring backends hold the regular arcs: rows are this rank's output latitudes when
+        gathering, its halo-padded input latitudes when scattering. The ragged ones hold the
+        serial ragged state of the band: arcs for this rank's output points, over ring tables
+        cut to the halo-padded input band and rebased to its first point.
+        """
+        names = {
+            "ring-gather": {"ring_weights", "psi_seg", "psi_seg_off"},
+            "ring-upsample": {"ring_weights", "psi_seg", "psi_seg_off"},
+            "ragged-halo-optimized": {"ring_weights", "psi_seg", "psi_seg_off", "psi_ring_base", "psi_ring_size"},
+            "ragged-halo-reference": {"point_weights", "psi_col_idx", "psi_roff_idx"},
+        }[backend]
+        self.assertEqual(attn.backend.name, backend)
+        self.assertEqual({name for name, _ in attn.named_buffers()}, names)
+        self.assertEqual(set(attn._backend_state), names)
+
+        if attn.ragged:
+            npoints_band = attn.point_range_in[1] - attn.point_range_in[0]
+            self.assertEqual(npoints_band, attn.npoints_in_local + attn.halo.before + attn.halo.after)
+            if backend == "ragged-halo-optimized":
+                self.assertEqual(attn.psi_seg_off.numel(), attn.npoints_out_local + 1)
+                self.assertEqual(int(attn.psi_seg_off[-1]), attn.psi_seg.shape[0])
+                self.assertEqual(attn.ring_weights.numel(), attn.ring_range_in[1] - attn.ring_range_in[0])
+                self.assertEqual(int(attn.psi_ring_base[0]), 0)
+                self.assertEqual(int(attn.psi_ring_size.sum()), npoints_band)
+            else:
+                self.assertEqual(attn.psi_roff_idx.numel(), attn.npoints_out_local + 1)
+                self.assertEqual(attn.point_weights.numel(), npoints_band)
+                self.assertTrue(attn.psi_col_idx.numel() == 0 or int(attn.psi_col_idx.max()) < npoints_band)
+        else:
+            nrows = attn.nlat_in_local + 2 * attn.r_lat if attn.upsample else attn.nlat_out_local
+            self.assertEqual(attn.psi_seg_off.numel(), nrows + 1)
+            self.assertEqual(int(attn.psi_seg_off[-1]), attn.psi_seg.shape[0])
+            self.assertEqual(attn.psi_seg.device, attn.ring_weights.device)
+
     @parameterized.expand(
         [
-            # nlat_in, nlon_in, nlat_out, nlon_out, backend
-            [64, 128, 64, 128, "ring-gather"],  # self-attention
-            [64, 128, 32, 64, "ring-gather"],  # downsampling
-            [32, 64, 64, 128, "ring-upsample"],  # upsampling
+            # grid_in, in_shape, grid_out, out_shape, backend[, optimized_kernel]
+            ["equiangular", (64, 128), "equiangular", (64, 128), "ring-gather"],  # self-attention
+            ["equiangular", (64, 128), "equiangular", (32, 64), "ring-gather"],  # downsampling
+            ["equiangular", (32, 64), "equiangular", (64, 128), "ring-upsample"],  # upsampling
+            ["healpix", (8,), "healpix", (8,), "ragged-halo-optimized"],
+            ["healpix", (8,), "healpix", (8,), "ragged-halo-reference", False],
+            ["healpix", (8,), "equiangular", (17, 32), "ragged-halo-optimized"],  # a regular side takes the ragged path too
         ],
         skip_on_empty=True,
     )
-    def test_backend_state(self, nlat_in, nlon_in, nlat_out, nlon_out, backend):
+    def test_backend_state(self, grid_in, in_shape, grid_out, out_shape, backend, optimized_kernel=True):
         """
-        The layer selects the ring backend for its direction and holds exactly that
+        The layer selects the backend for its grids and direction and holds exactly that
         backend's state, sized to this rank's shard -- on construction and after a move.
 
         Built on CPU and moved, as a model normally is: construction must not refuse for
         want of a device, and the move reselects the backend and prepares its state on
         the new device, rather than carrying the old one along.
         """
-        attn = thd.DistributedNeighborhoodAttentionS2(
-            grid_in=th.as_grid("equiangular", nlat=nlat_in, nlon=nlon_in),
-            grid_out=th.as_grid("equiangular", nlat=nlat_out, nlon=nlon_out),
-            in_channels=8,
-            num_heads=2,
-            bias=False,
-        )
+        gin, gout = make_grid(grid_in, in_shape), make_grid(grid_out, out_shape)
+        self.skip_unless_decomposable(gin, gout)
+        attn = thd.DistributedNeighborhoodAttentionS2(grid_in=gin, grid_out=gout, in_channels=8, num_heads=2, bias=False, optimized_kernel=optimized_kernel)
 
-        # the rows the ring kernels walk: this rank's output latitudes when gathering,
-        # its halo-padded input latitudes when scattering
-        nrows = attn.nlat_in_local + 2 * attn.r_lat if attn.upsample else attn.nlat_out_local
+        # a build without the compiled ragged kernels falls back to the reference, as the serial layer does
+        if backend == "ragged-halo-optimized" and not attn.optimized_kernel:
+            backend = "ragged-halo-reference"
 
-        def check_state():
-            self.assertEqual(attn.backend.name, backend)
-            # exactly what the ring backend reads, as for every serial backend
-            self.assertEqual({name for name, _ in attn.named_buffers()}, {"ring_weights", "psi_seg", "psi_seg_off"})
-            self.assertEqual(set(attn._backend_state), {"ring_weights", "psi_seg", "psi_seg_off"})
-            self.assertEqual(attn.psi_seg_off.numel(), nrows + 1)
-            self.assertEqual(int(attn.psi_seg_off[-1]), attn.psi_seg.shape[0])
-            self.assertEqual(attn.psi_seg.device, attn.ring_weights.device)
-
-        check_state()
+        self._check_backend_state(attn, backend)
 
         # .to() moves the module in place and reselects the backend on the new device
         attn.to(self.device)
-        check_state()
-        self.assertEqual(attn.psi_seg.device.type, self.device.type)
+        self._check_backend_state(attn, backend)
+        self.assertEqual(next(attn.buffers()).device.type, self.device.type)
 
     def test_float64_is_refused(self):
         """
@@ -729,3 +751,50 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         torch.autograd.grad(torch.sum(out**2), (q, k), retain_graph=True)
         with self.assertRaisesRegex(RuntimeError, "does not support double backward"):
             torch.autograd.grad(torch.sum(out**2), (q, k), create_graph=True)
+
+    # -----------------------------------------------------------------------
+    # HEALPix-only behaviour: the halo plan and the decompositions it refuses. The
+    # comparisons with the serial layer and the backend state are rows of the tests above.
+    # -----------------------------------------------------------------------
+
+    def test_healpix_halo_is_planned_per_side(self):
+        """
+        Every rank borrows exactly the whole rings its output points reach, which differ per
+        side and per rank: the outermost ranks receive nothing beyond the poles, and the plans
+        of two neighbours agree on what crosses between them.
+        """
+        grid = th.HealpixGrid(nside=8)
+        self.skip_unless_decomposable(grid)
+        attn = thd.DistributedNeighborhoodAttentionS2(grid, grid, in_channels=4)
+        halo = attn.halo
+        if self.hrank == 0:
+            self.assertEqual(halo.recv_prev, 0)
+        if self.hrank == self.grid_size_h - 1:
+            self.assertEqual(halo.recv_next, 0)
+        self.assertEqual((halo.pad_prev, halo.pad_next), (0, 0))
+
+        # what this rank receives from its next neighbour is what that neighbour sends back
+        sent = torch.tensor([halo.send_prev, halo.recv_next], device=self.device)
+        gathered = [torch.zeros_like(sent) for _ in range(self.grid_size_h)]
+        dist.all_gather(gathered, sent, group=self.h_group)
+        for r in range(self.grid_size_h - 1):
+            self.assertEqual(int(gathered[r][1]), int(gathered[r + 1][0]))
+
+    def test_healpix_cutoff_too_wide_for_the_decomposition(self):
+        """A neighbourhood reaching past the neighbouring bands is refused on every rank, at construction."""
+        if self.grid_size_h < 3:
+            self.skipTest("with fewer than three polar ranks every band is a neighbour")
+        grid = th.HealpixGrid(nside=4)
+        self.skip_unless_decomposable(grid)
+        with self.assertRaisesRegex(ValueError, "too wide for this polar decomposition"):
+            thd.DistributedNeighborhoodAttentionS2(grid, grid, in_channels=4, theta_cutoff=1.5)
+
+    @parameterized.expand([["healpix", "healpix"], ["healpix", "equiangular"], ["equiangular", "healpix"]], skip_on_empty=True)
+    def test_healpix_refuses_an_azimuthal_decomposition(self, grid_in, grid_out):
+        """A HEALPix grid on either side cannot be cut along the azimuth; the layer says so at construction."""
+        if self.grid_size_w == 1:
+            self.skipTest("needs an azimuth group of more than one rank")
+        gin = make_grid(grid_in, (8,) if grid_in == "healpix" else (17, 32))
+        gout = make_grid(grid_out, (8,) if grid_out == "healpix" else (17, 32))
+        with self.assertRaises(NotImplementedError):
+            thd.DistributedNeighborhoodAttentionS2(gin, gout, in_channels=4)

@@ -83,7 +83,7 @@ below). It is also accepted by `SpectralConvS2`, `ResampleS2`,
 `GaussianRandomFieldS2`, `AttentionS2`, `NeighborhoodAttentionS2`,
 `DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and `QuadratureS2`.
 Of the distributed layers, the four distributed SHTs, `DistributedSpectralConvS2`,
-`DistributedResampleS2` and `DistributedQuadratureS2` accept it, with the grid decomposed along latitude only: more than one azimuth
+`DistributedResampleS2`, `DistributedNeighborhoodAttentionS2` and `DistributedQuadratureS2` accept it, with the grid decomposed along latitude only: more than one azimuth
 rank is rejected (see "HEALPix" in the distributed guide). The other distributed
 layers still require a latitude-longitude grid. `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.

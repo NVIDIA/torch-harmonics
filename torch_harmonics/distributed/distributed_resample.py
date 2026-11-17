@@ -50,16 +50,7 @@ from .primitives import (
     reduce_from_azimuth_region,
     unpad_and_unflatten_leading_dims,
 )
-from .utils import azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
-
-
-def _point_shapes(shard):
-    """The flat point count every polar rank holds: whole rows of a regular band, whole rings of a HEALPix one."""
-    if isinstance(shard.grid, RegularGridS2):
-        shapes = [nlat * shard.grid.nlon for nlat in shard.lat_shapes]
-    else:
-        shapes = list(shard.pixel_shapes)
-    return shapes
+from .utils import _point_shapes, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
 
 
 class DistributedResampleS2(nn.Module):

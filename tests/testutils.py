@@ -41,8 +41,9 @@ import torch
 import torch.distributed as dist
 
 import torch_harmonics.distributed as thd
-from torch_harmonics import GridS2, as_grid
+from torch_harmonics import GridS2, HealpixGrid, SphericalProductGrid, as_grid, as_radial_grid
 from torch_harmonics.grid import _GRID_REGISTRY
+from torch_harmonics.radial import split_radial
 from torch_harmonics.utils import torch_compile_supported
 
 # For tests that call torch.compile themselves: torch refuses it outright on some
@@ -362,6 +363,67 @@ def gather_tensor_hw(tensor, hdim=-2, wdim=-1, hshapes=[], wshapes=[], hsize=1, 
             tensor = torch.cat(all_gather_tensors(tensor, hgroup, dim=hdim, shapes=hshapes), dim=hdim)
 
     return tensor
+
+
+# the radial factor of a product-grid row, see make_grid
+TEST_RADIAL = as_radial_grid("legendre-gauss", nr=2, r_inner=1.0, r_outer=2.0)
+
+
+def make_grid(name, shape):
+    """
+    A grid descriptor from a test row's grid name and shape: ``(nside,)`` for HEALPix, ``(nlat, nlon)`` otherwise.
+
+    A ``"+radial"`` suffix on the name makes it the product with ``TEST_RADIAL``.
+    """
+    angular, _, radial = name.partition("+")
+    grid = HealpixGrid(nside=shape[0]) if angular == "healpix" else as_grid(angular, nlat=shape[0], nlon=shape[1])
+    if radial:
+        grid = SphericalProductGrid(grid, TEST_RADIAL)
+    return grid
+
+
+class ShardedFieldMixin:
+    """
+    Split a global field into this rank's piece and gather it back, as a grid shard describes them.
+
+    For the distributed tests whose layers take HEALPix as well as regular grids: a HEALPix
+    shard is a band of pixels of the flat axis, a regular one a block of latitudes and
+    longitudes. A product grid's field has its radial axis in front of the angular ones, and
+    the shard is of the angular grid. Expects the attributes setup_class_from_context sets.
+    """
+
+    def skip_unless_decomposable(self, *grids):
+        """HEALPix decomposes along latitude only; a layer on it refuses an azimuth group, which the refusal tests cover."""
+        if self.grid_size_w > 1 and any(isinstance(split_radial(g)[0], HealpixGrid) for g in grids):
+            self.skipTest("HEALPix decomposes along latitude only")
+
+    def split_field(self, tensor, shard):
+        """This rank's piece of a global field, as ``shard`` describes it."""
+        if isinstance(shard.grid, HealpixGrid):
+            tensor_local = torch.split(tensor, list(shard.pixel_shapes), dim=-1)[self.hrank].contiguous()
+        else:
+            tensor_local = split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
+        return tensor_local
+
+    def gather_field(self, tensor, shard):
+        """The global field from every rank's piece, as ``shard`` describes them."""
+        if isinstance(shard.grid, HealpixGrid):
+            hdim, hshapes, wshapes, wsize = -1, list(shard.pixel_shapes), [], 1
+        else:
+            hdim, hshapes, wshapes, wsize = -2, list(shard.lat_shapes), list(shard.lon_shapes), self.grid_size_w
+        return gather_tensor_hw(
+            tensor,
+            hdim=hdim,
+            wdim=-1,
+            hshapes=hshapes,
+            wshapes=wshapes,
+            hsize=self.grid_size_h,
+            wsize=wsize,
+            hrank=self.hrank,
+            wrank=self.wrank,
+            hgroup=self.h_group,
+            wgroup=self.w_group,
+        )
 
 
 def reduce_success(success, device, group=None):
