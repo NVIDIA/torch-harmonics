@@ -50,7 +50,7 @@ from .primitives import (
     reduce_from_azimuth_region,
     unpad_and_unflatten_leading_dims,
 )
-from .utils import _point_shapes, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
+from .utils import _point_shapes, _shard_grid_pair
 
 
 class DistributedResampleS2(nn.Module):
@@ -123,23 +123,9 @@ class DistributedResampleS2(nn.Module):
         # point on the whole field, see ResampleS2
         self.separable = isinstance(self.grid_in, RegularGridS2) and isinstance(self.grid_out, RegularGridS2)
 
-        # get the comms grid:
-        self.comm_size_polar = polar_group_size()
-        self.comm_rank_polar = polar_group_rank()
-        self.comm_size_azimuth = azimuth_group_size()
-        self.comm_rank_azimuth = azimuth_group_rank()
-
-        # each grid decomposes itself; the shards carry this rank's extent and know
-        # the shapes every other rank holds, which is what the transposes need. A HEALPix
-        # shard refuses an azimuth split
-        self.shard_in = self.grid_in.shard(
-            polar=(self.comm_rank_polar, self.comm_size_polar),
-            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
-        )
-        self.shard_out = self.grid_out.shard(
-            polar=(self.comm_rank_polar, self.comm_size_polar),
-            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
-        )
+        # the process grid and this rank's shards; the shards know the shapes every other
+        # rank holds, which is what the transposes need
+        _shard_grid_pair(self)
 
         # the expansion to the poles is a property of the latitudes alone
         colats_in, colats_out = self.grid_in.colats, self.grid_out.colats

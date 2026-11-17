@@ -30,7 +30,8 @@
 #
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from itertools import accumulate
+from typing import List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -40,7 +41,7 @@ from torch_harmonics.quadrature import latitude_support_band
 from torch_harmonics.utils import check
 
 from ._amp_utils import _custom_fwd, _custom_setup_context
-from .utils import _start_polar_group, azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_size
+from .utils import _point_shapes, _ring_shapes, _start_polar_group, azimuth_group, azimuth_group_size, is_distributed_azimuth, is_distributed_polar, polar_group, polar_group_size
 from .utils import config as thd_config
 
 
@@ -1252,6 +1253,60 @@ class PolarHaloPlan:
         send_prev = overhangs[rank - 1][1] if rank > 0 else 0
         send_next = overhangs[rank + 1][0] if rank < size - 1 else 0
         return cls(recv_prev=before, recv_next=after, send_prev=send_prev, send_next=send_next)
+
+
+def _plan_ring_band_halo(shard, reach: List[Optional[Tuple[int, int]]], rank: int) -> Tuple[PolarHaloPlan, Tuple[int, int], Tuple[int, int]]:
+    r"""
+    The halo of an operator that reads whole rings, planned from the rings every rank reaches.
+
+    The layer-side half of a halo over a ragged field, shared by the distributed layers that
+    read their input through ring tables, such as neighborhood attention and DISCO on
+    HEALPix. Each rank's band is its own rings, widened to the rings its operator reaches.
+    Bands are whole rings because the kernels address a ring through its tables and wrap at
+    its end, and the shard cuts on ring boundaries anyway. Every rank plans every rank's band
+    from the same global data, which :meth:`PolarHaloPlan.from_needs` needs for the ranks to
+    agree on their messages; the band in flat points is the halo-padded block the plan
+    produces.
+
+    Parameters
+    ----------
+    shard : GridShardS2
+        The shard of the field the halo is exchanged on, split across the polar group only:
+        whole rings of a HEALPix grid, or whole latitude rows of a regular one.
+    reach : List[Optional[Tuple[int, int]]]
+        For every polar rank, the half-open range ``[lo, hi)`` of global rings its operator
+        reads, or ``None`` if it reads none.
+    rank : int
+        The rank to plan for.
+
+    Returns
+    -------
+    halo : PolarHaloPlan
+        The plan of ``rank``, without padding.
+    ring_range : Tuple[int, int]
+        ``rank``'s band as global rings ``[lo, hi)``.
+    point_range : Tuple[int, int]
+        ``rank``'s band as global flat points ``[lo, hi)``, the extent of the halo-padded block.
+
+    Raises
+    ------
+    ValueError
+        If a band reaches past an immediate neighbour, see :meth:`PolarHaloPlan.from_needs`.
+    """
+    ring_starts = list(accumulate([0] + _ring_shapes(shard)))
+    # where every ring starts in flat order, and where the last one ends
+    ring_bounds = shard.grid.lon_offsets.tolist()
+
+    ring_bands = []
+    for r in range(len(ring_starts) - 1):
+        lo, hi = ring_starts[r], ring_starts[r + 1]
+        if reach[r] is not None:
+            lo, hi = min(lo, int(reach[r][0])), max(hi, int(reach[r][1]))
+        ring_bands.append((lo, hi))
+    needs = [(int(ring_bounds[lo]), int(ring_bounds[hi])) for lo, hi in ring_bands]
+
+    halo = PolarHaloPlan.from_needs(_point_shapes(shard), needs, rank)
+    return halo, ring_bands[rank], needs[rank]
 
 
 def _halo_slice(x, dim, start, n):

@@ -61,19 +61,24 @@ layer describes its psi and leaves the kernels to the backend:
 ``ragged``
     Whether psi is keyed per point; the regular backends decline a ragged layer and the
     ragged ones a regular layer.
-``kernel_size``, ``nlon_out``, ``npoints_out``
+``kernel_size``, ``nlon_out``
     As usual; ``nlon_out`` on a regular layer only.
+``npoints_out_local``
+    Points of the ragged result: ``npoints_out`` on a serial layer, the rank's band of
+    output points on a distributed one. Ragged layers only.
 ``_psi_coo()``
     The psi entries ``(ker_idx, row_idx, col_idx, vals)``. A distributed layer returns its
     rank's block.
 ``_psi_nlon``
     Longitudes of the grid psi's columns index: the input grid of the forward, the output
     grid of the transpose. Regular layers only.
-``_psi_col_grid``
-    That grid itself, whose ring tables the ragged backends read. Ragged layers only.
+``_psi_col_rings()``
+    ``(ring_base, ring_size)`` of the rings psi's columns index, which the ragged arcs walk:
+    those of the whole grid on a serial layer, of the rank's band on a distributed one.
+    Ragged layers only.
 ``_contract_shape``
     ``(nlat, nlon)`` of the contraction's result. Regular layers only; a ragged result is
-    ``npoints_out`` long.
+    ``npoints_out_local`` long.
 ``_reference_psi(ker_idx, row_idx, col_idx, vals)``
     The sparse psi of the torch reference, whose extents are a property of the layer.
 ``_needs_split``
@@ -334,9 +339,7 @@ class RaggedOptimizedBackend(DiscoBackendS2):
         return layer.ragged and layer.optimized_kernel and device.type in _RAGGED_DEVICES
 
     def prepare(self, layer, device):
-        grid = layer._psi_col_grid
-        ring_base = grid.lon_offsets[:-1].to(torch.int64).contiguous()
-        ring_size = grid.nlon_per_lat.to(torch.int64).contiguous()
+        ring_base, ring_size = layer._psi_col_rings()
         arcs = build_arcs(*layer._psi_coo(), ring_base=ring_base, ring_size=ring_size)
         state = {name: t.to(device) for name, t in zip(_RAGGED_ARC_STATE, (*arcs, ring_base, ring_size))}
 
@@ -356,16 +359,16 @@ class RaggedOptimizedBackend(DiscoBackendS2):
         return (layer.psi_split_ker, self.split_row_offsets)
 
     def contract(self, layer, x):
-        return _disco_s2_contraction_ragged_optimized(x, *self._arcs(layer), layer.kernel_size, layer.npoints_out)
+        return _disco_s2_contraction_ragged_optimized(x, *self._arcs(layer), layer.kernel_size, layer.npoints_out_local)
 
     def conv(self, layer, x, weight, groups, groupsize, recompute=False):
         # the node calls the kernels directly, so it applies autocast's cast itself, as
         # RegularOptimizedBackend.conv does
         x = x.to(_amp_dtype(x))
-        return _disco_s2_conv_ragged_optimized(x, weight, self._arcs(layer), self._split(layer), layer.kernel_size, layer.npoints_out, groups, groupsize, recompute)
+        return _disco_s2_conv_ragged_optimized(x, weight, self._arcs(layer), self._split(layer), layer.kernel_size, layer.npoints_out_local, groups, groupsize, recompute)
 
     def transpose(self, layer, x):
-        return _disco_s2_transpose_contraction_ragged_optimized(x, *self._arcs(layer), layer.kernel_size, layer.npoints_out)
+        return _disco_s2_transpose_contraction_ragged_optimized(x, *self._arcs(layer), layer.kernel_size, layer.npoints_out_local)
 
 
 class RaggedReferenceBackend(DiscoBackendS2):
