@@ -56,7 +56,7 @@ from .utils import _point_shapes, _ring_shapes, azimuth_group, azimuth_group_ran
 
 
 @torch.compiler.disable()
-def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon_kw, next_nlon_kv):
+def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon):
     """
     Async send current chunks, receive next chunks with known shapes.
 
@@ -69,8 +69,8 @@ def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon_kw, next_nlon_kv):
     send_to, recv_from = get_group_neighbors(az_group)
     B, H, _, C_k = kw_chunk.shape
     B, H, _, C_v = vw_chunk.shape
-    recv_kw = torch.empty(B, H, next_nlon_kw, C_k, device=kw_chunk.device, dtype=kw_chunk.dtype)
-    recv_vw = torch.empty(B, H, next_nlon_kv, C_v, device=vw_chunk.device, dtype=vw_chunk.dtype)
+    recv_kw = torch.empty(B, H, next_nlon, C_k, device=kw_chunk.device, dtype=kw_chunk.dtype)
+    recv_vw = torch.empty(B, H, next_nlon, C_v, device=vw_chunk.device, dtype=vw_chunk.dtype)
     ops = [
         dist.P2POp(dist.isend, kw_chunk, send_to, az_group),
         dist.P2POp(dist.irecv, recv_kw, recv_from, az_group),
@@ -81,9 +81,36 @@ def _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon_kw, next_nlon_kv):
     return recv_kw, recv_vw, reqs
 
 
+def _ring_chunks(kw, vw, az_group, az_rank: int, az_size: int, lon_chunk_starts: list, nlon_kx_list: list):
+    """
+    Walk the K/V chunks of the azimuth ring, yielding ``(step, lon_lo, kw_chunk, vw_chunk)``.
+
+    At step ``s`` this rank holds the chunk of rank ``(az_rank + s) % az_size``, whose first
+    global longitude is ``lon_lo``. The exchange of the next chunk is posted before the
+    current one is yielded and waited for after, so it overlaps whatever the caller does
+    with the chunk. The received chunks are cloned, so that no kernel is ever handed a
+    buffer a pending collective still owns.
+    """
+    kw_chunk, vw_chunk = kw, vw
+    for step in range(az_size):
+        src_rank = (az_rank + step) % az_size
+        last = step == az_size - 1
+        if not last:
+            recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[(src_rank + 1) % az_size])
+
+        yield step, lon_chunk_starts[src_rank], kw_chunk, vw_chunk
+
+        if not last:
+            for req in reqs:
+                req.wait()
+            kw_chunk = recv_kw.clone()
+            vw_chunk = recv_vw.clone()
+
+
 @torch.compiler.disable()
 def _ring_grad(dkw_acc, dvw_acc, az_group, next_nlon):
-    """Rotate the dkw/dvw accumulators one hop along the same ring as :func:`_ring_kv`.
+    """
+    Rotate the dkw/dvw accumulators one hop along the same ring as :func:`_ring_kv`, and return them.
 
     Each accumulator travels *with* the lon chunk it belongs to. At step ``s`` rank ``r``
     holds chunk ``(r + s) % P`` and adds its contribution to the accumulator it currently
@@ -99,30 +126,28 @@ def _ring_grad(dkw_acc, dvw_acc, az_group, next_nlon):
     ``2 (P - 1)`` chunk-equivalents.
 
     A ``None`` accumulator (that branch needs no gradient) is skipped, so the rotation costs
-    nothing for branches that were pruned by the autograd contract.
+    nothing for branches that were pruned by the autograd contract. ``next_nlon`` is the
+    width of the chunk the received accumulator belongs to.
 
-    Shapes follow ``_ring_kv`` exactly: the accumulator's ``W`` is always the current
-    chunk's ``nlon``, so ``next_nlon`` is the same value passed there.
+    The received accumulators are cloned: the next step's kernel, or the ``add_`` of the
+    scatter direction, writes *into* them, which must not touch a buffer the collective
+    owns, and after the final hop the ``.to()`` of the caller is a no-op for fp32, so the
+    returned gradient would otherwise alias it.
     """
     send_to, recv_from = get_group_neighbors(az_group)
     ops = []
-    recv_dkw = recv_dvw = None
-    if dkw_acc is not None:
-        B, H, _, C_k = dkw_acc.shape
-        recv_dkw = torch.empty(B, H, next_nlon, C_k, device=dkw_acc.device, dtype=dkw_acc.dtype)
-        ops += [
-            dist.P2POp(dist.isend, dkw_acc, send_to, az_group),
-            dist.P2POp(dist.irecv, recv_dkw, recv_from, az_group),
-        ]
-    if dvw_acc is not None:
-        B, H, _, C_v = dvw_acc.shape
-        recv_dvw = torch.empty(B, H, next_nlon, C_v, device=dvw_acc.device, dtype=dvw_acc.dtype)
-        ops += [
-            dist.P2POp(dist.isend, dvw_acc, send_to, az_group),
-            dist.P2POp(dist.irecv, recv_dvw, recv_from, az_group),
-        ]
-    reqs = dist.batch_isend_irecv(ops) if ops else []
-    return recv_dkw, recv_dvw, reqs
+    recv = []
+    for acc in (dkw_acc, dvw_acc):
+        if acc is None:
+            recv.append(None)
+        else:
+            B, H, _, C = acc.shape
+            buf = torch.empty(B, H, next_nlon, C, device=acc.device, dtype=acc.dtype)
+            ops += [dist.P2POp(dist.isend, acc, send_to, az_group), dist.P2POp(dist.irecv, buf, recv_from, az_group)]
+            recv.append(buf)
+    for req in dist.batch_isend_irecv(ops) if ops else []:
+        req.wait()
+    return tuple(None if buf is None else buf.clone() for buf in recv)
 
 
 def _per_head(packed: torch.Tensor, num_heads: int) -> torch.Tensor:
@@ -145,12 +170,20 @@ def _refuse_double_backward():
 
 
 class _RingNeighborhoodAttentionFn(torch.autograd.Function):
-    """Forward ring attention + backward ring, gather (self / downsample) direction.
+    """
+    Forward ring attention and its backward ring, in either direction.
+
+    K/V live on the input grid, sharded and lat-halo-padded, and rotate around the azimuth
+    ring; Q and the output live on the output grid and stay local. ``upsample`` picks the
+    kernels: the gather kernels for self-attention and downsampling, whose psi rows are
+    this rank's output latitudes, and the scatter kernels for upsampling, whose psi rows are
+    its halo-padded input latitudes (see :class:`RingBackend`). Everything else, the ring,
+    the state and the finalization, is the same in both.
 
     Channels-last with the heads packed along the channel dim, as in the serial
     kernels; the ring carries these tensors as they are, so no step converts:
 
-    kw, vw : [B, H_halo, W_local, nh * C_k / nh * C_v]  lat-halo-padded
+    kw, vw : [B, H_halo, W_in_local, nh * C_k / nh * C_v]  lat-halo-padded
     qw     : [B, H_out_local, W_out_local, nh * C_k]
 
     State buffers follow the kernels' ABI:
@@ -168,6 +201,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         psi_seg,
         psi_seg_off,
         ring_weights,
+        upsample: bool,
         num_heads: int,
         nlon_in: int,
         nlon_out_global: int,
@@ -197,43 +231,16 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         qdotk_max = torch.full((B, num_heads, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
 
         # already in the kernels' layout: the ring sends and receives these directly
-        kw_chunk = kw.contiguous()
-        vw_chunk = vw.contiguous()
+        kw = kw.contiguous()
+        vw = vw.contiguous()
         qw = qw.contiguous()
 
-        for step in range(az_size):
-            src_rank = (az_rank + step) % az_size
-            lon_lo_kx = lon_chunk_starts[src_rank]
+        step_kernel = attention_kernels.forward_ring_step_upsample if upsample else attention_kernels.forward_ring_step
+        psi = (ring_weights, psi_seg, psi_seg_off, num_heads, nlon_in, nlon_out_global)
+        local = (lat_halo_start, nlat_out_local, nlon_out_local)
 
-            # Pre-allocate receive buffers for the NEXT chunk (correct shape)
-            if step < az_size - 1:
-                next_src = (az_rank + step + 1) % az_size
-                recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
-
-            attention_kernels.forward_ring_step.default(
-                kw_chunk,
-                vw_chunk,
-                qw,
-                y_acc,
-                alpha_sum,
-                qdotk_max,
-                ring_weights,
-                psi_seg,
-                psi_seg_off,
-                num_heads,
-                nlon_in,
-                nlon_out_global,
-                lon_lo_kx,
-                lat_halo_start,
-                nlat_out_local,
-                nlon_out_local,
-            )
-
-            if step < az_size - 1:
-                for req in reqs:
-                    req.wait()
-                kw_chunk = recv_kw.clone()
-                vw_chunk = recv_vw.clone()
+        for _, lon_lo, kw_chunk, vw_chunk in _ring_chunks(kw, vw, az_group, az_rank, az_size, lon_chunk_starts, nlon_kx_list):
+            step_kernel.default(kw_chunk, vw_chunk, qw, y_acc, alpha_sum, qdotk_max, *psi, lon_lo, *local)
 
         # Finalize: y = y_acc / alpha_sum, per head. Cast back to the input dtype
         # to keep the op faithful to its input dtype.
@@ -248,41 +255,14 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
     @staticmethod
     @_custom_setup_context(device_type="cuda")
     def setup_context(ctx, inputs, output):
-        (
-            kw,
-            vw,
-            qw,
-            psi_seg,
-            psi_seg_off,
-            ring_weights,
-            num_heads,
-            nlon_in,
-            nlon_out_global,
-            lon_chunk_starts,
-            nlon_kx_list,
-            lat_halo_start,
-            nlat_out_local,
-            nlon_out_local,
-            az_group,
-            az_rank,
-            az_size,
-        ) = inputs
+        kw, vw, qw, psi_seg, psi_seg_off, ring_weights = inputs[:6]
         y_out, alpha_sum, qdotk_max = output
         # alpha_sum and qdotk_max are internal accumulators, not true outputs;
         # marking them non-differentiable keeps backward's signature as (ctx, dy).
         ctx.mark_non_differentiable(alpha_sum, qdotk_max)
         ctx.save_for_backward(kw, vw, qw, psi_seg, psi_seg_off, ring_weights, alpha_sum, qdotk_max)
-        ctx.num_heads = num_heads
-        ctx.nlon_in = nlon_in
-        ctx.nlon_out_global = nlon_out_global
-        ctx.lon_chunk_starts = lon_chunk_starts
-        ctx.nlon_kx_list = nlon_kx_list
-        ctx.lat_halo_start = lat_halo_start
-        ctx.nlat_out_local = nlat_out_local
-        ctx.nlon_out_local = nlon_out_local
-        ctx.az_group = az_group
-        ctx.az_rank = az_rank
-        ctx.az_size = az_size
+        # the non-tensor arguments, in the order of forward
+        ctx.args = inputs[6:]
 
     @staticmethod
     @torch.amp.custom_bwd(device_type="cuda")
@@ -290,18 +270,8 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         _refuse_double_backward()
         # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
         kw, vw, qw, psi_seg, psi_seg_off, ring_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
-
-        num_heads = ctx.num_heads
-        nlon_in = ctx.nlon_in
-        nlon_out_global = ctx.nlon_out_global
-        lon_chunk_starts = ctx.lon_chunk_starts
-        nlon_kx_list = ctx.nlon_kx_list
-        lat_halo_start = ctx.lat_halo_start
-        nlat_out_local = ctx.nlat_out_local
-        nlon_out_local = ctx.nlon_out_local
-        az_group = ctx.az_group
-        az_rank = ctx.az_rank
-        az_size = ctx.az_size
+        (upsample, num_heads, nlon_in, nlon_out_global, lon_chunk_starts, nlon_kx_list, lat_halo_start, nlat_out_local, nlon_out_local, az_group, az_rank, az_size) = ctx.args
+        nargs = 6 + len(ctx.args)
 
         # Autograd contract: skip per-branch work (kernel calls, ring exchanges) for any
         # of {kw, vw, qw} that doesn't need a gradient, and return None in those slots.
@@ -314,7 +284,7 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # Defensive: if somehow none of (kw, vw, qw) need grad (e.g., user wired
         # requires_grad onto one of the index buffers), there's nothing to compute.
         if not (kw_needs_grad or vw_needs_grad or qw_needs_grad):
-            return (None,) * 17
+            return (None,) * nargs
 
         B, H_halo, _, C_k = kw.shape
         C_v = vw.shape[-1]
@@ -333,64 +303,39 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         qw_dtype = qw.dtype
         dy = dy.contiguous()  # [B, H, W, nh * C_v], native dtype
         qw = qw.contiguous()
+        kw = kw.contiguous()
+        vw = vw.contiguous()
+
+        psi = (ring_weights, psi_seg, psi_seg_off, num_heads, nlon_in, nlon_out_global)
+        local = (lat_halo_start, nlat_out_local, nlon_out_local)
+        ring = (az_group, az_rank, az_size, lon_chunk_starts, nlon_kx_list)
 
         # ----------------------------------------------------------------
-        # Backward pass 1: re-accumulate {alpha_sum, qdotk_max, integral,
-        #                                  alpha_k, alpha_kvw} via ring.
+        # Backward pass 1: re-accumulate {integral, alpha_k, alpha_kvw} via ring.
         # Required whenever any of (kw, vw, qw) needs grad: integral feeds
         # pass-2's integral_norm and dqy reads alpha_k/alpha_kvw. The kernel
         # writes all three buffers in one call, so pass-1 cannot be pruned
         # per-branch.
+        # The gather kernel recomputes the softmax statistics into scratch buffers
+        # alongside; the scatter kernel reads the saved forward maximum instead. Either
+        # way the finalization below uses the SAVED forward statistics, which are
+        # authoritative.
         # ----------------------------------------------------------------
-        bwd_alpha_sum = torch.zeros(B, num_heads, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
-        bwd_qdotk_max = torch.full((B, num_heads, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
-        integral_buf = torch.zeros_like(bwd_alpha_sum)
+        integral_buf = torch.zeros(B, num_heads, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
         alpha_k_buf = torch.zeros(B, nlat_out_local, nlon_out_local, C_k, device=device, dtype=torch.float32)
         alpha_kvw_buf = torch.zeros_like(alpha_k_buf)
+        if upsample:
+            pass1_kernel = attention_kernels.backward_ring_step_upsample_pass1
+            stats = (fwd_qdotk_max,)
+        else:
+            pass1_kernel = attention_kernels.backward_ring_step_pass1
+            stats = (torch.zeros_like(integral_buf), torch.full_like(integral_buf, float("-inf")))
 
-        kw = kw.contiguous()
-        vw = vw.contiguous()
-        kw_chunk, vw_chunk = kw, vw
-
-        for step in range(az_size):
-            src_rank = (az_rank + step) % az_size
-            lon_lo_kx = lon_chunk_starts[src_rank]
-
-            if step < az_size - 1:
-                next_src = (az_rank + step + 1) % az_size
-                recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
-
-            attention_kernels.backward_ring_step_pass1.default(
-                kw_chunk,
-                vw_chunk,
-                qw,
-                dy,
-                bwd_alpha_sum,
-                bwd_qdotk_max,
-                integral_buf,
-                alpha_k_buf,
-                alpha_kvw_buf,
-                ring_weights,
-                psi_seg,
-                psi_seg_off,
-                num_heads,
-                nlon_in,
-                nlon_out_global,
-                lon_lo_kx,
-                lat_halo_start,
-                nlat_out_local,
-                nlon_out_local,
-            )
-
-            if step < az_size - 1:
-                for req in reqs:
-                    req.wait()
-                kw_chunk = recv_kw.clone()
-                vw_chunk = recv_vw.clone()
+        for _, lon_lo, kw_chunk, vw_chunk in _ring_chunks(kw, vw, *ring):
+            pass1_kernel.default(kw_chunk, vw_chunk, qw, dy, *stats, integral_buf, alpha_k_buf, alpha_kvw_buf, *psi, lon_lo, *local)
 
         # ----------------------------------------------------------------
         # Finalize pass-1 outputs.
-        # Use the SAVED forward alpha_sum/qdotk_max (same values, but authoritative).
         # ----------------------------------------------------------------
         alpha_sum_inv = _reciprocal_or_zero(fwd_alpha_sum)  # [B, nh, H, W]
 
@@ -419,81 +364,42 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
         # both in a single call.
         # ----------------------------------------------------------------
         if kw_needs_grad or vw_needs_grad:
-            # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk
-            kw_chunk, vw_chunk = kw, vw
+            pass2_kernel = attention_kernels.backward_ring_step_upsample_pass2 if upsample else attention_kernels.backward_ring_step_pass2
+            # The gather kernel accumulates into its gradient outputs with atomicAdd and
+            # never clears them, so the accumulator goes in directly. The scatter kernel
+            # *assigns* them (`dkx[chan] = sh_dk[chan]` in attention_cuda_bwd_ring_upsample.cu):
+            # each input cell is written by exactly one row, so it stores instead of
+            # reducing, and the accumulator has to take a zeroed per-step temp and add it.
+            accumulates = not upsample
+
             # the accumulator starts on this rank's own chunk, which is the one it holds
             # at step 0, and is re-sized by each hop to match the chunk it then carries
             my_nlon = nlon_kx_list[az_rank]
             dkw_acc = torch.zeros(B, H_halo, my_nlon, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
             dvw_acc = torch.zeros(B, H_halo, my_nlon, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
 
-            for step in range(az_size):
-                src_rank = (az_rank + step) % az_size
-                lon_lo_kx = lon_chunk_starts[src_rank]
-                nlon_kx = nlon_kx_list[src_rank]
+            for step, lon_lo, kw_chunk, vw_chunk in _ring_chunks(kw, vw, *ring):
+                nlon_kx = kw_chunk.shape[2]
+                dkw_out = dkw_acc if kw_needs_grad and accumulates else torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
+                dvw_out = dvw_acc if vw_needs_grad and accumulates else torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
 
-                # This kernel accumulates into its gradient outputs with atomicAdd and never
-                # clears them, so the accumulator goes in directly -- no per-step temp and
-                # no add_ afterwards. Its width is the current chunk's by construction.
-                # Both arguments are required by the fused signature, so a branch that needs
-                # no gradient still gets a scratch buffer, which is then discarded.
-                # NOTE: the upsample direction's kernel assigns rather than accumulates, so
-                # it must keep the per-step temp; do not mirror this there.
-                dkw_out = dkw_acc if kw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
-                dvw_out = dvw_acc if vw_needs_grad else torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
+                pass2_kernel.default(kw_chunk, vw_chunk, qw, dy, fwd_alpha_sum, fwd_qdotk_max, integral_norm, dkw_out, dvw_out, *psi, lon_lo, *local)
 
-                attention_kernels.backward_ring_step_pass2.default(
-                    kw_chunk,
-                    vw_chunk,
-                    qw,
-                    dy,
-                    fwd_alpha_sum,
-                    fwd_qdotk_max,
-                    integral_norm,
-                    dkw_out,
-                    dvw_out,
-                    ring_weights,
-                    psi_seg,
-                    psi_seg_off,
-                    num_heads,
-                    nlon_in,
-                    nlon_out_global,
-                    lon_lo_kx,
-                    lat_halo_start,
-                    nlat_out_local,
-                    nlon_out_local,
-                )
+                if not accumulates:
+                    if kw_needs_grad:
+                        dkw_acc.add_(dkw_out)
+                    if vw_needs_grad:
+                        dvw_acc.add_(dvw_out)
 
+                # the accumulators follow the chunks they belong to, in the same direction
+                # and to the same per-chunk width
                 if step < az_size - 1:
-                    next_src = (az_rank + step + 1) % az_size
-                    recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
-                    # the accumulators follow the chunks they belong to, so they rotate in
-                    # the same direction and to the same per-chunk width
-                    recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, nlon_kx_list[next_src])
-                    for req in reqs:
-                        req.wait()
-                    for req in grad_reqs:
-                        req.wait()
-                    kw_chunk = recv_kw.clone()
-                    vw_chunk = recv_vw.clone()
-                    # Cloned for the same reason as kw/vw, and with more at stake: the next
-                    # step's kernel atomicAdds *into* the accumulator, so handing it the
-                    # irecv destination directly would mutate a buffer the collective owns.
-                    # The clone is chunk-sized, so it does not give back the saving above.
-                    dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
-                    dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
+                    dkw_acc, dvw_acc = _ring_grad(dkw_acc, dvw_acc, az_group, nlon_kx_list[(az_rank + step + 1) % az_size])
 
             # One final hop returns each accumulator to the rank owning its chunk: after the
             # loop a rank carries the accumulator for chunk az_rank - 1, which is send_to.
             if az_size > 1:
-                recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
-                for req in grad_reqs:
-                    req.wait()
-                # Cloned for the same reason as in the loop: .to() below is a no-op for
-                # fp32, so without it the returned gradient would alias the irecv
-                # destination.
-                dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
-                dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
+                dkw_acc, dvw_acc = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
 
             # The accumulator IS the local chunk now, already in the layout of kw/vw.
             # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo);
@@ -504,370 +410,9 @@ class _RingNeighborhoodAttentionFn(torch.autograd.Function):
             dkw = None
             dvw = None
 
-        # Return grads for (kw, vw, qw, psi_seg, psi_seg_off, ring_weights,
-        #                   num_heads, nlon_in, nlon_out_global, lon_chunk_starts, nlon_kx_list,
-        #                   lat_halo_start, nlat_out_local, nlon_out_local,
-        #                   az_group, az_rank, az_size)
-        return (dkw, dvw, dqy) + (None,) * 14
-
-
-class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
-    """Forward ring attention + backward ring for the UPSAMPLE (scatter) direction.
-
-    K/V live on the coarse input grid (sharded, halo-padded in lat, rotating
-    around the azimuth ring); Q and the output live on the fine output grid and
-    stay local. Layouts are those of :class:`_RingNeighborhoodAttentionFn`:
-
-    kw, vw : [B, H_halo, W_in_local, nh * C_k / nh * C_v]  lat-halo-padded
-    qw     : [B, H_out_local, W_out_local, nh * C_k]
-
-    State buffers:
-      y_acc        : [B, H_out, W_out, nh * C_v]
-      alpha_k/kvw  : [B, H_out, W_out, nh * C_k]
-      alpha_sum/qdotk_max/integral : [B, nh, H_out, W_out]
-
-    The local psi is built by RingUpsampleBackend.prepare: rows are keyed by the
-    halo-padded LOCAL input latitude, arcs are (ho_local, lo, len) on the fine
-    output grid with lo pre-shifted by -lon_lo_out.
-    """
-
-    @staticmethod
-    @_custom_fwd(device_type="cuda")
-    def forward(
-        kw,
-        vw,
-        qw,
-        psi_seg,
-        psi_seg_off,
-        ring_weights,
-        num_heads: int,
-        nlon_in: int,
-        nlon_out_global: int,
-        lon_chunk_starts: list,
-        nlon_kx_list: list,
-        lat_halo_start: int,
-        nlat_out_local: int,
-        nlon_out_local: int,
-        az_group,
-        az_rank: int,
-        az_size: int,
-    ):
-        B = kw.shape[0]
-        C_v = vw.shape[-1]
-        device = kw.device
-
-        # Capture input dtype so we can cast the user-visible output (y_out)
-        # back at the end of forward. The internal accumulators stay fp32 —
-        # softmax stability requires that, and the saved alpha_sum/qdotk_max
-        # feed fp32 math in backward.
-        inp_dtype = kw.dtype
-
-        # State buffers in the kernels' ABI: y_acc packed like the activations,
-        # one softmax statistic per (batch, head, point).
-        y_acc = torch.zeros(B, nlat_out_local, nlon_out_local, C_v, device=device, dtype=torch.float32)
-        alpha_sum = torch.zeros(B, num_heads, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
-        qdotk_max = torch.full((B, num_heads, nlat_out_local, nlon_out_local), float("-inf"), device=device, dtype=torch.float32)
-
-        # already in the kernels' layout: the ring sends and receives these directly
-        kw_chunk = kw.contiguous()
-        vw_chunk = vw.contiguous()
-        qw = qw.contiguous()
-
-        for step in range(az_size):
-            src_rank = (az_rank + step) % az_size
-            lon_lo_kx = lon_chunk_starts[src_rank]
-
-            # Pre-allocate receive buffers for the NEXT chunk (correct shape)
-            if step < az_size - 1:
-                next_src = (az_rank + step + 1) % az_size
-                recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
-
-            attention_kernels.forward_ring_step_upsample.default(
-                kw_chunk,
-                vw_chunk,
-                qw,
-                y_acc,
-                alpha_sum,
-                qdotk_max,
-                ring_weights,
-                psi_seg,
-                psi_seg_off,
-                num_heads,
-                nlon_in,
-                nlon_out_global,
-                lon_lo_kx,
-                lat_halo_start,
-                nlat_out_local,
-                nlon_out_local,
-            )
-
-            if step < az_size - 1:
-                for req in reqs:
-                    req.wait()
-                kw_chunk = recv_kw.clone()
-                vw_chunk = recv_vw.clone()
-
-        # Finalize: y = y_acc / alpha_sum, per head. Cast back to the input dtype
-        # to keep the op faithful to its input dtype.
-        y_out = (_per_head(y_acc, num_heads) * _stat_per_head(_reciprocal_or_zero(alpha_sum))).flatten(-2)  # [B, H, W, nh * C_v]
-        y_out = y_out.to(dtype=inp_dtype)
-
-        # alpha_sum and qdotk_max are returned so setup_context can save them;
-        # they are marked non-differentiable there, so backward still only
-        # receives one gradient argument (dy for y_out).
-        return y_out, alpha_sum, qdotk_max
-
-    @staticmethod
-    @_custom_setup_context(device_type="cuda")
-    def setup_context(ctx, inputs, output):
-        (
-            kw,
-            vw,
-            qw,
-            psi_seg,
-            psi_seg_off,
-            ring_weights,
-            num_heads,
-            nlon_in,
-            nlon_out_global,
-            lon_chunk_starts,
-            nlon_kx_list,
-            lat_halo_start,
-            nlat_out_local,
-            nlon_out_local,
-            az_group,
-            az_rank,
-            az_size,
-        ) = inputs
-        y_out, alpha_sum, qdotk_max = output
-        # alpha_sum and qdotk_max are internal accumulators, not true outputs;
-        # marking them non-differentiable keeps backward's signature as (ctx, dy).
-        ctx.mark_non_differentiable(alpha_sum, qdotk_max)
-        ctx.save_for_backward(kw, vw, qw, psi_seg, psi_seg_off, ring_weights, alpha_sum, qdotk_max)
-        ctx.num_heads = num_heads
-        ctx.nlon_in = nlon_in
-        ctx.nlon_out_global = nlon_out_global
-        ctx.lon_chunk_starts = lon_chunk_starts
-        ctx.nlon_kx_list = nlon_kx_list
-        ctx.lat_halo_start = lat_halo_start
-        ctx.nlat_out_local = nlat_out_local
-        ctx.nlon_out_local = nlon_out_local
-        ctx.az_group = az_group
-        ctx.az_rank = az_rank
-        ctx.az_size = az_size
-
-    @staticmethod
-    @torch.amp.custom_bwd(device_type="cuda")
-    def backward(ctx, dy, _dalpha_sum, _dqdotk_max):
-        _refuse_double_backward()
-        # _dalpha_sum and _dqdotk_max are always None (non-differentiable outputs)
-        kw, vw, qw, psi_seg, psi_seg_off, ring_weights, fwd_alpha_sum, fwd_qdotk_max = ctx.saved_tensors
-
-        num_heads = ctx.num_heads
-        nlon_in = ctx.nlon_in
-        nlon_out_global = ctx.nlon_out_global
-        lon_chunk_starts = ctx.lon_chunk_starts
-        nlon_kx_list = ctx.nlon_kx_list
-        lat_halo_start = ctx.lat_halo_start
-        nlat_out_local = ctx.nlat_out_local
-        nlon_out_local = ctx.nlon_out_local
-        az_group = ctx.az_group
-        az_rank = ctx.az_rank
-        az_size = ctx.az_size
-
-        # Autograd contract: skip per-branch work (kernel calls, ring exchanges) for any
-        # of {kw, vw, qw} that doesn't need a gradient, and return None in those slots.
-        kw_needs_grad = ctx.needs_input_grad[0]
-        vw_needs_grad = ctx.needs_input_grad[1]
-        qw_needs_grad = ctx.needs_input_grad[2]
-
-        # Defensive: if somehow none of (kw, vw, qw) need grad, there's nothing to compute.
-        if not (kw_needs_grad or vw_needs_grad or qw_needs_grad):
-            return (None,) * 17
-
-        B, H_halo, _, C_k = kw.shape
-        C_v = vw.shape[-1]
-        device = kw.device
-
-        # Capture input dtypes so the returned grads can be cast back. The
-        # backward kernels consume kw/vw/qw/dy in their native dtype (widen at
-        # load, fp32 compute/accumulation), keeping the backward ring exchange
-        # at 16-bit under AMP.
-        kw_dtype = kw.dtype
-        vw_dtype = vw.dtype
-        qw_dtype = qw.dtype
-        dy = dy.contiguous()  # [B, H, W, nh * C_v], native dtype
-        qw = qw.contiguous()
-
-        # ----------------------------------------------------------------
-        # Backward pass 1: re-accumulate {integral, alpha_k, alpha_kvw} via
-        # ring, using the SAVED forward alpha_sum/qdotk_max (no max recompute
-        # is needed in the upsample direction — the forward-final softmax
-        # stats are authoritative). Required whenever any of (kw, vw, qw)
-        # needs grad: integral feeds pass-2's integral_norm and dqy reads
-        # alpha_k/alpha_kvw. The kernel writes all buffers in one call, so
-        # pass-1 cannot be pruned per-branch.
-        # ----------------------------------------------------------------
-        integral_buf = torch.zeros(B, num_heads, nlat_out_local, nlon_out_local, device=device, dtype=torch.float32)
-        alpha_k_buf = torch.zeros(B, nlat_out_local, nlon_out_local, C_k, device=device, dtype=torch.float32)
-        alpha_kvw_buf = torch.zeros_like(alpha_k_buf)
-
-        kw = kw.contiguous()
-        vw = vw.contiguous()
-        kw_chunk, vw_chunk = kw, vw
-
-        for step in range(az_size):
-            src_rank = (az_rank + step) % az_size
-            lon_lo_kx = lon_chunk_starts[src_rank]
-
-            if step < az_size - 1:
-                next_src = (az_rank + step + 1) % az_size
-                recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
-
-            attention_kernels.backward_ring_step_upsample_pass1.default(
-                kw_chunk,
-                vw_chunk,
-                qw,
-                dy,
-                fwd_qdotk_max,
-                integral_buf,
-                alpha_k_buf,
-                alpha_kvw_buf,
-                ring_weights,
-                psi_seg,
-                psi_seg_off,
-                num_heads,
-                nlon_in,
-                nlon_out_global,
-                lon_lo_kx,
-                lat_halo_start,
-                nlat_out_local,
-                nlon_out_local,
-            )
-
-            if step < az_size - 1:
-                for req in reqs:
-                    req.wait()
-                kw_chunk = recv_kw.clone()
-                vw_chunk = recv_vw.clone()
-
-        # ----------------------------------------------------------------
-        # Finalize pass-1 outputs.
-        # ----------------------------------------------------------------
-        alpha_sum_inv = _reciprocal_or_zero(fwd_alpha_sum)  # [B, nh, H, W]
-
-        # integral_norm only feeds pass-2; skip if neither kw nor vw needs grad.
-        if kw_needs_grad or vw_needs_grad:
-            integral_norm = integral_buf * alpha_sum_inv  # [B, nh, H, W]
-
-        # dqy[b,h,w,c] = inv_sq*(alpha_sum*alpha_kvw - integral*alpha_k), per head
-        if qw_needs_grad:
-            alpha_sum_inv_sq = alpha_sum_inv**2
-            dqy = _stat_per_head(alpha_sum_inv_sq) * (
-                _stat_per_head(fwd_alpha_sum) * _per_head(alpha_kvw_buf, num_heads) - _stat_per_head(integral_buf) * _per_head(alpha_k_buf, num_heads)
-            )
-            dqy = dqy.flatten(-2).to(dtype=qw_dtype)  # [B, H, W, nh * C_k]
-        else:
-            dqy = None
-
-        # ----------------------------------------------------------------
-        # Backward pass 2: accumulate dkw/dvw contributions per chunk.
-        # Each GPU computes its LOCAL outputs' contribution to every lon chunk it visits,
-        # and a ring reduce-scatter carries each chunk's accumulator back to its owner
-        # (see _ring_grad) -- chunk-sized throughout, so no allreduce and no slice.
-        # ----------------------------------------------------------------
-        if kw_needs_grad or vw_needs_grad:
-            # pass 1 rotated kw_chunk/vw_chunk; reset to the local chunk
-            kw_chunk, vw_chunk = kw, vw
-            # starts on this rank's own chunk (the one held at step 0), re-sized by each hop
-            my_nlon = nlon_kx_list[az_rank]
-            dkw_acc = torch.zeros(B, H_halo, my_nlon, C_k, device=device, dtype=torch.float32) if kw_needs_grad else None
-            dvw_acc = torch.zeros(B, H_halo, my_nlon, C_v, device=device, dtype=torch.float32) if vw_needs_grad else None
-
-            for step in range(az_size):
-                src_rank = (az_rank + step) % az_size
-                lon_lo_kx = lon_chunk_starts[src_rank]
-                nlon_kx = nlon_kx_list[src_rank]
-
-                # Unlike the gather direction, this kernel *assigns* its gradient outputs
-                # (`dkx[chan] = sh_dk[chan]` in attention_cuda_bwd_ring_upsample.cu) rather
-                # than accumulating with atomicAdd: in the scatter direction each input cell
-                # is written by exactly one row, so it can store instead of reduce. The
-                # accumulator therefore cannot be passed in directly -- each step would
-                # overwrite the previous ones -- so it keeps a zeroed per-step temp and adds.
-                dkw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_k, device=device, dtype=torch.float32)
-                dvw_chunk_cl = torch.zeros(B, H_halo, nlon_kx, C_v, device=device, dtype=torch.float32)
-
-                attention_kernels.backward_ring_step_upsample_pass2.default(
-                    kw_chunk,
-                    vw_chunk,
-                    qw,
-                    dy,
-                    fwd_alpha_sum,
-                    fwd_qdotk_max,
-                    integral_norm,
-                    dkw_chunk_cl,
-                    dvw_chunk_cl,
-                    ring_weights,
-                    psi_seg,
-                    psi_seg_off,
-                    num_heads,
-                    nlon_in,
-                    nlon_out_global,
-                    lon_lo_kx,
-                    lat_halo_start,
-                    nlat_out_local,
-                    nlon_out_local,
-                )
-
-                if kw_needs_grad:
-                    dkw_acc.add_(dkw_chunk_cl)
-                if vw_needs_grad:
-                    dvw_acc.add_(dvw_chunk_cl)
-
-                if step < az_size - 1:
-                    next_src = (az_rank + step + 1) % az_size
-                    recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, nlon_kx_list[next_src], nlon_kx_list[next_src])
-                    # accumulators follow the chunks they belong to: same direction, same width
-                    recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, nlon_kx_list[next_src])
-                    for req in reqs:
-                        req.wait()
-                    for req in grad_reqs:
-                        req.wait()
-                    kw_chunk = recv_kw.clone()
-                    vw_chunk = recv_vw.clone()
-                    # Cloned for the same reason as kw/vw, and with more at stake: the next
-                    # step's add_ writes *into* the accumulator, so keeping the irecv
-                    # destination would mutate a buffer the collective owns.
-                    # The clone is chunk-sized, so it does not give back the saving above.
-                    dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
-                    dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
-
-            # Final hop home: after the loop a rank carries the accumulator for chunk
-            # az_rank - 1, which is exactly send_to.
-            if az_size > 1:
-                recv_dkw, recv_dvw, grad_reqs = _ring_grad(dkw_acc, dvw_acc, az_group, my_nlon)
-                for req in grad_reqs:
-                    req.wait()
-                # Cloned for the same reason as in the loop: .to() below is a no-op for
-                # fp32, so without it the returned gradient would alias the irecv
-                # destination.
-                dkw_acc = recv_dkw.clone() if recv_dkw is not None else None
-                dvw_acc = recv_dvw.clone() if recv_dvw is not None else None
-
-            # The accumulator IS the local chunk now, already in the layout of kw/vw.
-            # No halo stripping: dkw/dvw must match kw/vw shape (= key_halo/value_halo).
-            dkw = dkw_acc.to(dtype=kw_dtype) if kw_needs_grad else None  # [B, H_halo, W_local, nh * C_k]
-            dvw = dvw_acc.to(dtype=vw_dtype) if vw_needs_grad else None  # [B, H_halo, W_local, nh * C_v]
-        else:
-            dkw = None
-            dvw = None
-
-        # Return grads for (kw, vw, qw, psi_seg, psi_seg_off, ring_weights,
-        #                   num_heads, nlon_in, nlon_out_global, lon_chunk_starts,
-        #                   nlon_kx_list, lat_halo_start, nlat_out_local, nlon_out_local,
-        #                   az_group, az_rank, az_size)
-        return (dkw, dvw, dqy) + (None,) * 14
+        # gradients for (kw, vw, qw), and None for psi_seg, psi_seg_off, ring_weights and
+        # every non-tensor argument
+        return (dkw, dvw, dqy) + (None,) * (nargs - 3)
 
 
 # ---------------------------------------------------------------------------
@@ -877,7 +422,7 @@ class _RingNeighborhoodAttentionUpsampleFn(torch.autograd.Function):
 
 def _cast_and_halo(layer: "DistributedNeighborhoodAttentionS2", key: torch.Tensor, value: torch.Tensor, query_scaled: torch.Tensor):
     """
-    What both ring backends do before the ring: the autocast cast, then the latitude halo.
+    What every backend here does first: the autocast cast, then the latitude halo.
 
     Under autocast, k/v/q are cast to the autocast dtype before ``.apply()`` -- mirrors
     PyTorch's autocast-eligible-op dataflow. Upstream projections under autocast already
@@ -920,12 +465,12 @@ def _require_halo_covers(layer: "DistributedNeighborhoodAttentionS2", hi_global:
         )
 
 
-# the device types the ring kernels exist for: CUDA, in a CUDA build, and nothing else
-_RING_GATHER_DEVICES = _kernel_device_types("attention_kernels::forward_ring_step")
-_RING_UPSAMPLE_DEVICES = _kernel_device_types("attention_kernels::forward_ring_step_upsample")
+# the device types the ring kernels exist for: CUDA, in a CUDA build, and nothing else.
+# Both directions are built together, so this is the same set for either.
+_RING_DEVICES = _kernel_device_types("attention_kernels::forward_ring_step") & _kernel_device_types("attention_kernels::forward_ring_step_upsample")
 
 
-def _check_ring_inputs(devices: frozenset, key: torch.Tensor) -> None:
+def _check_ring_inputs(key: torch.Tensor) -> None:
     """
     Refuse, with a message that says why, what the ring kernels cannot do, instead of
     leaving the op dispatcher to report a missing kernel or the kernels to round float64
@@ -946,60 +491,129 @@ def _check_ring_inputs(devices: frozenset, key: torch.Tensor) -> None:
     )
     device_type = key.device.type
     check(
-        device_type in devices,
+        device_type in _RING_DEVICES,
         lambda: (
             f"DistributedNeighborhoodAttentionS2 has no {device_type} implementation: the ring kernels run on CUDA only, "
-            f"and this build has them for {', '.join(sorted(devices)) or 'no device'}. Move the layer and its inputs to a CUDA device."
+            f"and this build has them for {', '.join(sorted(_RING_DEVICES)) or 'no device'}. Move the layer and its inputs to a CUDA device."
         ),
     )
 
 
-class RingGatherBackend(AttentionBackendS2):
+def _gather_arcs(layer: "DistributedNeighborhoodAttentionS2"):
     """
-    The ring kernels in the gather direction: self-attention and downsampling.
+    This rank's arcs in the gather direction: its output latitudes' rows of the serial arcs.
 
-    State is this rank's output rows of the serial arcs. The arcs are folded -- one row
-    per output latitude, the other longitudes of the ring reached by the p-shift -- so
-    those rows are a contiguous slice, and nothing global is ever expanded. The arc
-    starts are canonical at global wo = 0 and the kernels shift them by pscale * wo with
-    the LOCAL wo, so the missing pscale * lon_lo_out is added here, once:
+    The arcs are folded -- one row per output latitude, the other longitudes of the ring
+    reached by the p-shift -- so those rows are a contiguous slice, and nothing global is
+    ever expanded. The arc starts are canonical at global wo = 0 and the kernels shift them
+    by pscale * wo with the LOCAL wo, so the missing pscale * lon_lo_out is added here, once:
 
         (lo + pscale * (lon_lo_out + wo_local)) % nlon_in
             == ((lo + pscale * lon_lo_out) % nlon_in + pscale * wo_local) % nlon_in
 
     pscale = 1 when nlon_in == nlon_out (same-shape case).
     """
+    lat_lo = layer.lat_lo_out
+    lat_hi = lat_lo + layer.nlat_out_local
 
-    name = "ring-gather"
+    arcs = layer._neighborhood_arcs()
+    start = int(arcs.offsets[lat_lo])
+    end = int(arcs.offsets[lat_hi])
+
+    seg = arcs.segments[start:end].clone()
+    seg_off = arcs.offsets[lat_lo : lat_hi + 1] - arcs.offsets[lat_lo]
+
+    # the arcs' input latitudes are global; each must be inside the chunk
+    _require_halo_covers(layer, seg[:, 0].to(torch.int64))
+
+    pscale = layer.nlon_in // layer.nlon_out
+    seg[:, 1] = (seg[:, 1] + pscale * layer.lon_lo_out) % layer.nlon_in
+
+    return seg, seg_off
+
+
+def _scatter_arcs(layer: "DistributedNeighborhoodAttentionS2"):
+    """
+    This rank's arcs in the scatter direction (upsampling).
+
+    The serial arcs have rows keyed by the input lat hi in [0, nlat_in) and arcs
+    (ho, lo, len) on the fine output grid, with lo canonical at wi = 0. This rank's
+    arcs
+
+      * re-key the rows to the halo-padded LOCAL input lat range
+        [lat_halo_start, lat_halo_start + nlat_halo); pole-padding rows
+        (hi outside the global grid) are empty,
+      * keep only arcs whose output row ho falls into the local output shard
+        and re-key ho to ho_local = ho - lat_lo_out,
+      * pre-shift lo by -lon_lo_out (mod nlon_out), so the kernel's serial shift
+        (lo + pscale_out * wi_global) mod nlon_out lands relative to this rank's
+        first output longitude, and clipping to [0, nlon_out_local) keeps the
+        part it owns.
+    """
+    nlon_out = layer.nlon_out
+    lat_lo_out = layer.lat_lo_out
+    lat_hi_out = lat_lo_out + layer.nlat_out_local
+    lon_lo_out = layer.lon_lo_out
+
+    nlat_halo = layer.nlat_in_local + 2 * layer.r_lat
+
+    arcs = layer._neighborhood_arcs()
+    segments = arcs.segments
+    offsets = arcs.offsets.to(torch.int64)
+
+    # input-lat row index of every arc
+    hi_of_seg = torch.repeat_interleave(torch.arange(layer.nlat_in, dtype=torch.int64), offsets.diff())
+    ho = segments[:, 0].to(torch.int64)
+
+    # every arc feeding a local output row must come from an input row in the chunk;
+    # the in-range test below then only discards arcs of other ranks' output rows
+    local_out = (ho >= lat_lo_out) & (ho < lat_hi_out)
+    _require_halo_covers(layer, hi_of_seg[local_out])
+
+    # keep arcs whose input row lies in the halo-padded local range and whose
+    # output row is owned by this polar rank
+    hi_local = hi_of_seg - layer.lat_halo_start
+    mask = local_out & (hi_local >= 0) & (hi_local < nlat_halo)
+
+    seg = segments[mask].clone()
+    seg[:, 0] -= lat_lo_out
+    seg[:, 1] = (seg[:, 1] - lon_lo_out) % nlon_out
+
+    # rebuild the row offsets over the halo-padded local rows; masked selection
+    # preserves the row-major order, so seg is already consistent with seg_off
+    counts = torch.bincount(hi_local[mask], minlength=nlat_halo)
+    seg_off = torch.zeros(nlat_halo + 1, dtype=arcs.offsets.dtype)
+    seg_off[1:] = torch.cumsum(counts, dim=0)
+
+    return seg, seg_off
+
+
+class RingBackend(AttentionBackendS2):
+    """
+    The ring kernels, on a pair of regular grids, in either direction.
+
+    K/V rotate around the azimuth ring while Q and the softmax state stay local. The
+    direction only decides the kernels and how this rank's arcs are cut from the serial
+    ones: by output latitude when gathering (self-attention and downsampling, see
+    :func:`_gather_arcs`), by halo-padded input latitude when scattering (upsampling, see
+    :func:`_scatter_arcs`). The state is the same three buffers either way.
+    """
+
+    name = "ring"
 
     # No device test: the ring ops exist only for CUDA, but a layer built on CPU is
     # normally moved there before it runs, so construction must not refuse. There is no
     # reference to fall back to either; __call__ refuses a device without the kernels.
     @classmethod
     def available(cls, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> bool:
-        return not layer.ragged and not layer.upsample
+        return not layer.ragged
 
     def prepare(self, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
-        lat_lo = layer.lat_lo_out
-        lat_hi = lat_lo + layer.nlat_out_local
-
-        arcs = layer._neighborhood_arcs()
-        start = int(arcs.offsets[lat_lo])
-        end = int(arcs.offsets[lat_hi])
-
-        seg = arcs.segments[start:end].clone()
-        seg_off = arcs.offsets[lat_lo : lat_hi + 1] - arcs.offsets[lat_lo]
-
-        # the arcs' input latitudes are global; each must be inside the chunk
-        _require_halo_covers(layer, seg[:, 0].to(torch.int64))
-
-        pscale = layer.nlon_in // layer.nlon_out
-        seg[:, 1] = (seg[:, 1] + pscale * layer.lon_lo_out) % layer.nlon_in
-
+        seg, seg_off = _scatter_arcs(layer) if layer.upsample else _gather_arcs(layer)
         return {"ring_weights": _ring_weights(layer, device), "psi_seg": seg.contiguous().to(device), "psi_seg_off": seg_off.contiguous().to(device)}
 
     def __call__(self, layer, key, value, query_scaled):
-        _check_ring_inputs(_RING_GATHER_DEVICES, key)
+        _check_ring_inputs(key)
         key, value, query_scaled = _cast_and_halo(layer, key, value, query_scaled)
 
         out, _, _ = _RingNeighborhoodAttentionFn.apply(
@@ -1009,98 +623,7 @@ class RingGatherBackend(AttentionBackendS2):
             layer.psi_seg,
             layer.psi_seg_off,
             layer.ring_weights,
-            layer.num_heads,
-            layer.nlon_in,
-            layer.nlon_out,
-            layer.lon_in_starts,  # lon chunk starts for kv (same as lon_in)
-            layer.lon_in_shapes,  # lon chunk sizes for kv
-            layer.lat_halo_start,
-            layer.nlat_out_local,
-            layer.nlon_out_local,
-            azimuth_group(),
-            layer.comm_rank_azimuth,
-            layer.comm_size_azimuth,
-        )
-
-        # [B, H_out_local, W_out_local, nh * C_v]
-        return out
-
-
-class RingUpsampleBackend(AttentionBackendS2):
-    """
-    The ring kernels in the scatter direction: upsampling.
-
-    The serial arcs have rows keyed by the input lat hi in [0, nlat_in) and arcs
-    (ho, lo, len) on the fine output grid, with lo canonical at wi = 0. This rank's
-    state
-
-      * re-keys the rows to the halo-padded LOCAL input lat range
-        [lat_halo_start, lat_halo_start + nlat_halo); pole-padding rows
-        (hi outside the global grid) are empty,
-      * keeps only arcs whose output row ho falls into the local output shard
-        and re-keys ho to ho_local = ho - lat_lo_out,
-      * pre-shifts lo by -lon_lo_out (mod nlon_out), so the kernel's serial shift
-        (lo + pscale_out * wi_global) mod nlon_out lands relative to this rank's
-        first output longitude, and clipping to [0, nlon_out_local) keeps the
-        part it owns.
-    """
-
-    name = "ring-upsample"
-
-    # no device test; see RingGatherBackend
-    @classmethod
-    def available(cls, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> bool:
-        return not layer.ragged and layer.upsample
-
-    def prepare(self, layer: "DistributedNeighborhoodAttentionS2", device: torch.device) -> Dict[str, torch.Tensor]:
-        nlon_out = layer.nlon_out
-        lat_lo_out = layer.lat_lo_out
-        lat_hi_out = lat_lo_out + layer.nlat_out_local
-        lon_lo_out = layer.lon_lo_out
-
-        nlat_halo = layer.nlat_in_local + 2 * layer.r_lat
-
-        arcs = layer._neighborhood_arcs()
-        segments = arcs.segments
-        offsets = arcs.offsets.to(torch.int64)
-
-        # input-lat row index of every arc
-        hi_of_seg = torch.repeat_interleave(torch.arange(layer.nlat_in, dtype=torch.int64), offsets.diff())
-        ho = segments[:, 0].to(torch.int64)
-
-        # every arc feeding a local output row must come from an input row in the chunk;
-        # the in-range test below then only discards arcs of other ranks' output rows
-        local_out = (ho >= lat_lo_out) & (ho < lat_hi_out)
-        _require_halo_covers(layer, hi_of_seg[local_out])
-
-        # keep arcs whose input row lies in the halo-padded local range and whose
-        # output row is owned by this polar rank
-        hi_local = hi_of_seg - layer.lat_halo_start
-        mask = local_out & (hi_local >= 0) & (hi_local < nlat_halo)
-
-        seg = segments[mask].clone()
-        seg[:, 0] -= lat_lo_out
-        seg[:, 1] = (seg[:, 1] - lon_lo_out) % nlon_out
-
-        # rebuild the row offsets over the halo-padded local rows; masked selection
-        # preserves the row-major order, so seg is already consistent with seg_off
-        counts = torch.bincount(hi_local[mask], minlength=nlat_halo)
-        seg_off = torch.zeros(nlat_halo + 1, dtype=arcs.offsets.dtype)
-        seg_off[1:] = torch.cumsum(counts, dim=0)
-
-        return {"ring_weights": _ring_weights(layer, device), "psi_seg": seg.contiguous().to(device), "psi_seg_off": seg_off.contiguous().to(device)}
-
-    def __call__(self, layer, key, value, query_scaled):
-        _check_ring_inputs(_RING_UPSAMPLE_DEVICES, key)
-        key, value, query_scaled = _cast_and_halo(layer, key, value, query_scaled)
-
-        out, _, _ = _RingNeighborhoodAttentionUpsampleFn.apply(
-            key,
-            value,
-            query_scaled,
-            layer.psi_seg,
-            layer.psi_seg_off,
-            layer.ring_weights,
+            layer.upsample,
             layer.num_heads,
             layer.nlon_in,
             layer.nlon_out,
@@ -1191,7 +714,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
             Serial counterpart with full parameter documentation.
     """
 
-    _backends = (RaggedHaloOptimizedBackend, RaggedHaloReferenceBackend, RingGatherBackend, RingUpsampleBackend)
+    _backends = (RaggedHaloOptimizedBackend, RaggedHaloReferenceBackend, RingBackend)
 
     @_rejects_legacy_signature(
         'in_channels, in_shape, out_shape, grid_in="equiangular", grid_out="equiangular", num_heads=1, scale=None, '
@@ -1213,7 +736,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         out_channels: Optional[int] = None,
         optimized_kernel: Optional[bool] = True,
     ):
-        # On a pair of regular grids the ring backends re-shift arc starts by pscale * lon_lo,
+        # On a pair of regular grids the ring backend re-shifts arc starts by pscale * lon_lo,
         # and the ring kernels shift them by pscale * wo, which is the p-shift of a regular
         # grid. A ragged grid on either side takes the serial ragged path instead, as the
         # serial layer does, and that has a reference, so only the regular pair needs the
@@ -1407,7 +930,7 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         Rows are cut to the local output points, which are contiguous in flat order, and
         the ring tables to the band's rings, rebased so that the band's first point is 0.
         That is all the serial ragged backends need to treat the band as their whole input.
-        Only the ragged backends ask for it; the ring backends cut the global arcs themselves.
+        Only the ragged backends ask for it; the ring backend cuts the global arcs themselves.
         """
         arcs = self._neighborhood_arcs()
         p0, p1 = self.point_lo_out, self.point_lo_out + self.npoints_out_local

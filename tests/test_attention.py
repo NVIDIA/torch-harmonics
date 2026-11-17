@@ -1123,7 +1123,7 @@ class TestNeighborhoodAttentionRegularS2(unittest.TestCase):
         Only the local CUDA kernels are exercised — the ring exchange itself (NCCL P2P) is not
         tested here. With az_size = polar_size = 1 a single ring step covers the full longitude
         and the serial scatter psi coincides with the local psi built by
-        RingUpsampleBackend.prepare (lat_lo_out = lon_lo_out = 0, no halo padding), so we can call
+        the ring backend's _scatter_arcs (lat_lo_out = lon_lo_out = 0, no halo padding), so we can call
         the kernels in single-rank mode (lon_lo_kx=0, lat_halo_start=0).
 
         opcheck only verifies the op contract (schema, fake tensors, AOT dispatch); the input
