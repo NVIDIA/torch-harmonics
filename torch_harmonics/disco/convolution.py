@@ -653,6 +653,19 @@ def _setup_grids(layer: "DiscreteContinuousConv", grid_in: GridS2, grid_out: Gri
     layer.npoints_in = layer.grid_in.npoints
     layer.npoints_out = layer.grid_out.npoints
 
+    # the block of the problem this layer computes, which the ragged backends read: the
+    # whole of it here; a distributed layer narrows it to its rank's band, see
+    # DistributedDiscreteContinuousConvS2. _field_* are what the fields are laid out as.
+    layer._field_in, layer._field_out = layer.grid_in, layer.grid_out
+    layer.npoints_out_local = layer.npoints_out
+
+    # the block of psi the layer computes, which _psi_coo cuts psi to: all of it here. A
+    # row is a latitude of _psi_row_grid, or a point on a ragged layer; a column is a flat
+    # index into _psi_col_grid, either way.
+    layer._psi_rows = (0, layer._psi_row_grid.npoints if layer.ragged else layer._psi_row_grid.nlat)
+    layer._psi_cols = (0, layer._psi_col_grid.npoints)
+    layer._psi_col_ring_range = (0, layer._psi_col_grid.nrings)
+
     # nlat/nlon exist only on a regular grid; keep them where they are defined so that a
     # consumer reaching for them on a ragged side fails rather than silently taking the
     # widest ring for a stride
@@ -678,8 +691,8 @@ def _to_flat(layer: "DiscreteContinuousConv", x: torch.Tensor) -> torch.Tensor:
 def _from_flat(layer: "DiscreteContinuousConv", x: torch.Tensor) -> torch.Tensor:
     """Inverse of :func:`_to_flat`, on the output grid."""
     if layer.ragged and not layer.ragged_out:
-        # restore the two spatial axes of a regular output grid
-        x = x.unflatten(-1, (layer.nlat_out, layer.nlon_out))
+        # restore the two spatial axes of a regular output grid, or of its shard
+        x = x.unflatten(-1, tuple(layer._field_out.shape))
     return x
 
 
@@ -721,8 +734,7 @@ class DiscreteContinuousConv(BackendSelectionMixin, nn.Module, metaclass=abc.ABC
     #: whether psi is applied in the scatter direction
     transpose = False
 
-    #: whether psi is keyed per point rather than per latitude, see DiscreteContinuousConvS2;
-    #: only the serial layers can be, the distributed ones shard regular grids
+    #: whether psi is keyed per point rather than per latitude, see DiscreteContinuousConvS2
     ragged = False
 
     #: whether the layer contracts through the fused node with the spatial-first input
@@ -817,24 +829,78 @@ class DiscreteContinuousConv(BackendSelectionMixin, nn.Module, metaclass=abc.ABC
             self._shard_key(),
         )
 
-    @abc.abstractmethod
+    @property
+    def _psi_row_grid(self) -> GridS2:
+        """The grid psi is keyed by: the output grid of the forward, the input grid of the transpose."""
+        return self.grid_in if self.transpose else self.grid_out
+
+    @property
+    def _psi_col_grid(self) -> GridS2:
+        """The grid psi's columns index: the input grid of the forward, the output grid of the transpose."""
+        return self.grid_out if self.transpose else self.grid_in
+
+    def _global_psi(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        The whole psi, ``(idx, vals)`` with ``idx`` holding ``(ker, row, column)``.
+
+        The transpose's is the forward convolution's from grid_out to grid_in, normalized in
+        the transpose direction. It is held on the layer, see :func:`~torch_harmonics.cache.shared_table`.
+        """
+        precompute = _precompute_convolution_tensor_s2_ragged if self.ragged else _precompute_convolution_tensor_s2
+        self._held_tables = precompute(
+            self._psi_col_grid,
+            self._psi_row_grid,
+            self.filter_basis,
+            theta_cutoff=self.theta_cutoff,
+            transpose_normalization=self.transpose,
+            basis_norm_mode=self.basis_norm_mode,
+            merge_quadrature=True,
+        )
+        return self._held_tables[:2]
+
     def _psi_coo(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        The psi entries ``(ker_idx, row_idx, col_idx, vals)``.
+        The psi entries ``(ker_idx, row_idx, col_idx, vals)`` of the layer's block.
 
-        They may be views of the shared psi (see
-        :func:`~torch_harmonics.cache.shared_table`): read them, never write to them.
+        The block is the global row range ``_psi_rows`` and column range ``_psi_cols``; the
+        entries are rebased so that both start at 0. On a serial layer it is all of psi; a
+        distributed layer narrows it to its rank's share. Normalization is unaffected: it is
+        applied to the whole psi, and wherever a layer keeps a row, its column range holds
+        every column of that row. A column range may start below 0, as the zero-padded
+        regular halo does at the north pole, which only shifts the indices.
 
-        A row is a latitude of the grid psi is keyed by and a column a flat index
-        ``ring * _psi_nlon + lon`` into the other grid. On a ragged layer a row is a point
-        of the grid psi is keyed by and a column a flat index into ``_psi_col_grid``.
+        A row is a latitude of ``_psi_row_grid`` and a column a flat index
+        ``ring * _psi_nlon + lon`` into ``_psi_col_grid``; on a ragged layer a row is a point
+        of ``_psi_row_grid`` and a column a flat index into ``_psi_col_grid``.
         """
-        raise NotImplementedError
+        idx, vals = self._global_psi()
+        (r0, r1), (c0, c1) = self._psi_rows, self._psi_cols
+        keep = (idx[1] >= r0) & (idx[1] < r1) & (idx[2] >= c0) & (idx[2] < c1)
+        idx, vals = idx[:, keep], vals[keep]
+        return idx[0].contiguous(), (idx[1] - r0).contiguous(), (idx[2] - c0).contiguous(), vals.contiguous()
 
-    @abc.abstractmethod
+    def _psi_col_rings(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        ``(ring_base, ring_size)`` of the rings psi's columns cover, for the ragged backends.
+
+        The rings ``_psi_col_ring_range`` of ``_psi_col_grid``, rebased so that the first
+        starts at 0: all of them on a serial layer, the rank's band on a distributed one.
+        """
+        offsets = self._psi_col_grid.lon_offsets.to(torch.int64)
+        lo, hi = self._psi_col_ring_range
+        return (offsets[lo:hi] - offsets[lo]).contiguous(), self._psi_col_grid.nlon_per_lat[lo:hi].to(torch.int64).contiguous()
+
     def _reference_psi(self, ker_idx, row_idx, col_idx, vals) -> torch.Tensor:
-        """The sparse psi the torch reference contracts with."""
-        raise NotImplementedError
+        """The sparse psi the torch reference contracts with, over the layer's block."""
+        (r0, r1), (c0, c1) = self._psi_rows, self._psi_cols
+        idx = torch.stack([ker_idx, row_idx, col_idx], dim=0)
+        if self.ragged:
+            psi = _get_psi_ragged(self.kernel_size, idx, vals, r1 - r0, c1 - c0, transposed=self.transpose)
+        elif self.transpose:
+            psi = _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, r1 - r0, (c1 - c0) // self.nlon_out, semi_transposed=True)
+        else:
+            psi = _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, (c1 - c0) // self.nlon_in, r1 - r0)
+        return psi
 
     def _weight_r(self) -> torch.Tensor:
         """The weight as ``(groups, out_per_group, groupsize, kernel_size)``."""
@@ -950,7 +1016,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
         self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
 
         # psi is keyed by output latitude -- output point if ragged -- and its columns index the input grid
-        self._psi_col_grid = self.grid_in
         if not self.ragged:
             self._psi_nlon = self.nlon_in
             self._contract_shape = (self.nlat_out, self.nlon_out)
@@ -961,26 +1026,6 @@ class DiscreteContinuousConvS2(DiscreteContinuousConv):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
-
-    def _psi_coo(self):
-        precompute = _precompute_convolution_tensor_s2_ragged if self.ragged else _precompute_convolution_tensor_s2
-        self._held_tables = precompute(
-            self.grid_in,
-            self.grid_out,
-            self.filter_basis,
-            theta_cutoff=self.theta_cutoff,
-            transpose_normalization=False,
-            basis_norm_mode=self.basis_norm_mode,
-            merge_quadrature=True,
-        )
-        idx, vals = self._held_tables[:2]
-        return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
-
-    def _reference_psi(self, ker_idx, row_idx, col_idx, vals):
-        idx = torch.stack([ker_idx, row_idx, col_idx], dim=0)
-        if self.ragged:
-            return _get_psi_ragged(self.kernel_size, idx, vals, self.npoints_out, self.npoints_in)
-        return _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -1108,7 +1153,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         # psi is that of the forward convolution from grid_out to grid_in, so it is keyed
         # by *input* latitude -- input point if ragged -- and its columns index the output
         # grid it scatters onto
-        self._psi_col_grid = self.grid_out
         if not self.ragged:
             self._psi_nlon = self.nlon_out
             self._contract_shape = (self.nlat_out, self.nlon_out)
@@ -1118,27 +1162,6 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     def extra_repr(self):
         radial = "" if self.radial is None else f",\nradial={self.radial!r}"
         return f"grid_in={self.grid_in!r},\ngrid_out={self.grid_out!r}{radial},\nin_channels={self.groupsize * self.groups}, out_channels={self.weight.shape[0]}, filter_basis={self.filter_basis}, kernel_shape={self.kernel_shape}, theta_cutoff={self.theta_cutoff}, groups={self.groups}"
-
-    def _psi_coo(self):
-        # switch in_shape and out_shape since we want the transpose convolution
-        precompute = _precompute_convolution_tensor_s2_ragged if self.ragged else _precompute_convolution_tensor_s2
-        self._held_tables = precompute(
-            self.grid_out,
-            self.grid_in,
-            self.filter_basis,
-            theta_cutoff=self.theta_cutoff,
-            transpose_normalization=True,
-            basis_norm_mode=self.basis_norm_mode,
-            merge_quadrature=True,
-        )
-        idx, vals = self._held_tables[:2]
-        return idx[0].contiguous(), idx[1].contiguous(), idx[2].contiguous(), vals.contiguous()
-
-    def _reference_psi(self, ker_idx, row_idx, col_idx, vals):
-        idx = torch.stack([ker_idx, row_idx, col_idx], dim=0)
-        if self.ragged:
-            return _get_psi_ragged(self.kernel_size, idx, vals, self.npoints_in, self.npoints_out, transposed=True)
-        return _get_psi(self.kernel_size, idx, vals, self.nlat_in, self.nlon_in, self.nlat_out, self.nlon_out, semi_transposed=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

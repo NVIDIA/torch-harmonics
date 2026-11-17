@@ -210,9 +210,8 @@ x_local = torch.split(x_global, pixel_shapes, dim=-1)[polar_rank]
 
 The distributed SHTs (`DistributedRealSHT`, `DistributedInverseRealSHT` and
 their vector variants), `DistributedSpectralConvS2`, `DistributedResampleS2`,
-`DistributedNeighborhoodAttentionS2` and `DistributedQuadratureS2` accept
-HEALPix; the distributed DISCO convolutions still require a latitude-longitude
-grid. The spectral layout of the SHTs is the same as on a latitude-longitude grid
+`DistributedNeighborhoodAttentionS2`, the distributed DISCO convolutions and
+`DistributedQuadratureS2` accept HEALPix. The spectral layout of the SHTs is the same as on a latitude-longitude grid
 with one azimuth rank: degrees `l` split across the polar ranks, all orders `m`
 local. So `DistributedSpectralConvS2` can map between HEALPix and a
 latitude-longitude grid as well as within either, and its weights are split
@@ -238,6 +237,21 @@ reference with `optimized_kernel=False` or in float64, which the regular grids'
 ring kernels do not offer. The reach of the neighbourhood has to stay within the
 immediate neighbours' bands, which bounds the number of polar ranks for a given
 `theta_cutoff`; too many raise a `ValueError` at construction.
+
+`DistributedDiscreteContinuousConvS2` and
+`DistributedDiscreteContinuousConvTransposeS2` with a HEALPix side work the same
+way: each rank keeps the block of the serial psi it computes, and the serial
+ragged backends run on it. With `polar_mode="halo-exchange"` (the default) the
+convolution keeps the psi rows of its own output points and borrows the whole
+input rings they reach, so the per-basis-function intermediate shrinks with the
+polar group; with `polar_mode="reduce-scatter"` it keeps the columns of its own
+input points over every output point, and a reduce-scatter completes the sums,
+which serves any cutoff. The transpose convolution keeps the columns of its own
+output points and borrows the input rings that scatter onto them, a halo rather
+than the all-gather of the regular grids, exchanged before the weight
+contraction so that it moves `in_channels` rather than `out_channels * K` values
+per pixel. As for attention, a band reaching past the neighbouring ranks raises
+a `ValueError`; for the forward convolution it names `"reduce-scatter"`.
 
 ## 5. Calling distributed modules
 

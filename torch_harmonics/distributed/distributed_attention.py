@@ -47,8 +47,8 @@ from torch_harmonics.quadrature import effective_theta_cutoff
 from torch_harmonics.radial import split_radial
 from torch_harmonics.utils import check
 
-from .primitives import PolarHaloPlan, compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
-from .utils import _point_shapes, _ring_shapes, azimuth_group, azimuth_group_rank, azimuth_group_size, polar_group_rank, polar_group_size
+from .primitives import PolarHaloPlan, _plan_ring_band_halo, compute_polar_halo_radius, get_group_neighbors, polar_halo_exchange
+from .utils import _point_shapes, _shard_grid_pair, azimuth_group
 
 # ---------------------------------------------------------------------------
 # autograd.Function for the ring-step attention kernel calls
@@ -1250,24 +1250,10 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
     def _setup(self) -> None:
         """Split the grids across the polar group, and the azimuth group on a pair of regular grids, and plan the halo."""
 
-        # ---- distributed info ----
-        self.comm_size_polar = polar_group_size()
-        self.comm_rank_polar = polar_group_rank()
-        self.comm_size_azimuth = azimuth_group_size()
-        self.comm_rank_azimuth = azimuth_group_rank()
-
-        # each grid decomposes itself, and the fields are checked and shaped against the
-        # shards. The ring and the halo exchange need every rank's extent, not just this
-        # one's, which is what the shape lists carry. A HEALPix shard refuses an azimuth
-        # split, which is how a ragged layer refuses one.
-        self.shard_in = self.grid_in.shard(
-            polar=(self.comm_rank_polar, self.comm_size_polar),
-            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
-        )
-        self.shard_out = self.grid_out.shard(
-            polar=(self.comm_rank_polar, self.comm_size_polar),
-            azimuth=(self.comm_rank_azimuth, self.comm_size_azimuth),
-        )
+        # the fields are checked and shaped against the shards. The ring and the halo
+        # exchange need every rank's extent, not just this one's, which is what the shards'
+        # shape lists carry.
+        _shard_grid_pair(self)
         self._field_in, self._field_out = self.shard_in, self.shard_out
 
         if self.ragged:
@@ -1355,50 +1341,34 @@ class DistributedNeighborhoodAttentionS2(NeighborhoodAttentionS2):
         Plan the halo of a ragged pair from the input rings each polar band reads.
 
         No radius is derived here, unlike on the regular path: the arcs already say which
-        input rings every output point reaches. Each rank's band is its own rings widened to
-        those, in whole rings, because an arc addresses its ring through the ring tables and
-        wraps at the ring's end, and the bands are cut on ring boundaries anyway. Every rank
-        computes every rank's band from the same global arcs, which is what
-        PolarHaloPlan.from_needs needs to agree on the messages; the band in flat points is
-        the halo-padded K/V block the plan produces.
+        input rings every output point reaches, and _plan_ring_band_halo widens each rank's
+        own rings to those. The band in flat points is the halo-padded K/V block.
         """
-        # flat points every polar rank holds, on either side, and the input rings
-        in_shapes = _point_shapes(self.shard_in)
         out_shapes = _point_shapes(self.shard_out)
         out_starts = list(accumulate([0] + out_shapes))
-        ring_starts = list(accumulate([0] + _ring_shapes(self.shard_in)))
 
         arcs = self._neighborhood_arcs()
         offsets = arcs.offsets.to(torch.int64)
         seg_ring = arcs.segments[:, 0].to(torch.int64)
-        # where every input ring starts in flat order, and where the last one ends
-        ring_bounds = arcs.ring_base.tolist() + [int(arcs.ring_base[-1] + arcs.ring_size[-1])]
 
-        # every rank's band of input rings: its own, widened to the rings its output points reach
-        ring_bands = []
+        # the input rings every rank's output points reach
+        reach = []
         for r in range(self.comm_size_polar):
-            lo, hi = ring_starts[r], ring_starts[r + 1]
             s0, s1 = int(offsets[out_starts[r]]), int(offsets[out_starts[r + 1]])
-            if s1 > s0:
-                rings = seg_ring[s0:s1]
-                lo, hi = min(lo, int(rings.min())), max(hi, int(rings.max()) + 1)
-            ring_bands.append((lo, hi))
-        needs = [(ring_bounds[lo], ring_bounds[hi]) for lo, hi in ring_bands]
+            rings = seg_ring[s0:s1]
+            reach.append((int(rings.min()), int(rings.max()) + 1) if s1 > s0 else None)
 
         try:
-            self.halo = PolarHaloPlan.from_needs(in_shapes, needs, self.comm_rank_polar)
+            self.halo, self.ring_range_in, self.point_range_in = _plan_ring_band_halo(self.shard_in, reach, self.comm_rank_polar)
         except ValueError as err:
             raise ValueError(f"DistributedNeighborhoodAttentionS2: theta_cutoff={self.theta_cutoff} is too wide for this polar decomposition. {err}") from err
 
-        rank = self.comm_rank_polar
-        self.npoints_in_local = in_shapes[rank]
-        self.npoints_out_local = out_shapes[rank]
-        self.point_lo_out = out_starts[rank]
-
         # the block of the input the serial backends index, see NeighborhoodAttentionS2: the
         # halo-padded K/V block, which is exactly this rank's band
-        self.ring_range_in = ring_bands[rank]
-        self.point_range_in = needs[rank]
+        rank = self.comm_rank_polar
+        self.npoints_in_local = _point_shapes(self.shard_in)[rank]
+        self.npoints_out_local = out_shapes[rank]
+        self.point_lo_out = out_starts[rank]
 
     def _local_arcs(self) -> NeighborhoodArcsS2:
         """

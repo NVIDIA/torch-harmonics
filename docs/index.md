@@ -71,7 +71,7 @@ latitude-longitude grids there is HEALPix, which the attention layers, the DISCO
 convolutions and resampling accept on either side, the scalar and vector SHTs
 transform with exact synthesis and iteratively refined analysis, and spectral
 convolutions, random fields and quadrature accept as well. The distributed SHTs,
-spectral convolution, resampling, neighborhood attention and quadrature accept HEALPix too, decomposed along latitude only. See
+spectral convolution, resampling, neighborhood attention, DISCO convolutions and quadrature accept HEALPix too, decomposed along latitude only. See
 {ref}`grids`.
 
 ## Citing torch-harmonics

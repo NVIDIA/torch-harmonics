@@ -264,3 +264,27 @@ def _ring_shapes(shard) -> List[int]:
     else:
         shapes = list(shard.ring_shapes)
     return shapes
+
+
+def _shard_grid_pair(layer) -> None:
+    """
+    Set the process grid of a layer mapping ``layer.grid_in`` to ``layer.grid_out``, and this rank's shards of both.
+
+    The communicator ranks and sizes, then ``shard_in`` and ``shard_out``: each global grid
+    decomposes itself over the process grid, and the shards carry this rank's extent along
+    with the shapes every other rank holds. A HEALPix shard refuses an azimuth split, which
+    is how a layer with a HEALPix side refuses one.
+    """
+    layer.comm_size_polar = polar_group_size()
+    layer.comm_rank_polar = polar_group_rank()
+    layer.comm_size_azimuth = azimuth_group_size()
+    layer.comm_rank_azimuth = azimuth_group_rank()
+
+    layer.shard_in = layer.grid_in.shard(
+        polar=(layer.comm_rank_polar, layer.comm_size_polar),
+        azimuth=(layer.comm_rank_azimuth, layer.comm_size_azimuth),
+    )
+    layer.shard_out = layer.grid_out.shard(
+        polar=(layer.comm_rank_polar, layer.comm_size_polar),
+        azimuth=(layer.comm_rank_azimuth, layer.comm_size_azimuth),
+    )

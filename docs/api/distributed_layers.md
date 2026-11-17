@@ -15,8 +15,8 @@ which do not.
 | `RealVectorSHT`                     | `DistributedRealVectorSHT`                     | HEALPix, polar ranks only                |
 | `InverseRealVectorSHT`              | `DistributedInverseRealVectorSHT`              | HEALPix, polar ranks only                |
 | `SpectralConvS2`                    | `DistributedSpectralConvS2`                    | HEALPix, polar ranks only                |
-| `DiscreteContinuousConvS2`          | `DistributedDiscreteContinuousConvS2`          |                                          |
-| `DiscreteContinuousConvTransposeS2` | `DistributedDiscreteContinuousConvTransposeS2` |                                          |
+| `DiscreteContinuousConvS2`          | `DistributedDiscreteContinuousConvS2`          | HEALPix, polar ranks only                |
+| `DiscreteContinuousConvTransposeS2` | `DistributedDiscreteContinuousConvTransposeS2` | HEALPix, polar ranks only                |
 | `NeighborhoodAttentionS2`           | `DistributedNeighborhoodAttentionS2`           | HEALPix, polar ranks only                |
 | `ResampleS2`                        | `DistributedResampleS2`                        | HEALPix, polar ranks only                |
 | `QuadratureS2`                      | `DistributedQuadratureS2`                      | HEALPix, polar ranks only                |
