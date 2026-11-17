@@ -161,6 +161,9 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
             )
 
         if outer_skip == "linear":
+            # only the MLP maps the branch back to input_dim, the channels of the outer skip
+            if not use_mlp and input_dim != output_dim:
+                raise ValueError(f"outer_skip='linear' without an MLP requires input_dim == output_dim, got input_dim={input_dim}, output_dim={output_dim}")
             self.outer_skip = nn.Conv2d(input_dim, input_dim, 1, 1)
             torch.nn.init.normal_(self.outer_skip.weight, std=math.sqrt(gain_factor / input_dim))
         elif outer_skip == "identity":
@@ -172,11 +175,11 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         else:
             raise ValueError(f"Unknown skip connection type {outer_skip}")
 
-        # LayerScale as in CaiT on the branch, so that with a small initial value the block starts close to its outer skip
+        # layer scale
         if layer_scale is not None:
             if outer_skip == "none":
                 raise ValueError("layer_scale needs an outer skip")
-            self.layer_scale = LayerScale(output_dim, init_value=layer_scale)
+            self.layer_scale = LayerScale(input_dim if use_mlp else output_dim, init_value=layer_scale)
         else:
             self.layer_scale = nn.Identity()
 
