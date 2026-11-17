@@ -37,23 +37,22 @@ import torch
 import torch.distributed as dist
 from parameterized import parameterized
 from testutils import (
+    ShardedFieldMixin,
     amp_ulps,
     compare_tensors,
-    gather_tensor_hw,
+    make_grid,
     maybe_autocast,
     param_grad_ulps,
     reduce_success,
     set_seed,
     setup_class_from_context,
     setup_module,
-    split_tensor_hw,
     teardown_module,
 )
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 from torch_harmonics.distributed.distributed_attention import _RING_GATHER_DEVICES, _RING_UPSAMPLE_DEVICES
-from torch_harmonics.radial import split_radial
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
 # shapes, whose polar rows have the longest neighbourhoods).
@@ -70,22 +69,6 @@ _SLOW_ATTN_SHAPES = frozenset(
 
 # shared state
 _DIST_CTX = {}
-
-# the radial factor of the product-grid rows
-_RADIAL = th.as_radial_grid("legendre-gauss", nr=2, r_inner=1.0, r_outer=2.0)
-
-
-def _make_grid(name, shape):
-    """
-    A grid from a row's grid name and shape: ``(nside,)`` for HEALPix, ``(nlat, nlon)`` otherwise.
-
-    A ``"+radial"`` suffix on the name makes it the product with ``_RADIAL``.
-    """
-    angular, _, radial = name.partition("+")
-    grid = th.HealpixGrid(nside=shape[0]) if angular == "healpix" else th.as_grid(angular, nlat=shape[0], nlon=shape[1])
-    if radial:
-        grid = th.SphericalProductGrid(grid, _RADIAL)
-    return grid
 
 
 def _ulps(dtype):
@@ -106,7 +89,7 @@ def tearDownModule():
     teardown_module(_DIST_CTX)
 
 
-class TestDistributedNeighborhoodAttention(unittest.TestCase):
+class TestDistributedNeighborhoodAttention(ShardedFieldMixin, unittest.TestCase):
     """
     Compare serial NeighborhoodAttentionS2 against DistributedNeighborhoodAttentionS2.
 
@@ -140,43 +123,10 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
 
         return refuses
 
-    def _skip_unless_decomposable(self, *grids):
-        """HEALPix decomposes along latitude only; a layer on it refuses an azimuth group, see test_healpix_refuses_an_azimuthal_decomposition."""
-        if self.grid_size_w > 1 and any(isinstance(split_radial(g)[0], th.HealpixGrid) for g in grids):
-            self.skipTest("HEALPix decomposes along latitude only")
-
     def _sync(self):
         """Wait for the device, where there is one to wait for."""
         if self.device.type == "cuda":
             torch.cuda.synchronize()
-
-    def _split_helper(self, tensor, shard):
-        """This rank's piece of a global field, as ``shard`` describes it: a band of pixels, or a block of latitudes and longitudes."""
-        if isinstance(shard.grid, th.HealpixGrid):
-            tensor_local = torch.split(tensor, list(shard.pixel_shapes), dim=-1)[self.hrank].contiguous()
-        else:
-            tensor_local = split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
-        return tensor_local
-
-    def _gather_helper(self, tensor, shard):
-        """The global field from every rank's piece, as ``shard`` describes them."""
-        if isinstance(shard.grid, th.HealpixGrid):
-            hdim, hshapes, wshapes, wsize = -1, list(shard.pixel_shapes), [], 1
-        else:
-            hdim, hshapes, wshapes, wsize = -2, list(shard.lat_shapes), list(shard.lon_shapes), self.grid_size_w
-        return gather_tensor_hw(
-            tensor,
-            hdim=hdim,
-            wdim=-1,
-            hshapes=hshapes,
-            wshapes=wshapes,
-            hsize=self.grid_size_h,
-            wsize=wsize,
-            hrank=self.hrank,
-            wrank=self.wrank,
-            hgroup=self.h_group,
-            wgroup=self.w_group,
-        )
 
     def _allreduce_param_grad(self, tensor):
         """
@@ -368,8 +318,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         set_seed(333)
 
         B, C = batch_size, in_channels
-        gin, gout = _make_grid(grid_in, in_shape), _make_grid(grid_out, out_shape)
-        self._skip_unless_decomposable(gin, gout)
+        gin, gout = make_grid(grid_in, in_shape), make_grid(grid_out, out_shape)
+        self.skip_unless_decomposable(gin, gout)
 
         attn_args = dict(
             in_channels=C,
@@ -449,7 +399,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         # ---- distributed forward ----
         inp_local = {}
         for inp in ["q", "k", "v"]:
-            inp_local[inp] = self._split_helper(inp_full[inp].detach(), shards[inp])
+            inp_local[inp] = self.split_field(inp_full[inp].detach(), shards[inp])
             inp_local[inp].requires_grad_(True)
         with maybe_autocast(self.device.type, dtype):
             out_local = attn_dist(inp_local["q"], inp_local["k"], inp_local["v"])
@@ -457,7 +407,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         self._sync()
 
         # ---- distributed backward ----
-        ograd_local = self._split_helper(ograd_full, attn_dist.shard_out)
+        ograd_local = self.split_field(ograd_full, attn_dist.shard_out)
         out_local.backward(ograd_local)
 
         igrad_local = {}
@@ -471,13 +421,13 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         verbose = verbose and self.world_rank == 0
 
         # ---- compare forward ----
-        out_gather = self._gather_helper(out_local, attn_dist.shard_out)
+        out_gather = self.gather_field(out_local, attn_dist.shard_out)
         ok = compare_tensors("forward output", out_gather, out_full, atol=0.0, rtol=0.0, ulps=_ulps(dtype), eps_dtype=dtype, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output")
 
         # ---- compare backward ----
         for inp in ["q", "k", "v"]:
-            igrad_gather = self._gather_helper(igrad_local[inp], shards[inp])
+            igrad_gather = self.gather_field(igrad_local[inp], shards[inp])
             ok = compare_tensors(f"input gradient {inp}", igrad_gather, igrad_full[inp], atol=0.0, rtol=0.0, ulps=_ulps(dtype), eps_dtype=dtype, verbose=verbose)
             self.assertTrue(reduce_success(ok, self.device), f"input gradient {inp}")
 
@@ -544,8 +494,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         set_seed(333)
 
         B, C = batch_size, in_channels
-        gin, gout = _make_grid(grid_in, in_shape), _make_grid(grid_out, out_shape)
-        self._skip_unless_decomposable(gin, gout)
+        gin, gout = make_grid(grid_in, in_shape), make_grid(grid_out, out_shape)
+        self.skip_unless_decomposable(gin, gout)
 
         attn_args = dict(
             in_channels=C,
@@ -600,12 +550,12 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         shards = {"k": attn_dist.shard_in, "v": attn_dist.shard_in, "q": attn_dist.shard_out}
         inp_local = {}
         for n in ("k", "v", "q"):
-            inp_local[n] = self._split_helper(inp_full[n].detach(), shards[n])
+            inp_local[n] = self.split_field(inp_full[n].detach(), shards[n])
             inp_local[n].requires_grad_(n != frozen)
         out_local = attn_dist(inp_local["q"], inp_local["k"], inp_local["v"])
         self._sync()
 
-        ograd_local = self._split_helper(ograd_full, attn_dist.shard_out)
+        ograd_local = self.split_field(ograd_full, attn_dist.shard_out)
         out_local.backward(ograd_local)
         igrad_local = {n: (inp_local[n].grad.clone() if inp_local[n].grad is not None else None) for n in ("k", "v", "q")}
         self._sync()
@@ -615,7 +565,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         verbose = verbose and self.world_rank == 0
 
         # ---- compare forward ----
-        out_gather = self._gather_helper(out_local, attn_dist.shard_out)
+        out_gather = self.gather_field(out_local, attn_dist.shard_out)
         ok = compare_tensors("forward output", out_gather, out_full, atol=0.0, rtol=0.0, ulps=_ulps(torch.float32), verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "forward output")
 
@@ -637,7 +587,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
                 continue
             self.assertIsNotNone(igrad_full[n], f"serial: unfrozen input {n} should have a grad")
             self.assertIsNotNone(igrad_local[n], f"distributed: unfrozen input {n} should have a grad")
-            igrad_gather = self._gather_helper(igrad_local[n], shards[n])
+            igrad_gather = self.gather_field(igrad_local[n], shards[n])
             ok = compare_tensors(
                 f"input grad {n} (frozen={frozen})",
                 igrad_gather,
@@ -708,8 +658,8 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         want of a device, and the move reselects the backend and prepares its state on
         the new device, rather than carrying the old one along.
         """
-        gin, gout = _make_grid(grid_in, in_shape), _make_grid(grid_out, out_shape)
-        self._skip_unless_decomposable(gin, gout)
+        gin, gout = make_grid(grid_in, in_shape), make_grid(grid_out, out_shape)
+        self.skip_unless_decomposable(gin, gout)
         attn = thd.DistributedNeighborhoodAttentionS2(grid_in=gin, grid_out=gout, in_channels=8, num_heads=2, bias=False, optimized_kernel=optimized_kernel)
 
         # a build without the compiled ragged kernels falls back to the reference, as the serial layer does
@@ -814,7 +764,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         of two neighbours agree on what crosses between them.
         """
         grid = th.HealpixGrid(nside=8)
-        self._skip_unless_decomposable(grid)
+        self.skip_unless_decomposable(grid)
         attn = thd.DistributedNeighborhoodAttentionS2(grid, grid, in_channels=4)
         halo = attn.halo
         if self.hrank == 0:
@@ -835,7 +785,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         if self.grid_size_h < 3:
             self.skipTest("with fewer than three polar ranks every band is a neighbour")
         grid = th.HealpixGrid(nside=4)
-        self._skip_unless_decomposable(grid)
+        self.skip_unless_decomposable(grid)
         with self.assertRaisesRegex(ValueError, "too wide for this polar decomposition"):
             thd.DistributedNeighborhoodAttentionS2(grid, grid, in_channels=4, theta_cutoff=1.5)
 
@@ -844,7 +794,7 @@ class TestDistributedNeighborhoodAttention(unittest.TestCase):
         """A HEALPix grid on either side cannot be cut along the azimuth; the layer says so at construction."""
         if self.grid_size_w == 1:
             self.skipTest("needs an azimuth group of more than one rank")
-        gin = _make_grid(grid_in, (8,) if grid_in == "healpix" else (17, 32))
-        gout = _make_grid(grid_out, (8,) if grid_out == "healpix" else (17, 32))
+        gin = make_grid(grid_in, (8,) if grid_in == "healpix" else (17, 32))
+        gout = make_grid(grid_out, (8,) if grid_out == "healpix" else (17, 32))
         with self.assertRaises(NotImplementedError):
             thd.DistributedNeighborhoodAttentionS2(gin, gout, in_channels=4)

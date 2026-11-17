@@ -36,8 +36,9 @@ from unittest import mock
 import torch
 from parameterized import parameterized
 from testutils import (
+    ShardedFieldMixin,
     compare_tensors,
-    gather_tensor_hw,
+    make_grid,
     reduce_success,
     set_seed,
     setup_class_from_context,
@@ -62,54 +63,12 @@ def tearDownModule():
     teardown_module(_DIST_CTX)
 
 
-def _make_grid(name, shape):
-    """A grid descriptor from a row's grid name and shape: ``(nside,)`` for HEALPix, ``(nlat, nlon)`` otherwise."""
-    if name == "healpix":
-        grid = th.HealpixGrid(nside=shape[0])
-    else:
-        grid = th.as_grid(name, nlat=shape[0], nlon=shape[1])
-    return grid
-
-
-class TestDistributedSpectralConvolution(unittest.TestCase):
+class TestDistributedSpectralConvolution(ShardedFieldMixin, unittest.TestCase):
     """Compare SpectralConvS2 with DistributedSpectralConvS2 (CPU/CUDA if available)."""
 
     @classmethod
     def setUpClass(cls):
         setup_class_from_context(cls, _DIST_CTX)
-
-    def _skip_unless_decomposable(self, *grids):
-        """HEALPix decomposes along latitude only; a layer on it refuses an azimuth group, see test_healpix_refuses_an_azimuthal_decomposition."""
-        if self.grid_size_w > 1 and any(isinstance(g, th.HealpixGrid) for g in grids):
-            self.skipTest("HEALPix decomposes along latitude only")
-
-    def _split_helper(self, tensor, sht):
-        """This rank's piece of a global field on the spatial grid of ``sht``."""
-        if isinstance(sht.grid, th.HealpixGrid):
-            tensor_local = torch.split(tensor, sht.pixel_shapes, dim=-1)[self.hrank].contiguous()
-        else:
-            tensor_local = split_tensor_hw(tensor, hdim=-2, wdim=-1, hsize=self.grid_size_h, wsize=self.grid_size_w, hrank=self.hrank, wrank=self.wrank)
-        return tensor_local
-
-    def _gather_helper(self, tensor, sht):
-        """The global field from every rank's piece on the spatial grid of ``sht``."""
-        if isinstance(sht.grid, th.HealpixGrid):
-            hdim, hshapes, wshapes, wsize = -1, sht.pixel_shapes, [], 1
-        else:
-            hdim, hshapes, wshapes, wsize = -2, sht.lat_shapes, sht.lon_shapes, self.grid_size_w
-        return gather_tensor_hw(
-            tensor,
-            hdim=hdim,
-            wdim=-1,
-            hshapes=hshapes,
-            wshapes=wshapes,
-            hsize=self.grid_size_h,
-            wsize=wsize,
-            hrank=self.hrank,
-            wrank=self.wrank,
-            hgroup=self.h_group,
-            wgroup=self.w_group,
-        )
 
     def test_weight_initialization_matches_serial(self):
         """Degree 0 is initialized differently from the others, and only the first polar rank holds it."""
@@ -166,8 +125,8 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         set_seed(333)
 
         B, C = batch_size, num_chan
-        gin, gout = _make_grid(grid_in, in_shape), _make_grid(grid_out, out_shape)
-        self._skip_unless_decomposable(gin, gout)
+        gin, gout = make_grid(grid_in, in_shape), make_grid(grid_out, out_shape)
+        self.skip_unless_decomposable(gin, gout)
 
         conv_local = th.SpectralConvS2(gin, gout, in_channels=C, out_channels=C, num_groups=num_groups, bias=bias).to(self.device)
         conv_dist = thd.DistributedSpectralConvS2(gin, gout, in_channels=C, out_channels=C, num_groups=num_groups, bias=bias).to(self.device)
@@ -194,10 +153,10 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         igrad_full = inp_full.grad.clone()
 
         # distributed forward/backward
-        inp_local = self._split_helper(inp_full.detach().clone(), conv_dist.sht)
+        inp_local = self.split_field(inp_full.detach().clone(), conv_dist.sht.shard)
         inp_local.requires_grad = True
         out_local = conv_dist(inp_local)
-        ograd_local = self._split_helper(ograd_full, conv_dist.isht)
+        ograd_local = self.split_field(ograd_full, conv_dist.isht.shard)
         out_local.backward(ograd_local)
         igrad_local = inp_local.grad.clone()
 
@@ -205,11 +164,11 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         # rank so a failure on any rank fails the test consistently (see reduce_success).
         verbose = verbose and self.world_rank == 0
 
-        out_gather_full = self._gather_helper(out_local, conv_dist.isht)
+        out_gather_full = self.gather_field(out_local, conv_dist.isht.shard)
         ok = compare_tensors("output", out_gather_full, out_full, atol=atol, rtol=rtol, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
-        igrad_gather_full = self._gather_helper(igrad_local, conv_dist.sht)
+        igrad_gather_full = self.gather_field(igrad_local, conv_dist.sht.shard)
         ok = compare_tensors("gradients", igrad_gather_full, igrad_full, atol=atol, rtol=rtol, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "gradients")
 
@@ -232,8 +191,8 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         set_seed(333)
 
         B, C, num_groups = 2, 4, 2
-        gin, gout = _make_grid(grid_in, in_shape), _make_grid(grid_out, out_shape)
-        self._skip_unless_decomposable(gin, gout)
+        gin, gout = make_grid(grid_in, in_shape), make_grid(grid_out, out_shape)
+        self.skip_unless_decomposable(gin, gout)
         trunc = dict(lmax=lmax, mmax=mmax, lmmax=lmmax)
 
         conv_local = th.SpectralConvS2(gin, gout, in_channels=C, out_channels=C, num_groups=num_groups, bias=bias, **trunc).to(self.device)
@@ -266,19 +225,19 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         out_full.backward(ograd_full)
         igrad_full = inp_full.grad.clone()
 
-        inp_local = self._split_helper(inp_full.detach().clone(), conv_dist.sht)
+        inp_local = self.split_field(inp_full.detach().clone(), conv_dist.sht.shard)
         inp_local.requires_grad = True
         out_local = conv_dist(inp_local)
-        out_local.backward(self._split_helper(ograd_full, conv_dist.isht))
+        out_local.backward(self.split_field(ograd_full, conv_dist.isht.shard))
         igrad_local = inp_local.grad.clone()
 
         verbose = verbose and self.world_rank == 0
 
-        out_gather_full = self._gather_helper(out_local, conv_dist.isht)
+        out_gather_full = self.gather_field(out_local, conv_dist.isht.shard)
         ok = compare_tensors("output", out_gather_full, out_full, atol=1e-6, rtol=1e-6, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "output")
 
-        igrad_gather_full = self._gather_helper(igrad_local, conv_dist.sht)
+        igrad_gather_full = self.gather_field(igrad_local, conv_dist.sht.shard)
         ok = compare_tensors("input gradients", igrad_gather_full, igrad_full, atol=1e-6, rtol=1e-6, verbose=verbose, ulps=8)
         self.assertTrue(reduce_success(ok, self.device), "input gradients")
 
@@ -293,7 +252,7 @@ class TestDistributedSpectralConvolution(unittest.TestCase):
         """A HEALPix grid on either side cannot be cut along the azimuth; the layer says so at construction."""
         if self.grid_size_w == 1:
             self.skipTest("needs an azimuth group of more than one rank")
-        gin = _make_grid(grid_in, (8,) if grid_in == "healpix" else (17, 32))
-        gout = _make_grid(grid_out, (8,) if grid_out == "healpix" else (17, 32))
+        gin = make_grid(grid_in, (8,) if grid_in == "healpix" else (17, 32))
+        gout = make_grid(grid_out, (8,) if grid_out == "healpix" else (17, 32))
         with self.assertRaises(NotImplementedError):
             thd.DistributedSpectralConvS2(gin, gout, in_channels=4, out_channels=4)
