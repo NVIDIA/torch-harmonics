@@ -209,9 +209,10 @@ x_local = torch.split(x_global, pixel_shapes, dim=-1)[polar_rank]
 ```
 
 The distributed SHTs (`DistributedRealSHT`, `DistributedInverseRealSHT` and
-their vector variants), `DistributedSpectralConvS2`, `DistributedResampleS2` and
-`DistributedQuadratureS2` accept HEALPix; the other distributed layers still
-require a latitude-longitude grid. The spectral layout of the SHTs is the same as on a latitude-longitude grid
+their vector variants), `DistributedSpectralConvS2`, `DistributedResampleS2`,
+`DistributedNeighborhoodAttentionS2` and `DistributedQuadratureS2` accept
+HEALPix; the distributed DISCO convolutions still require a latitude-longitude
+grid. The spectral layout of the SHTs is the same as on a latitude-longitude grid
 with one azimuth rank: degrees `l` split across the polar ranks, all orders `m`
 local. So `DistributedSpectralConvS2` can map between HEALPix and a
 latitude-longitude grid as well as within either, and its weights are split
@@ -224,6 +225,19 @@ second transpose cuts the output into the bands of the polar ranks. The
 transposes split the leading axis, so, as in the SHTs, all leading dimensions are
 flattened into one and zero-padded when it is shorter than the process group:
 any batch and channel count works, on HEALPix and regular grids alike.
+
+`DistributedNeighborhoodAttentionS2` with a HEALPix side computes this rank's
+output points from a halo-padded band of input rings, as the serial layer's
+ragged path does on the whole grid. There is no azimuth ring: the layer reads
+off the neighbourhood which input rings the output points of every rank reach,
+and builds a {class}`~torch_harmonics.distributed.PolarHaloPlan` with
+`PolarHaloPlan.from_needs`, so each rank borrows whole rings of keys and values
+from its polar neighbours, unevenly where the bands differ. The serial ragged
+backends then run on the band: the compiled kernels on CPU or CUDA, or the torch
+reference with `optimized_kernel=False` or in float64, which the regular grids'
+ring kernels do not offer. The reach of the neighbourhood has to stay within the
+immediate neighbours' bands, which bounds the number of polar ranks for a given
+`theta_cutoff`; too many raise a `ValueError` at construction.
 
 ## 5. Calling distributed modules
 
