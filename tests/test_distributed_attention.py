@@ -52,7 +52,7 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-from torch_harmonics.distributed.distributed_attention import _RING_GATHER_DEVICES, _RING_UPSAMPLE_DEVICES
+from torch_harmonics.distributed.distributed_attention import _RING_DEVICES
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
 # shapes, whose polar rows have the longest neighbourhoods).
@@ -111,8 +111,7 @@ class TestDistributedNeighborhoodAttention(ShardedFieldMixin, unittest.TestCase)
         Only a pair of regular grids takes the ring kernels: a ragged layer runs the serial
         ragged backends, compiled for CPU and CUDA, with the reference everywhere else.
         """
-        devices = _RING_UPSAMPLE_DEVICES if attn_dist.upsample else _RING_GATHER_DEVICES
-        refuses = not attn_dist.ragged and self.device.type not in devices
+        refuses = not attn_dist.ragged and self.device.type not in _RING_DEVICES
 
         if refuses:
             C = attn_dist.in_channels
@@ -312,7 +311,7 @@ class TestDistributedNeighborhoodAttention(ShardedFieldMixin, unittest.TestCase)
         # Without the ring kernels these cases only check the refusal, which the small ones
         # already do; the large channel counts exist for the kernels' tiling, and building
         # their layers on every rank of an 8-rank CPU run exhausts the runner's memory.
-        if in_channels > 64 and self.device.type not in _RING_GATHER_DEVICES & _RING_UPSAMPLE_DEVICES:
+        if in_channels > 64 and self.device.type not in _RING_DEVICES:
             self.skipTest("large-channel case needs the ring kernels; the refusal is covered by the small cases")
 
         set_seed(333)
@@ -603,14 +602,13 @@ class TestDistributedNeighborhoodAttention(ShardedFieldMixin, unittest.TestCase)
         """
         The layer holds exactly the state of ``backend``, sized to this rank's block.
 
-        The ring backends hold the regular arcs: rows are this rank's output latitudes when
+        The ring backend holds the regular arcs: rows are this rank's output latitudes when
         gathering, its halo-padded input latitudes when scattering. The ragged ones hold the
         serial ragged state of the band: arcs for this rank's output points, over ring tables
         cut to the halo-padded input band and rebased to its first point.
         """
         names = {
-            "ring-gather": {"ring_weights", "psi_seg", "psi_seg_off"},
-            "ring-upsample": {"ring_weights", "psi_seg", "psi_seg_off"},
+            "ring": {"ring_weights", "psi_seg", "psi_seg_off"},
             "ragged-halo-optimized": {"ring_weights", "psi_seg", "psi_seg_off", "psi_ring_base", "psi_ring_size"},
             "ragged-halo-reference": {"point_weights", "psi_col_idx", "psi_roff_idx"},
         }[backend]
@@ -640,9 +638,9 @@ class TestDistributedNeighborhoodAttention(ShardedFieldMixin, unittest.TestCase)
     @parameterized.expand(
         [
             # grid_in, in_shape, grid_out, out_shape, backend[, optimized_kernel]
-            ["equiangular", (64, 128), "equiangular", (64, 128), "ring-gather"],  # self-attention
-            ["equiangular", (64, 128), "equiangular", (32, 64), "ring-gather"],  # downsampling
-            ["equiangular", (32, 64), "equiangular", (64, 128), "ring-upsample"],  # upsampling
+            ["equiangular", (64, 128), "equiangular", (64, 128), "ring"],  # self-attention
+            ["equiangular", (64, 128), "equiangular", (32, 64), "ring"],  # downsampling
+            ["equiangular", (32, 64), "equiangular", (64, 128), "ring"],  # upsampling
             ["healpix", (8,), "healpix", (8,), "ragged-halo-optimized"],
             ["healpix", (8,), "healpix", (8,), "ragged-halo-reference", False],
             ["healpix", (8,), "equiangular", (17, 32), "ragged-halo-optimized"],  # a regular side takes the ragged path too

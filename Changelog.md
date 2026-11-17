@@ -84,6 +84,7 @@
 * `DistributedNeighborhoodAttentionS2` shares the serial forward pass and uses ring backends whose kernels take the serial layout and arc form, walking only the neighbours in each key/value chunk.
 * `DistributedNeighborhoodAttentionS2` builds only its rank's slice of the sparsity pattern, so its memory shrinks as ranks are added.
 * `DistributedNeighborhoodAttentionS2` raises on `optimized_kernel=False` instead of ignoring it, since it has no reference implementation.
+* `DistributedNeighborhoodAttentionS2` has one ring backend for both directions on regular grids, `RingBackend` (`backend.name == "ring"`), which replaces `RingGatherBackend` (`"ring-gather"`) and `RingUpsampleBackend` (`"ring-upsample"`), and one `autograd.Function` for both. The direction only selects the kernels and how the rank's arcs are cut. Results are unchanged; the second backward pass now posts the exchange of the next key/value chunk before its kernel instead of after, so the exchange overlaps the kernel as in the other passes.
 * Fixed attention CUDA kernel launches failing when a large channel count needs more than 48 KiB of shared memory.
 * Fixed the attention CUDA ops running on the current device rather than their inputs' when a module lives on another GPU.
 * The compiled attention operators changed: `forward`/`backward` became `forward_regular`/`backward_regular`, `forward_ragged`/`backward_ragged` were added, the ring operators take arcs, and `split_csr_rows` was removed.
