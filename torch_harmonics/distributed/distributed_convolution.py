@@ -44,7 +44,6 @@ from torch_harmonics.disco.convolution import (
 )
 from torch_harmonics.disco.optimized.disco_optimized import _use_spatial_first_dgrad
 from torch_harmonics.grid import GridS2, _rejects_legacy_signature
-from torch_harmonics.quadrature import effective_theta_cutoff
 from torch_harmonics.radial import fold_radius, unfold_radius
 from torch_harmonics.truncation import truncate_support
 
@@ -57,9 +56,7 @@ from .kernels import (
 # distributed stuff — relative imports to avoid the circular dependency
 # through torch_harmonics.distributed.__init__.
 from .primitives import (
-    PolarHaloPlan,
     _plan_ring_band_halo,
-    compute_polar_halo_radius,
     compute_split_shapes,
     distributed_transpose_azimuth,
     polar_halo_exchange,
@@ -273,93 +270,63 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         # compute theta cutoff based on the bandlimit of the input field
         self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
 
-        if self.ragged:
-            self._setup_ragged()
-        else:
-            self._setup_regular(in_channels)
+        if not self.ragged:
+            # the azimuth a2a trades the longitude split for a split of the input channels, and
+            # unlike the SHT this path does not pad, so every azimuth rank needs a channel
+            _check_channel_split(in_channels, "in_channels", self.comm_size_azimuth)
+            self.lat_in_shapes = list(self.shard_in.lat_shapes)
+            self.lon_in_shapes = list(self.shard_in.lon_shapes)
+            self.lat_out_shapes = list(self.shard_out.lat_shapes)
+            self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
+        self._setup_polar()
         self._select_backend()
 
-    def _setup_regular(self, in_channels: int) -> None:
-        """Split psi along latitude, on the side the polar mode picks, and plan the latitude halo."""
-        # the azimuth a2a trades the longitude split for a split of the input channels, and
-        # unlike the SHT this path does not pad, so every azimuth rank needs a channel
-        _check_channel_split(in_channels, "in_channels", self.comm_size_azimuth)
-
-        # Only the shape lists come from the shards: the local extents below deliberately
-        # keep one side global, since psi is split along a single latitude axis rather than both.
-        self.lat_in_shapes = list(self.shard_in.lat_shapes)
-        self.lon_in_shapes = list(self.shard_in.lon_shapes)
-        self.lat_out_shapes = list(self.shard_out.lat_shapes)
-        self.lon_out_shapes = list(self.shard_out.lon_shapes)
-
-        # psi is (nlat_out) x (nlat_in * nlon_in). The contraction along the longitude is a
-        # convolution, which the a2a makes local, so psi is split along latitude only; the
-        # polar mode decides along which side.
-        #
-        # The operator is local: an output latitude only reads input latitudes within
-        # theta_cutoff of it. When that reach fits inside a neighbouring rank's share, each rank
-        # can borrow a halo and compute its own output rows outright -- no partial sums, so no
-        # polar reduction, and the K-expanded intermediate shrinks with the polar group instead
-        # of staying pinned at the full nlat_out. When the cutoff is wide enough that the reach
-        # spans more than a neighbour, the immediate-neighbour exchange cannot serve it and we
-        # fall back to computing every output latitude and reduce-scattering, which has no such
-        # restriction.
-        self.r_lat = 0
-        if self.use_halo:
-            colats_in, colats_out = self.grid_in.colats, self.grid_out.colats
-            try:
-                self.r_lat = compute_polar_halo_radius(colats_in, colats_out, effective_theta_cutoff(self.theta_cutoff), self.lat_in_shapes, self.lat_out_shapes)
-            except ValueError as err:
-                raise ValueError(
-                    f"{err}\n\n"
-                    "This convolution therefore cannot use polar_mode='halo-exchange'. Either reduce the "
-                    "polar group size or theta_cutoff so the support fits within one neighbour, or pass "
-                    "polar_mode='reduce-scatter', which places no bound on the angular reach but computes "
-                    "every output latitude on every polar rank -- so its intermediate does not shrink as "
-                    "polar ranks are added."
-                ) from err
-
-        # what this rank exchanges with its polar neighbours on the halo path: r_lat rows from
-        # each, zero-padded at the poles, so every rank's input chunk is 2 * r_lat rows longer
-        self.halo = PolarHaloPlan.symmetric(self.r_lat, self.comm_rank_polar, self.comm_size_polar)
-
-        # psi is keyed by this rank's output latitudes (all of them under reduce-scatter) and
-        # its columns index the full-longitude input band the a2a makes local: this rank's
-        # input latitudes widened by r_lat on either side, zero-padded beyond the poles, so
-        # that the band may start before the first latitude. r_lat is 0 under reduce-scatter.
-        in_lo, in_hi = self.shard_in.lat_offset - self.r_lat, self.shard_in.lat_offset + self.shard_in.nlat + self.r_lat
-        self._psi_rows = (self.shard_out.lat_offset, self.shard_out.lat_offset + self.shard_out.nlat) if self.use_halo else (0, self.nlat_out)
-        self._psi_cols = (in_lo * self.nlon_in, in_hi * self.nlon_in)
-
-        # the contraction's result: the output latitudes psi is keyed by, over full longitudes
-        self.nlat_out_local = self._psi_rows[1] - self._psi_rows[0]
-        self._psi_nlon = self.nlon_in
-        self._contract_shape = (self.nlat_out_local, self.nlon_out)
-        # only the reordered path contracts through the fused node
-        self._needs_split = self.fused and _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
-
-    def _setup_ragged(self) -> None:
+    def _setup_polar(self) -> None:
         """
-        Cut psi to this rank's block on a ragged pair, and plan the halo over whole input rings.
+        Cut psi to this rank's block, on the side the polar mode picks, and plan the halo of input rings.
 
-        Under ``halo-exchange`` the rank keeps the rows of its own output points and reads
-        the input rings they reach, which a halo brings in. Under ``reduce-scatter`` it keeps
-        the columns of its own input points over every output point, and a reduce-scatter
-        completes the partial sums; no halo moves. Either way the serial ragged backends run
-        on the block, through the fused node as in the serial layer.
+        psi's rows are output rings -- output points on a ragged pair -- and its columns flat
+        indices of the input grid. The contraction along the longitude is a convolution,
+        which the a2a makes local, so psi is split along latitude only.
+
+        The operator is local: an output latitude only reads input latitudes within
+        theta_cutoff of it. Under ``halo-exchange`` the rank keeps the rows of its own output
+        rings and reads the input rings their entries reach, which a halo brings in from the
+        neighbouring ranks, so its rows are complete -- no polar reduction, and the
+        K-expanded intermediate shrinks with the polar group. Under ``reduce-scatter`` it
+        keeps the columns of its own input rings over every output ring, and a
+        reduce-scatter completes the partial sums; no halo moves. The two kinds of grid
+        differ only in what a row is, and in that the regular layer exchanges whole rows of
+        its ``(nlat, nlon)`` field where the ragged one exchanges points of its flat one.
         """
+        rank, size = self.comm_rank_polar, self.comm_size_polar
         if self.use_halo:
             idx = self._global_psi()[0]
-            self._psi_col_ring_range, self._psi_cols, self._psi_rows = _plan_psi_halo(
-                self, idx[1], idx[2], self.shard_out, self.shard_in, advice=_REDUCE_SCATTER_ADVICE.format("point")
-            )
-            self.npoints_out_local = self._psi_rows[1] - self._psi_rows[0]
+            # the output points the rows key: a regular row is a latitude, whose first point is lat * nlon
+            owned = idx[1] if self.ragged else idx[1] * self.nlon_out
+            unit = "point" if self.ragged else "latitude"
+            ring_range, point_range, _ = _plan_psi_halo(self, owned, idx[2], self.shard_out, self.shard_in, advice=_REDUCE_SCATTER_ADVICE.format(unit))
+            out_starts = list(accumulate([0] + (_point_shapes(self.shard_out) if self.ragged else _ring_shapes(self.shard_out))))
+            self._psi_rows = (out_starts[rank], out_starts[rank + 1])
         else:
-            self.halo, self._psi_col_ring_range, self._psi_cols = _plan_ring_band_halo(self.shard_in, [None] * self.comm_size_polar, self.comm_rank_polar)
-            self._psi_rows = (0, self.npoints_out)
-            self.npoints_out_local = self.npoints_out
-        self._needs_split = _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
+            self.halo, ring_range, point_range = _plan_ring_band_halo(self.shard_in, [None] * size, rank, per_ring=not self.ragged)
+            self._psi_rows = (0, self.npoints_out if self.ragged else self.nlat_out)
+        self._psi_cols = point_range
+        self._psi_col_ring_range = ring_range
+
+        # the contraction's result: the output points or latitudes psi's rows cover
+        nrows = self._psi_rows[1] - self._psi_rows[0]
+        if self.ragged:
+            self.npoints_out_local = nrows
+            # the ragged layer always contracts through the fused node, as the serial one does
+            self._needs_split = _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
+        else:
+            self.nlat_out_local = nrows
+            self._psi_nlon = self.nlon_in
+            self._contract_shape = (self.nlat_out_local, self.nlon_out)
+            # only the reordered path contracts through the fused node
+            self._needs_split = self.fused and _use_spatial_first_dgrad(self.out_per_group, self.groupsize, self.kernel_size)
 
     def _shard_key(self):
         # this rank's block: its place in the process grid, and the polar mode with its halo

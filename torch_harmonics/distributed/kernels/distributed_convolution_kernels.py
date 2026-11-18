@@ -86,7 +86,7 @@ def _distributed_disco_fwd_a2a(layer, x: torch.Tensor) -> torch.Tensor:
 
     Pattern:
       1. (optional) channel <-> azimuth A2A so W is local.
-      2. (halo) borrow r_lat input rows from each polar neighbour.
+      2. (halo) borrow the input rows this rank's output rows reach from its polar neighbours.
       3. Sparse psi contraction → K-expanded (B, C, K, H_out, W).
       4. (reduce-scatter only) polar reduce_scatter on H.
       5. (optional) azimuth <-> channel A2A back so W is split, C is local.
@@ -116,8 +116,8 @@ def _distributed_disco_fwd_a2a(layer, x: torch.Tensor) -> torch.Tensor:
         x = distributed_transpose_azimuth(x, (1, -1), layer.lon_in_shapes)
 
     # Borrow the input rows this rank's output rows reach into. psi's columns were keyed to
-    # the padded band at construction, so the contraction below reads it directly. With
-    # r_lat == 0 (support within the local rows, e.g. a coarse output grid) the plan is the
+    # the halo-padded band at construction, so the contraction below reads it directly. If
+    # the support stays within the local rows, e.g. on a coarse output grid, the plan is the
     # identity and the exchange posts nothing.
     if use_halo and comm_size_polar > 1:
         x = polar_halo_exchange(x, layer.halo)
@@ -193,7 +193,7 @@ def _distributed_disco_fwd_a2a_reordered(layer, x: torch.Tensor) -> torch.Tensor
     x = distributed_transpose_azimuth(x, (1, -1), layer.lon_in_shapes) if comm_size_azimuth > 1 else x
 
     # (halo) borrow the input rows this rank's output rows reach into; psi's columns were
-    # keyed to the padded band at construction. See _distributed_disco_fwd_a2a.
+    # keyed to the halo-padded band at construction. See _distributed_disco_fwd_a2a.
     if use_halo and comm_size_polar > 1:
         x = polar_halo_exchange(x, layer.halo)
     local_in_channels = x.shape[1]

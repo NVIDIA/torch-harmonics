@@ -53,8 +53,8 @@ from testutils import (
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 from torch_harmonics.disco.backends import RegularOptimizedBackend, RegularReferenceBackend
-from torch_harmonics.distributed import compute_polar_halo_radius, compute_split_shapes
-from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
+from torch_harmonics.distributed import compute_split_shapes
+from torch_harmonics.quadrature import compute_theta_cutoff
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
 # shapes), as in tests/test_distributed_attention.py.
@@ -275,7 +275,7 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
             # therefore has to declare psi's column extent, which the halo mode re-keys onto a
             # padded input band -- a mismatch the arc and kpacked kernels cannot see because they
             # just index into whatever x they are handed. One row per polar mode: halo-exchange
-            # for the padded extent, reduce-scatter to pin that r_lat=0 still yields the
+            # for the halo-padded extent, reduce-scatter to pin that no halo still yields the
             # unpadded one.
             #
             # Resolution and batch_size/num_chan are dialed down relative to the rest of the
@@ -641,25 +641,17 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         # the constructor agrees -- refusing exactly when the support outruns a neighbour, and
         # saying which mode to use instead.
         if polar_mode == "halo-exchange":
-            if transpose:
-                # the halo is planned from psi: a rank keeps its output latitudes, psi's
-                # columns, and reads the input latitudes their entries reach, which have to
-                # lie within its immediate polar neighbours
-                halo_servable = True
-                for r in range(self.grid_size_h):
-                    sel = (ser_col_lat >= col_starts[r]) & (ser_col_lat < col_starts[r + 1])
-                    if sel.any():
-                        lo, hi = int(ser_row[sel].min()), int(ser_row[sel].max()) + 1
-                        halo_servable &= lo >= row_starts[max(r - 1, 0)] and hi <= row_starts[min(r + 2, self.grid_size_h)]
-            else:
-                # the forward pads a symmetric halo of the geometric radius
-                colats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
-                colats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
-                try:
-                    compute_polar_halo_radius(colats_in, colats_out, effective_theta_cutoff(theta_cutoff), col_shapes, row_shapes)
-                    halo_servable = True
-                except ValueError:
-                    halo_servable = False
+            # the halo is planned from psi: a rank keeps its output latitudes -- psi's rows in
+            # the forward, its columns in the transpose -- and reads the input latitudes their
+            # entries reach, which have to lie within its immediate polar neighbours
+            owned_lat, reached_lat = (ser_col_lat, ser_row) if transpose else (ser_row, ser_col_lat)
+            owned_starts, reached_starts = (col_starts, row_starts) if transpose else (row_starts, col_starts)
+            halo_servable = True
+            for r in range(self.grid_size_h):
+                sel = (owned_lat >= owned_starts[r]) & (owned_lat < owned_starts[r + 1])
+                if sel.any():
+                    lo, hi = int(reached_lat[sel].min()), int(reached_lat[sel].max()) + 1
+                    halo_servable &= lo >= reached_starts[max(r - 1, 0)] and hi <= reached_starts[min(r + 2, self.grid_size_h)]
             if not halo_servable:
                 with self.assertRaises(ValueError) as ctx:
                     build()
