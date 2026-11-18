@@ -232,6 +232,12 @@ class SphericalFourierNeuralOperator(nn.Module):
         Activation function to use, by default "gelu"
     encoder_layers : int, optional
         Number of layers in the encoder, by default 1
+    decoder_layers : int, optional
+        Number of layers in the decoder, by default 1
+    block_inner_skip : str, optional
+        Inner skip connection of the blocks ("none", "identity", "linear"), by default "none"
+    block_outer_skip : str, optional
+        Outer skip connection of the blocks ("none", "identity", "linear"), by default "identity"
     use_mlp : int, optional
         Whether to use MLPs in the SFNO blocks, by default True
     mlp_ratio : int, optional
@@ -284,6 +290,9 @@ class SphericalFourierNeuralOperator(nn.Module):
         num_layers=4,
         activation_function="gelu",
         encoder_layers=1,
+        decoder_layers=1,
+        block_inner_skip="none",
+        block_outer_skip="identity",
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -376,6 +385,8 @@ class SphericalFourierNeuralOperator(nn.Module):
                 drop_path=dpr[i],
                 act_layer=self.activation_function,
                 norm_layer=self.normalization_layer,
+                inner_skip=block_inner_skip,
+                outer_skip=block_outer_skip,
                 use_mlp=use_mlp,
                 bias=bias,
                 checkpointing=checkpointing,
@@ -384,7 +395,9 @@ class SphericalFourierNeuralOperator(nn.Module):
 
             self.blocks.append(block)
 
-        self.decoder = MLP(self.embed_dim, hidden_features=hidden_dim, out_features=self.out_chans, act_layer=self.activation_function, output_bias=bias, num_layers=1).fwd
+        self.decoder = MLP(
+            self.embed_dim, hidden_features=hidden_dim, out_features=self.out_chans, act_layer=self.activation_function, output_bias=bias, num_layers=decoder_layers
+        ).fwd
 
         # residual projection for when in_chans != out_chans
         if self.residual_prediction and self.in_chans != self.out_chans:
