@@ -1245,6 +1245,31 @@ class TestWeightContraction(unittest.TestCase):
         grad = torch.einsum("bgon,bgckn->gock", yg, xg)
         self.assertTrue(torch.allclose(_weight_gradient(y, x, G), grad))
 
+    @parameterized.expand([[1], [2]], skip_on_empty=True)
+    def test_gradient_cancels_across_batch(self, groups):
+        """Half-precision partial sums over each batch entry overflow float16 but cancel across the batch: the gradient stays finite."""
+        dtype = torch.float16
+        # each batch entry contributes +-8 * 16384 = +-131072 to every weight entry, beyond float16's 65504
+        x = torch.full((2, groups, 1, 8), 128.0, device=self.device, dtype=dtype)
+        go = torch.full((2, groups, 8), 128.0, device=self.device, dtype=dtype)
+        go[1] = -128.0
+        grad = _weight_gradient(go, x, groups)
+        self.assertTrue(torch.equal(grad, torch.zeros_like(grad)), f"{grad}")
+
+    @parameterized.expand([[1, 3], [3, 1], [3, 3]], skip_on_empty=True)
+    def test_autocast_keeps_float64(self, Cg, Og):
+        """Autocast leaves float64 alone, in the outer-product cases as in the matmul."""
+        w = torch.randn(2, Og, Cg, 1, device=self.device, dtype=torch.float64)
+        x = torch.randn(2, 2 * Cg, 1, 4, 8, device=self.device, dtype=torch.float64)
+        y = torch.randn(2, 2 * Og, 4, 8, device=self.device, dtype=torch.float64)
+        out = torch.einsum("bgckn,gock->bgon", x.reshape(2, 2, Cg, 1, -1), w).reshape(2, 2 * Og, 4, 8)
+        exp = torch.einsum("bgon,gock->bgckn", y.reshape(2, 2, Og, -1), w).reshape(2, 2 * Cg, 1, 4, 8)
+        dtype = torch.float16 if self.device.type == "cuda" else torch.bfloat16
+        with torch.autocast(self.device.type, dtype=dtype):
+            got_out, got_exp = _weight_contraction(x, w), _weight_expansion(y, w)
+        self.assertEqual((got_out.dtype, got_exp.dtype), (torch.float64, torch.float64))
+        self.assertTrue(torch.allclose(got_out, out) and torch.allclose(got_exp, exp))
+
     @parameterized.expand([[1, 3], [3, 1], [3, 3]], skip_on_empty=True)
     def test_autocast_dtype(self, Cg, Og):
         """Under autocast the outer-product cases give the autocast dtype, as the matmul does."""

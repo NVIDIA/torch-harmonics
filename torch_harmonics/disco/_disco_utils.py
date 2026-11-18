@@ -54,9 +54,15 @@ def _compute_dtype(dtype: torch.dtype) -> torch.dtype:
 # access in cuBLAS (torch 2.13 nv26.06). The multiply is not autocast-eligible, so it casts
 # both operands to the dtype the matmul would run in (see _outer).
 def _outer(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-    """``w * x`` in the dtype ``torch.matmul(w, x)`` would give: the autocast dtype if autocast is on, else the activation's."""
+    """
+    ``w * x`` in the dtype ``torch.matmul(w, x)`` would give.
+
+    That is the autocast dtype if autocast is on, else the activation's. Autocast leaves
+    float64 alone, so a float64 operand keeps the activation's dtype either way.
+    """
     device_type = x.device.type
-    dtype = torch.get_autocast_dtype(device_type) if torch.is_autocast_enabled(device_type) else x.dtype
+    autocast = torch.is_autocast_enabled(device_type) and torch.float64 not in (w.dtype, x.dtype)
+    dtype = torch.get_autocast_dtype(device_type) if autocast else x.dtype
     return w.to(dtype) * x.to(dtype)
 
 
@@ -85,15 +91,26 @@ def _weight_gradient(grad_out: torch.Tensor, x: torch.Tensor, groups: int) -> to
     One bmm over the flat ``(B * G)`` batch, summed over B. Grouped layers run it as
     ``x @ grad_out^T``, which cuBLAS serves up to 3x faster for their narrow groups on H100
     and GB200; ungrouped ones as ``grad_out @ x^T``, the faster order there.
+
+    In half precision with more than one batch entry, the per-entry products are kept in
+    float32 through the batch sum and rounded once, as a single GEMM over batch and space
+    would: rounded per entry, float16 partial sums that cancel in the total can overflow.
     """
     B, C, K = x.shape[:3]
     Og, Cg = grad_out.shape[1] // groups, C // groups
     go, xf = grad_out.reshape(B * groups, Og, -1), x.reshape(B * groups, Cg * K, -1)
-    if groups > 1:
-        grad = torch.bmm(xf, go.transpose(1, 2)).reshape(B, groups, Cg * K, Og).sum(0).transpose(1, 2)
-    else:
-        grad = torch.bmm(go, xf.transpose(1, 2)).reshape(B, groups, Og, Cg * K).sum(0)
+    a, b = (xf, go) if groups > 1 else (go, xf)
+    grad = _bmm_wide(a, b.transpose(1, 2)) if B > 1 and x.dtype in (torch.float16, torch.bfloat16) else torch.bmm(a, b.transpose(1, 2))
+    grad = grad.reshape(B, groups, *grad.shape[1:]).sum(0).to(x.dtype)
+    grad = grad.transpose(1, 2) if groups > 1 else grad
     return grad.reshape(groups, Og, Cg, K)
+
+
+def _bmm_wide(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """``torch.bmm`` of half-precision operands with a float32 result: ``out_dtype`` on CUDA, which CPU lacks, else upcast operands."""
+    if a.is_cuda:
+        return torch.bmm(a, b, out_dtype=torch.float32)
+    return torch.bmm(a.float(), b.float())
 
 
 # sparse-psi helper used by both the torch reference kernels (in kernels_torch/)
