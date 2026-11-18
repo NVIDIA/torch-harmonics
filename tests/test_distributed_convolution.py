@@ -31,6 +31,7 @@
 
 import os
 import unittest
+from itertools import accumulate
 
 import torch
 import torch.distributed as dist
@@ -52,8 +53,8 @@ from testutils import (
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
 from torch_harmonics.disco.backends import RegularOptimizedBackend, RegularReferenceBackend
-from torch_harmonics.distributed import compute_polar_halo_radius, compute_split_shapes
-from torch_harmonics.quadrature import compute_theta_cutoff, effective_theta_cutoff, precompute_latitudes
+from torch_harmonics.distributed import compute_split_shapes
+from torch_harmonics.quadrature import compute_theta_cutoff
 
 # Opt-in gate for slow / large-grid parameterized cases (e.g. 721x1440 ERA5-like
 # shapes), as in tests/test_distributed_attention.py.
@@ -79,12 +80,14 @@ _DOUBLE_BACKWARD_SHAPES = [
     ["equiangular", (33, 64), "equiangular", (17, 32), (3, 4), "harmonic", False, True, "halo-exchange"],
     ["equiangular", (33, 64), "equiangular", (33, 64), (3), "piecewise linear", False, False, "reduce-scatter"],
     ["equiangular", (33, 64), "equiangular", (33, 64), (3), "piecewise linear", False, True, "reduce-scatter"],
-    ["equiangular", (17, 32), "equiangular", (33, 64), (3), "piecewise linear", True, False, None],
-    ["equiangular", (33, 64), "equiangular", (33, 64), (3, 4), "harmonic", True, False, None],
+    ["equiangular", (17, 32), "equiangular", (33, 64), (3), "piecewise linear", True, False, "halo-exchange"],
+    ["equiangular", (33, 64), "equiangular", (33, 64), (3, 4), "harmonic", True, False, "halo-exchange"],
+    ["equiangular", (33, 64), "equiangular", (33, 64), (3), "piecewise linear", True, False, "reduce-scatter"],
     ["healpix", (8,), "healpix", (8,), (3), "piecewise linear", False, False, "halo-exchange"],
     ["healpix", (8,), "healpix", (4,), (3, 3), "morlet", False, True, "halo-exchange"],
     ["healpix", (8,), "healpix", (8,), (3), "piecewise linear", False, False, "reduce-scatter"],
-    ["healpix", (4,), "healpix", (8,), (3), "piecewise linear", True, False, None],
+    ["healpix", (4,), "healpix", (8,), (3), "piecewise linear", True, False, "halo-exchange"],
+    ["healpix", (4,), "healpix", (8,), (3), "piecewise linear", True, False, "reduce-scatter"],
 ]
 
 # float64, and fp16/bf16 under autocast of an fp32 layer
@@ -262,6 +265,9 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
             ["equiangular", (64, 128), "equiangular", (64, 128), 32, 8, (3), "piecewise linear", "mean", 1, torch.float32, False, False, "reduce-scatter"],
             ["equiangular", (64, 128), "equiangular", (32, 64), 32, 8, (3, 3), "piecewise linear", "mean", 1, torch.float32, False, False, "reduce-scatter"],
             ["equiangular", (64, 128), "equiangular", (64, 128), 32, 8, (3), "piecewise linear", "mean", 1, torch.float32, False, True, "reduce-scatter"],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 32, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "reduce-scatter"],
+            ["equiangular", (32, 64), "equiangular", (64, 128), 32, 8, (3, 3), "piecewise linear", "mean", 2, torch.float32, True, False, "reduce-scatter"],
+            ["equiangular", (64, 128), "equiangular", (64, 128), 32, 8, (3), "piecewise linear", "mean", 1, torch.bfloat16, True, False, "reduce-scatter"],
             # ---- optimized_kernel=False : the pure-PyTorch fallback ----
             # Every row above runs with the extension built, so the fallback is untested in CI
             # even though the base class selects it automatically on any install without the
@@ -269,7 +275,7 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
             # therefore has to declare psi's column extent, which the halo mode re-keys onto a
             # padded input band -- a mismatch the arc and kpacked kernels cannot see because they
             # just index into whatever x they are handed. One row per polar mode: halo-exchange
-            # for the padded extent, reduce-scatter to pin that r_lat=0 still yields the
+            # for the halo-padded extent, reduce-scatter to pin that no halo still yields the
             # unpadded one.
             #
             # Resolution and batch_size/num_chan are dialed down relative to the rest of the
@@ -282,11 +288,13 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
             # fused=True on the reference: the reordered all-to-all is kept, and the intermediate
             # is saved rather than recomputed, which only the compiled kernels can do
             ["equiangular", (32, 64), "equiangular", (16, 32), 2, 8, (3), "piecewise linear", "mean", 1, torch.float32, False, True, "halo-exchange", False],
-            # The transpose convolution's fallback is a separate code path (it gathers the
-            # polar split and contracts a COO psi over the output grid), and the rows above
-            # never reach it. Upsampling and same-shape; it has no polar_mode.
+            # The transpose convolution's fallback is a separate code path (it contracts a
+            # semi-transposed COO psi over the output grid, whose rows the halo cuts to the
+            # input band), and the rows above never reach it. Upsampling and same-shape, and
+            # one row per polar mode.
             ["equiangular", (16, 32), "equiangular", (32, 64), 2, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "halo-exchange", False],
             ["equiangular", (32, 64), "equiangular", (32, 64), 2, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "halo-exchange", False],
+            ["equiangular", (16, 32), "equiangular", (32, 64), 2, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "reduce-scatter", False],
             # ---- HEALPix: the serial ragged backends on each polar rank's band of rings ----
             # Polar ranks only; the azimuth configurations skip these. The forward borrows a
             # halo of whole input rings, or reduce-scatters; the transpose borrows the input
@@ -299,10 +307,12 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
             ["healpix", (8,), "healpix", (4,), 4, 8, (3, 3), "morlet", "mean", 1, torch.float32, False, True, "reduce-scatter"],
             ["healpix", (4,), "healpix", (8,), 4, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "halo-exchange"],
             ["healpix", (8,), "healpix", (8,), 4, 8, (3, 3), "morlet", "mean", 1, torch.float32, True, False, "halo-exchange"],
+            ["healpix", (4,), "healpix", (8,), 4, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "reduce-scatter"],
             # a regular grid paired with HEALPix keeps its (nlat, nlon) layout at the interface
             ["healpix", (8,), "equiangular", (17, 32), 4, 8, (3), "piecewise linear", "mean", 1, torch.float32, False, False, "halo-exchange"],
             ["equiangular", (17, 32), "healpix", (8,), 4, 8, (3), "piecewise linear", "mean", 1, torch.float32, False, False, "halo-exchange"],
             ["equiangular", (9, 16), "healpix", (8,), 4, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "halo-exchange"],
+            ["equiangular", (9, 16), "healpix", (8,), 4, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "reduce-scatter"],
             # a product grid convolves every shell alike
             ["healpix+radial", (8,), "healpix+radial", (8,), 4, 8, (3), "piecewise linear", "mean", 1, torch.float32, False, False, "halo-exchange"],
             ["healpix+radial", (4,), "healpix+radial", (8,), 4, 8, (3), "piecewise linear", "mean", 1, torch.float32, True, False, "halo-exchange"],
@@ -375,7 +385,7 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         if transpose:
             # Transpose class has no ``fused`` argument; it is ignored here.
             conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args, polar_mode=polar_mode).to(dtype=module_dtype, device=self.device)
         else:
             conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=module_dtype, device=self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvS2(
@@ -566,14 +576,23 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
             # test derives the expectation from the geometry rather than asserting it here.
             [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "halo-exchange", 12.0],
             [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", False, "reduce-scatter", 12.0],
+            # the transpose plans its halo from psi, in both directions of resampling, and
+            # falls back to the same reduce-scatter
+            [33, 64, 17, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 1.0],
+            [32, 64, 32, 64, (3, 3), "legendre-gauss", "legendre-gauss", True, "halo-exchange", 1.0],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", True, "reduce-scatter", 1.0],
+            [17, 64, 33, 64, (3, 3), "equiangular", "equiangular", True, "reduce-scatter", 1.0],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", True, "halo-exchange", 12.0],
+            [32, 64, 32, 64, (3, 3), "equiangular", "equiangular", True, "reduce-scatter", 12.0],
         ],
         skip_on_empty=True,
     )
     def test_psi_blocks(self, nlat_in, nlon_in, nlat_out, nlon_out, kernel_shape, grid_in, grid_out, transpose, polar_mode, theta_cutoff_scale, verbose=False):
-        """Each rank's local psi equals the serial psi restricted to its input latitudes.
+        """Each rank's local psi equals the serial psi restricted to the latitudes it owns.
 
         The sparsity pattern is built from the latitude band that can fall inside the angular
-        cutoff, and the distributed module keeps only the entries whose input latitude it owns.
+        cutoff, and the distributed module keeps only the entries whose latitude it owns: on the
+        output side under halo-exchange, on the input side under reduce-scatter.
         This checks the two agree entry for entry, which isolates the pattern from the
         convolution: an off-by-one in the band or in the index remapping shows up here rather
         than as a diffuse accuracy failure in the forward.
@@ -590,135 +609,84 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         # all-to-all needs at least one channel per azimuth rank
         C = self.grid_size_w
 
-        # the transpose convolution still reduces via all-gather and has no polar_mode, so only
-        # the halo rows are meaningful for it
-        if transpose and polar_mode != "halo-exchange":
-            self.skipTest("the transpose convolution has no polar_mode")
-
+        g_in, g_out = th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in), th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out)
         theta_cutoff = theta_cutoff_scale * compute_theta_cutoff(nlat_out if not transpose else nlat_in, grid=grid_out if not transpose else grid_in)
+        args = dict(kernel_shape=kernel_shape, theta_cutoff=theta_cutoff)
+        if transpose:
+            conv_local = th.DiscreteContinuousConvTransposeS2(g_in, g_out, C, C, **args).to(self.device)
+
+            def build():
+                return thd.DistributedDiscreteContinuousConvTransposeS2(g_in, g_out, C, C, polar_mode=polar_mode, **args).to(self.device)
+
+        else:
+            conv_local = th.DiscreteContinuousConvS2(g_in, g_out, C, C, **args).to(self.device)
+
+            def build():
+                return thd.DistributedDiscreteContinuousConvS2(g_in, g_out, C, C, polar_mode=polar_mode, **args).to(self.device)
+
+        ser_ker, ser_row, ser_col, ser_vals = conv_local._psi_coo()
+
+        # psi's rows are latitudes of the grid it is keyed by, its columns flat points of the
+        # other one: output rows over input columns in the forward, input rows over output
+        # columns in the transpose
+        nlon_col = nlon_out if transpose else nlon_in
+        row_shapes = compute_split_shapes(nlat_in if transpose else nlat_out, self.grid_size_h)
+        col_shapes = compute_split_shapes(nlat_out if transpose else nlat_in, self.grid_size_h)
+        row_starts, col_starts = [0, *accumulate(row_shapes)], [0, *accumulate(col_shapes)]
+        ser_col_lat = ser_col // nlon_col
 
         # Whether a halo can serve this configuration is a property of the geometry and the
         # decomposition, so derive it rather than hard-coding it per row: the same cutoff is
-        # servable on a coarse polar split and not on a fine one. The assertion is then that the
-        # constructor agrees -- refusing exactly when the support outruns a neighbour, and saying
-        # which mode to use instead.
-        colats_in, _ = precompute_latitudes(nlat_in, grid=grid_in)
-        colats_out, _ = precompute_latitudes(nlat_out, grid=grid_out)
-        try:
-            compute_polar_halo_radius(
-                colats_in,
-                colats_out,
-                effective_theta_cutoff(theta_cutoff),
-                compute_split_shapes(nlat_in, self.grid_size_h),
-                compute_split_shapes(nlat_out, self.grid_size_h),
-            )
+        # servable on a coarse polar split and not on a fine one. The assertion is then that
+        # the constructor agrees -- refusing exactly when the support outruns a neighbour, and
+        # saying which mode to use instead.
+        if polar_mode == "halo-exchange":
+            # the halo is planned from psi: a rank keeps its output latitudes -- psi's rows in
+            # the forward, its columns in the transpose -- and reads the input latitudes their
+            # entries reach, which have to lie within its immediate polar neighbours
+            owned_lat, reached_lat = (ser_col_lat, ser_row) if transpose else (ser_row, ser_col_lat)
+            owned_starts, reached_starts = (col_starts, row_starts) if transpose else (row_starts, col_starts)
             halo_servable = True
-        except ValueError:
-            halo_servable = False
+            for r in range(self.grid_size_h):
+                sel = (owned_lat >= owned_starts[r]) & (owned_lat < owned_starts[r + 1])
+                if sel.any():
+                    lo, hi = int(reached_lat[sel].min()), int(reached_lat[sel].max()) + 1
+                    halo_servable &= lo >= reached_starts[max(r - 1, 0)] and hi <= reached_starts[min(r + 2, self.grid_size_h)]
+            if not halo_servable:
+                with self.assertRaises(ValueError) as ctx:
+                    build()
+                self.assertIn("reduce-scatter", str(ctx.exception), "the refusal must name the mode that does work")
+                return
 
-        if not transpose and polar_mode == "halo-exchange" and not halo_servable:
-            with self.assertRaises(ValueError) as ctx:
-                thd.DistributedDiscreteContinuousConvS2(
-                    th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
-                    th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                    C,
-                    C,
-                    kernel_shape=kernel_shape,
-                    theta_cutoff=theta_cutoff,
-                    polar_mode=polar_mode,
-                )
-            self.assertIn("reduce-scatter", str(ctx.exception), "the refusal must name the mode that does work")
-            return
+        conv_dist = build()
 
-        if transpose:
-            conv_local = th.DiscreteContinuousConvTransposeS2(
-                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
-                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                C,
-                C,
-                kernel_shape=kernel_shape,
-                theta_cutoff=theta_cutoff,
-            ).to(self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(
-                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
-                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                C,
-                C,
-                kernel_shape=kernel_shape,
-                theta_cutoff=theta_cutoff,
-            ).to(self.device)
-            # the transpose module's psi indexes the output grid along the split axis
-            nlon_split = nlon_out
-            shapes = conv_dist.lat_out_shapes
-        else:
-            conv_local = th.DiscreteContinuousConvS2(
-                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
-                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                C,
-                C,
-                kernel_shape=kernel_shape,
-                theta_cutoff=theta_cutoff,
-            ).to(self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvS2(
-                th.as_grid(grid_in, nlat=nlat_in, nlon=nlon_in),
-                th.as_grid(grid_out, nlat=nlat_out, nlon=nlon_out),
-                C,
-                C,
-                kernel_shape=kernel_shape,
-                theta_cutoff=theta_cutoff,
-                polar_mode=polar_mode,
-            ).to(self.device)
-            nlon_split = nlon_in
-            shapes = conv_dist.lat_in_shapes
+        # Assert the mode rather than only reading it back: a silent fall back to the other
+        # keying would satisfy the comparison while leaving this mode untested.
+        self.assertEqual(conv_dist.use_halo, polar_mode == "halo-exchange", f"constructor did not honour polar_mode={polar_mode!r}")
+
+        # The entries this rank owns, read off the decomposition rather than the layer's own
+        # band: the output latitudes it computes under halo-exchange, the input latitudes it
+        # holds under reduce-scatter. The output is psi's row in the forward and its column
+        # in the transpose.
+        owned_is_row = conv_dist.use_halo != transpose
+        owned_lat = ser_row if owned_is_row else ser_col_lat
+        starts = row_starts if owned_is_row else col_starts
+        keep = (owned_lat >= starts[self.hrank]) & (owned_lat < starts[self.hrank + 1])
+
+        # the layer's block, lifted back to global coordinates
+        dist_ker, dist_row, dist_col, dist_vals = conv_dist._psi_coo()
+        row_global = dist_row + conv_dist._psi_rows[0]
+        col_global = dist_col + conv_dist._psi_cols[0]
 
         def sorted_entries(ker, row, col, vals):
             """Canonical ordering so the two builds are comparable regardless of layout."""
-            key = (ker.to(torch.int64) * (nlat_out + nlat_in) + row.to(torch.int64)) * (nlat_in * nlat_out * nlon_split) + col.to(torch.int64)
+            key = (ker.to(torch.int64) * (nlat_out + nlat_in) + row.to(torch.int64)) * (nlat_in * nlat_out * max(nlon_in, nlon_out)) + col.to(torch.int64)
             order = torch.argsort(key)
             return ker[order], row[order], col[order], vals[order]
 
-        # psi as each layer describes it, whichever backend holds it
-        dist_ker, dist_row, dist_col, dist_vals = conv_dist._psi_coo()
-        ser_ker, ser_row, ser_col, ser_vals = conv_local._psi_coo()
-
-        # The two polar strategies key psi differently, so both the un-keying and the predicate
-        # for "which serial entries should this rank hold" differ. Lift the local tensor back to
-        # global coordinates and select the matching serial entries, then compare entry for entry.
-        use_halo = getattr(conv_dist, "use_halo", False)
-
-        # Assert the mode rather than only reading it back: everything below adapts to whichever
-        # keying the constructor chose, so a silent fall back to reduce-scatter would satisfy the
-        # comparison while leaving the halo path untested. The transpose class has no polar_mode.
-        if not transpose:
-            self.assertEqual(use_halo, polar_mode == "halo-exchange", f"constructor did not honour polar_mode={polar_mode!r}")
-
-        if use_halo:
-            # rows are this rank's own output latitudes, columns index a halo-padded input band
-            r_lat = conv_dist.r_lat
-            out_start = sum(conv_dist.lat_out_shapes[: self.hrank])
-            halo_start = sum(conv_dist.lat_in_shapes[: self.hrank]) - r_lat
-
-            lat_loc = dist_col // nlon_split
-            lon_loc = dist_col % nlon_split
-            col_global = (lat_loc + halo_start) * nlon_split + lon_loc
-            row_global = dist_row + out_start
-
-            keep = (ser_row >= out_start) & (ser_row < out_start + conv_dist.nlat_out_local)
-        else:
-            # rows stay global, columns index the local input slice
-            lat_start = sum(shapes[: self.hrank])
-            lat_local = shapes[self.hrank]
-
-            lat_loc = dist_col // nlon_split
-            lon_loc = dist_col % nlon_split
-            col_global = (lat_loc + lat_start) * nlon_split + lon_loc
-            row_global = dist_row
-
-            lat_ser = ser_col // nlon_split
-            keep = (lat_ser >= lat_start) & (lat_ser < lat_start + lat_local)
-
         got = sorted_entries(dist_ker, row_global, col_global, dist_vals)
         ref = sorted_entries(ser_ker[keep], ser_row[keep], ser_col[keep], ser_vals[keep])
+        use_halo = conv_dist.use_halo
 
         if verbose:
             print(f"psi block on rank ({self.hrank},{self.wrank}), use_halo={use_halo}: {got[0].numel()} vs {ref[0].numel()} entries")
@@ -742,10 +710,11 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         [
             ["forward", "reduce-scatter", "equiangular", (32, 64), (16, 32)],
             ["forward", "halo-exchange", "equiangular", (32, 64), (16, 32)],
-            ["transpose", None, "equiangular", (32, 64), (16, 32)],
+            ["transpose", "halo-exchange", "equiangular", (32, 64), (16, 32)],
+            ["transpose", "reduce-scatter", "equiangular", (32, 64), (16, 32)],
             ["forward", "reduce-scatter", "healpix", (8,), (4,)],
             ["forward", "halo-exchange", "healpix", (8,), (4,)],
-            ["transpose", None, "healpix", (8,), (4,)],
+            ["transpose", "halo-exchange", "healpix", (8,), (4,)],
         ]
     )
     def test_identical_layers_share_their_block(self, direction, polar_mode, grid, fine_shape, coarse_shape):
@@ -758,7 +727,7 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         if direction == "transpose":
 
             def build(**kwargs):
-                return thd.DistributedDiscreteContinuousConvTransposeS2(g_out, g_in, 4, 4, kernel_shape=3, **kwargs).to(self.device)
+                return thd.DistributedDiscreteContinuousConvTransposeS2(g_out, g_in, 4, 4, kernel_shape=3, polar_mode=polar_mode, **kwargs).to(self.device)
 
         else:
 
@@ -784,15 +753,16 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         self.assertTrue(conv.fused)
         self.assertEqual(conv.backend.name, "regular-reference")
 
-    def test_polar_mode_rejects_unknown_value(self):
+    @parameterized.expand([["forward"], ["transpose"]])
+    def test_polar_mode_rejects_unknown_value(self, direction):
         """An unrecognised mode is a typo, not a request for a default."""
+        layer = thd.DistributedDiscreteContinuousConvTransposeS2 if direction == "transpose" else thd.DistributedDiscreteContinuousConvS2
+        grid = th.as_grid("equiangular", nlat=32, nlon=64)
         with self.assertRaises(ValueError) as ctx:
-            thd.DistributedDiscreteContinuousConvS2(
-                th.as_grid("equiangular", nlat=32, nlon=64), th.as_grid("equiangular", nlat=32, nlon=64), 1, 1, kernel_shape=(3, 3), polar_mode="halo"
-            )
+            layer(grid, grid, 1, 1, kernel_shape=(3, 3), polar_mode="halo")
         self.assertIn("halo-exchange", str(ctx.exception))
 
-    @parameterized.expand([["forward", "halo-exchange"], ["forward", "reduce-scatter"], ["transpose", None]])
+    @parameterized.expand([["forward", "halo-exchange"], ["forward", "reduce-scatter"], ["transpose", "halo-exchange"], ["transpose", "reduce-scatter"]])
     def test_healpix_psi_blocks(self, direction, polar_mode, verbose=False):
         """
         Each rank holds exactly the serial psi entries it owns, and the polar ranks together hold each once.
@@ -800,7 +770,8 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         The counterpart of test_psi_blocks on HEALPix, where psi is keyed per point. Which
         entries a rank owns is read off the shards, independently of the band the layer
         plans: its own output points under halo-exchange, its own input points under
-        reduce-scatter, and for the transpose the output points it scatters onto.
+        reduce-scatter; for the transpose the output points it scatters onto under
+        halo-exchange, and its own input points under reduce-scatter.
         """
         transpose = direction == "transpose"
         fine, coarse = th.HealpixGrid(nside=8), th.HealpixGrid(nside=4)
@@ -808,7 +779,7 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         g_in, g_out = (coarse, fine) if transpose else (fine, coarse)
         if transpose:
             conv_local = th.DiscreteContinuousConvTransposeS2(g_in, g_out, 1, 1, kernel_shape=(3, 3), basis_type="morlet")
-            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(g_in, g_out, 1, 1, kernel_shape=(3, 3), basis_type="morlet")
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(g_in, g_out, 1, 1, kernel_shape=(3, 3), basis_type="morlet", polar_mode=polar_mode)
         else:
             conv_local = th.DiscreteContinuousConvS2(g_in, g_out, 1, 1, kernel_shape=(3, 3), basis_type="morlet")
             conv_dist = thd.DistributedDiscreteContinuousConvS2(g_in, g_out, 1, 1, kernel_shape=(3, 3), basis_type="morlet", polar_mode=polar_mode)
@@ -820,12 +791,10 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
 
         # the serial rows are output points of the forward, input points of the transpose,
         # and its columns the other grid's
-        if transpose:
-            shard, owned = conv_dist.shard_out, ser_col
-        elif polar_mode == "reduce-scatter":
-            shard, owned = conv_dist.shard_in, ser_col
+        if polar_mode == "halo-exchange":
+            shard, owned = conv_dist.shard_out, (ser_col if transpose else ser_row)
         else:
-            shard, owned = conv_dist.shard_out, ser_row
+            shard, owned = conv_dist.shard_in, (ser_row if transpose else ser_col)
         lo = sum(shard.pixel_shapes[: self.hrank])
         keep = (owned >= lo) & (owned < lo + shard.pixel_shapes[self.hrank])
 
@@ -849,21 +818,18 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
     @parameterized.expand([["forward"], ["transpose"]])
     def test_healpix_cutoff_too_wide_for_the_decomposition(self, direction):
         """
-        A support reaching past the neighbouring bands is refused on every rank, at construction;
-        the forward names reduce-scatter, which serves it.
+        A support reaching past the neighbouring bands is refused on every rank, at construction,
+        naming reduce-scatter, which serves it.
         """
         if self.grid_size_h < 3:
             self.skipTest("with fewer than three polar ranks every band is a neighbour")
         grid = th.HealpixGrid(nside=4)
         self.skip_unless_decomposable(grid)
-        if direction == "transpose":
-            with self.assertRaisesRegex(ValueError, "too wide for this polar decomposition"):
-                thd.DistributedDiscreteContinuousConvTransposeS2(grid, grid, 1, 1, kernel_shape=3, theta_cutoff=1.5)
-        else:
-            with self.assertRaisesRegex(ValueError, "reduce-scatter"):
-                thd.DistributedDiscreteContinuousConvS2(grid, grid, 1, 1, kernel_shape=3, theta_cutoff=1.5)
-            conv = thd.DistributedDiscreteContinuousConvS2(grid, grid, 1, 1, kernel_shape=3, theta_cutoff=1.5, polar_mode="reduce-scatter")
-            self.assertEqual(conv.npoints_out_local, grid.npoints)
+        layer = thd.DistributedDiscreteContinuousConvTransposeS2 if direction == "transpose" else thd.DistributedDiscreteContinuousConvS2
+        with self.assertRaisesRegex(ValueError, "too wide for this polar decomposition(.|\n)*reduce-scatter"):
+            layer(grid, grid, 1, 1, kernel_shape=3, theta_cutoff=1.5)
+        conv = layer(grid, grid, 1, 1, kernel_shape=3, theta_cutoff=1.5, polar_mode="reduce-scatter")
+        self.assertEqual(conv.npoints_out_local, grid.npoints)
 
     @parameterized.expand(
         [
@@ -913,7 +879,7 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         )
         if transpose:
             conv_local = th.DiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
-            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args).to(dtype=module_dtype, device=self.device)
+            conv_dist = thd.DistributedDiscreteContinuousConvTransposeS2(**disco_args, polar_mode=polar_mode).to(dtype=module_dtype, device=self.device)
         else:
             conv_local = th.DiscreteContinuousConvS2(**disco_args).to(dtype=module_dtype, device=self.device)
             conv_dist = thd.DistributedDiscreteContinuousConvS2(**disco_args, fused=fused, polar_mode=polar_mode).to(dtype=module_dtype, device=self.device)

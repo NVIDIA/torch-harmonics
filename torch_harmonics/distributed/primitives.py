@@ -1255,7 +1255,7 @@ class PolarHaloPlan:
         return cls(recv_prev=before, recv_next=after, send_prev=send_prev, send_next=send_next)
 
 
-def _plan_ring_band_halo(shard, reach: List[Optional[Tuple[int, int]]], rank: int) -> Tuple[PolarHaloPlan, Tuple[int, int], Tuple[int, int]]:
+def _plan_ring_band_halo(shard, reach: List[Optional[Tuple[int, int]]], rank: int, per_ring: bool = False) -> Tuple[PolarHaloPlan, Tuple[int, int], Tuple[int, int]]:
     r"""
     The halo of an operator that reads whole rings, planned from the rings every rank reaches.
 
@@ -1278,11 +1278,15 @@ def _plan_ring_band_halo(shard, reach: List[Optional[Tuple[int, int]]], rank: in
         reads, or ``None`` if it reads none.
     rank : int
         The rank to plan for.
+    per_ring : bool, optional
+        Plan the exchange in whole rings rather than flat points, for a field that keeps a
+        latitude axis of its own, as a regular grid's ``(..., nlat, nlon)`` layout does. By
+        default ``False``: the field is flat, as on HEALPix.
 
     Returns
     -------
     halo : PolarHaloPlan
-        The plan of ``rank``, without padding.
+        The plan of ``rank``, without padding, in rings if ``per_ring`` and points otherwise.
     ring_range : Tuple[int, int]
         ``rank``'s band as global rings ``[lo, hi)``.
     point_range : Tuple[int, int]
@@ -1305,7 +1309,7 @@ def _plan_ring_band_halo(shard, reach: List[Optional[Tuple[int, int]]], rank: in
         ring_bands.append((lo, hi))
     needs = [(int(ring_bounds[lo]), int(ring_bounds[hi])) for lo, hi in ring_bands]
 
-    halo = PolarHaloPlan.from_needs(_point_shapes(shard), needs, rank)
+    halo = PolarHaloPlan.from_needs(_ring_shapes(shard), ring_bands, rank) if per_ring else PolarHaloPlan.from_needs(_point_shapes(shard), needs, rank)
     return halo, ring_bands[rank], needs[rank]
 
 

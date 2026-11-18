@@ -246,12 +246,14 @@ convolution keeps the psi rows of its own output points and borrows the whole
 input rings they reach, so the per-basis-function intermediate shrinks with the
 polar group; with `polar_mode="reduce-scatter"` it keeps the columns of its own
 input points over every output point, and a reduce-scatter completes the sums,
-which serves any cutoff. The transpose convolution keeps the columns of its own
-output points and borrows the input rings that scatter onto them, a halo rather
-than the all-gather of the regular grids, exchanged before the weight
-contraction so that it moves `in_channels` rather than `out_channels * K` values
-per pixel. As for attention, a band reaching past the neighbouring ranks raises
-a `ValueError`; for the forward convolution it names `"reduce-scatter"`.
+which serves any cutoff. The transpose convolution takes the same two modes:
+under `"halo-exchange"` it keeps the columns of its own output points and
+borrows the input rings that scatter onto them; under `"reduce-scatter"` it
+scatters its own input points onto every output point and reduce-scatters the
+result. On the regular grids it does the same per latitude. The halo is
+exchanged before the weight contraction, so that it moves `in_channels` rather
+than `out_channels * K` values per pixel. As for attention, a band reaching past
+the neighbouring ranks raises a `ValueError` that names `"reduce-scatter"`.
 
 ## 5. Calling distributed modules
 
