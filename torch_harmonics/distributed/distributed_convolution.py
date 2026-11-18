@@ -88,19 +88,38 @@ def _check_channel_split(channels: int, name: str, comm_size_azimuth: int) -> No
         )
 
 
-def _setup_distributed_grids(layer: DiscreteContinuousConv, grid_in: GridS2, grid_out: GridS2) -> None:
+def _setup_distributed_grids(layer: DiscreteContinuousConv, grid_in: GridS2, grid_out: GridS2, polar_mode: str, split_channels: Tuple[str, int]) -> None:
     """
-    The grids of a distributed DISCO layer and this rank's shards of them.
+    The polar mode and grids of a distributed DISCO layer, and this rank's shards of them.
 
     The global grids are set up as in the serial layer: the radius of a pair of product grids
     folded into the batch, and the pair ragged if either side is. Each grid then decomposes
     itself over the process grid, and the fields are checked and shaped against the shards. A
     HEALPix shard refuses an azimuth split, which is how a ragged pair refuses one. The block
     of psi stays the serial layer's whole one until the layer narrows it to its rank's.
+
+    On a regular pair, the azimuth a2a trades the longitude split for a split of the
+    channels named by ``split_channels``, ``(name, count)``: the input channels of the
+    forward, the output channels of the transpose, whose a2a runs after the weight
+    contraction. Every azimuth rank needs one of them. The pair also keeps the shards'
+    latitude and longitude extents per rank, which the collectives split by.
     """
+    if polar_mode not in _POLAR_MODES:
+        raise ValueError(f"Unknown polar_mode '{polar_mode}', expected one of {sorted(_POLAR_MODES)}")
+    layer.polar_mode = polar_mode
+    layer.use_halo = polar_mode == "halo-exchange"
+
     _setup_grids(layer, grid_in, grid_out)
     _shard_grid_pair(layer)
     layer._field_in, layer._field_out = layer.shard_in, layer.shard_out
+
+    if not layer.ragged:
+        name, channels = split_channels
+        _check_channel_split(channels, name, layer.comm_size_azimuth)
+        layer.lat_in_shapes = list(layer.shard_in.lat_shapes)
+        layer.lon_in_shapes = list(layer.shard_in.lon_shapes)
+        layer.lat_out_shapes = list(layer.shard_out.lat_shapes)
+        layer.lon_out_shapes = list(layer.shard_out.lon_shapes)
 
 
 def _ring_reach(grid: GridS2, points: torch.Tensor) -> Optional[Tuple[int, int]]:
@@ -128,13 +147,13 @@ _REDUCE_SCATTER_ADVICE = " Alternatively pass polar_mode='reduce-scatter', which
 
 def _plan_psi_halo(layer, owned: torch.Tensor, reached: torch.Tensor, owned_shard, reached_shard, advice: str = ""):
     """
-    Plan the halo on ``reached_shard`` from the psi entries along ``owned``, and set ``layer.halo``.
+    Plan the halo on ``reached_shard`` from the psi entries along ``owned``.
 
     Every rank keeps the psi entries whose ``owned`` point -- a row of the forward, a column
     of the transpose -- lies in its block of ``owned_shard``, and reads the rings of
     ``reached_shard`` that their ``reached`` points lie on. Both are flat point indices of
-    the global grids. Returns this rank's band of ``reached_shard`` as rings and as flat
-    points, and its block of ``owned_shard`` as flat points. The halo is planned in rings
+    the global grids. Returns this rank's halo plan, its band of ``reached_shard`` as rings
+    and as flat points, and its block of ``owned_shard`` as flat points. The halo is planned in rings
     on a regular layer, whose fields keep their latitude axis, and in points on a ragged
     one, whose fields are flat. ``advice`` is appended to the error a band too wide for the
     decomposition raises.
@@ -145,10 +164,10 @@ def _plan_psi_halo(layer, owned: torch.Tensor, reached: torch.Tensor, owned_shar
         sel = (owned >= owned_starts[r]) & (owned < owned_starts[r + 1])
         reach.append(_ring_reach(reached_shard.grid, reached[sel]))
     try:
-        layer.halo, ring_range, point_range = _plan_ring_band_halo(reached_shard, reach, layer.comm_rank_polar, per_ring=not layer.ragged)
+        halo, ring_range, point_range = _plan_ring_band_halo(reached_shard, reach, layer.comm_rank_polar, per_ring=not layer.ragged)
     except ValueError as err:
         raise ValueError(f"{type(layer).__name__}: theta_cutoff={layer.theta_cutoff} is too wide for this polar decomposition. {err}{advice}") from err
-    return ring_range, point_range, (owned_starts[layer.comm_rank_polar], owned_starts[layer.comm_rank_polar + 1])
+    return halo, ring_range, point_range, (owned_starts[layer.comm_rank_polar], owned_starts[layer.comm_rank_polar + 1])
 
 
 class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
@@ -256,28 +275,14 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        if polar_mode not in _POLAR_MODES:
-            raise ValueError(f"Unknown polar_mode '{polar_mode}', expected one of {sorted(_POLAR_MODES)}")
-        self.polar_mode = polar_mode
-        self.use_halo = self.polar_mode == "halo-exchange"
-
         # fused=True uses the reordered a2a, see _distributed_disco_fwd_a2a_reordered
         self.fused = bool(fused)
         self.basis_norm_mode = basis_norm_mode
 
-        _setup_distributed_grids(self, grid_in, grid_out)
+        _setup_distributed_grids(self, grid_in, grid_out, polar_mode, ("in_channels", in_channels))
 
         # compute theta cutoff based on the bandlimit of the input field
         self.theta_cutoff = truncate_support(self.grid_out, theta_cutoff)
-
-        if not self.ragged:
-            # the azimuth a2a trades the longitude split for a split of the input channels, and
-            # unlike the SHT this path does not pad, so every azimuth rank needs a channel
-            _check_channel_split(in_channels, "in_channels", self.comm_size_azimuth)
-            self.lat_in_shapes = list(self.shard_in.lat_shapes)
-            self.lon_in_shapes = list(self.shard_in.lon_shapes)
-            self.lat_out_shapes = list(self.shard_out.lat_shapes)
-            self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         self._setup_polar()
         self._select_backend()
@@ -306,7 +311,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             # the output points the rows key: a regular row is a latitude, whose first point is lat * nlon
             owned = idx[1] if self.ragged else idx[1] * self.nlon_out
             unit = "point" if self.ragged else "latitude"
-            ring_range, point_range, _ = _plan_psi_halo(self, owned, idx[2], self.shard_out, self.shard_in, advice=_REDUCE_SCATTER_ADVICE.format(unit))
+            self.halo, ring_range, point_range, _ = _plan_psi_halo(self, owned, idx[2], self.shard_out, self.shard_in, advice=_REDUCE_SCATTER_ADVICE.format(unit))
             out_starts = list(accumulate([0] + (_point_shapes(self.shard_out) if self.ragged else _ring_shapes(self.shard_out))))
             self._psi_rows = (out_starts[rank], out_starts[rank + 1])
         else:
@@ -342,7 +347,7 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
             f"filter_basis={self.filter_basis}, "
             f"kernel_shape={self.kernel_shape}, "
             f"theta_cutoff={self.theta_cutoff}, "
-            f"groups={self.groups}, fused={self.fused}"
+            f"groups={self.groups}, fused={self.fused}, polar_mode={self.polar_mode}"
         )
 
     def _forward_ragged(self, x: torch.Tensor) -> torch.Tensor:
@@ -487,25 +492,11 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
     ):
         super().__init__(in_channels, out_channels, kernel_shape, basis_type, groups, bias, optimized_kernel)
 
-        if polar_mode not in _POLAR_MODES:
-            raise ValueError(f"Unknown polar_mode '{polar_mode}', expected one of {sorted(_POLAR_MODES)}")
-        self.polar_mode = polar_mode
-        self.use_halo = self.polar_mode == "halo-exchange"
-
         self.basis_norm_mode = basis_norm_mode
-        _setup_distributed_grids(self, grid_in, grid_out)
+        _setup_distributed_grids(self, grid_in, grid_out, polar_mode, ("out_channels", out_channels))
 
         # bandlimit
         self.theta_cutoff = truncate_support(self.grid_in, theta_cutoff)
-
-        if not self.ragged:
-            # the azimuth a2a runs after the weight contraction, so it splits the output
-            # channels; as in the forward convolution, every azimuth rank needs one
-            _check_channel_split(out_channels, "out_channels", self.comm_size_azimuth)
-            self.lat_in_shapes = list(self.shard_in.lat_shapes)
-            self.lon_in_shapes = list(self.shard_in.lon_shapes)
-            self.lat_out_shapes = list(self.shard_out.lat_shapes)
-            self.lon_out_shapes = list(self.shard_out.lon_shapes)
 
         self._setup_polar()
         self._select_backend()
@@ -530,7 +521,7 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
             # the input points the entries read: a regular row is a latitude, whose first point is lat * nlon
             reached = idx[1] if self.ragged else idx[1] * self.nlon_in
             unit = "point" if self.ragged else "latitude"
-            ring_range, point_range, self._psi_cols = _plan_psi_halo(self, idx[2], reached, self.shard_out, self.shard_in, advice=_REDUCE_SCATTER_ADVICE.format(unit))
+            self.halo, ring_range, point_range, self._psi_cols = _plan_psi_halo(self, idx[2], reached, self.shard_out, self.shard_in, advice=_REDUCE_SCATTER_ADVICE.format(unit))
             out_rings = list(accumulate([0] + _ring_shapes(self.shard_out)))
             self._psi_col_ring_range = (out_rings[rank], out_rings[rank + 1])
         else:
