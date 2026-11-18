@@ -205,6 +205,11 @@ _COMPILE_CASES = [
 ]
 
 
+def _torch_release():
+    """(major, minor) of the installed PyTorch; pre-release and local tags such as 2.13.0a0+nv26.06 count as their release."""
+    return tuple(int(part) for part in torch.__version__.split("+")[0].split(".")[:2])
+
+
 def _check_compile(test, nlat, nlon, grid, lmax, dtype, vector, verbose=False, **kwargs):
     """Compile the round trip as one graph, forward and backward, and compare it to eager."""
     set_seed(333)
@@ -653,7 +658,12 @@ class TestVectorSphericalHarmonicTransform(unittest.TestCase):
         ``TestSphericalHarmonicTransform.test_compile``.  The vector transforms assemble
         their spheroidal and toroidal components separately, so they exercise a code path
         the scalar test does not reach.
+
+        Skipped on CUDA before PyTorch 2.13: there inductor miscompiles the float32 inverse
+        (wrong by ~1e7 ULPs and nondeterministic on H100 with 2.12, exact with 2.13).
         """
+        if self.device.type == "cuda" and _torch_release() < (2, 13):
+            self.skipTest("torch.compile of the vector SHTs needs PyTorch >= 2.13 on CUDA")
         _check_compile(self, nlat, nlon, grid, lmax, dtype, vector=True, verbose=verbose)
 
 

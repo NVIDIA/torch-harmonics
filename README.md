@@ -108,6 +108,8 @@ For a CPU-only build, install the `torch-harmonics` package from [PyPI](#pypi).
 
 > **Tip:** Run `nvidia-smi` to check your driver's CUDA version.
 
+> **Note:** `torch.compile` of the vector SHTs (`RealVectorSHT`, `InverseRealVectorSHT`) can give wrong results in float32 on PyTorch before 2.13. With PyTorch 2.12 (NGC 26.04) on H100, the compiled `InverseRealVectorSHT` was off by up to 1e7 ULPs and differed between runs; it is exact with PyTorch 2.13 (NGC 26.06) on the same GPU. Eager mode is not affected. If you compile models that contain vector SHTs, use PyTorch 2.13 or newer.
+
 **Older PyTorch or CUDA** (PyTorch before 2.9, CUDA before 12.6) have no prebuilt wheels. Use the [Docker container](#building-from-source), which brings a matching PyTorch and CUDA, or build torch-harmonics from source against your installed PyTorch, adding `--no-deps` so that pip does not replace it with a newer one (`pip install --no-build-isolation --no-deps .`). These combinations are not tested.
 
 ### PyPI
