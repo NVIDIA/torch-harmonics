@@ -41,6 +41,7 @@ from torch.library import opcheck
 from torch_harmonics import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2, HealpixGrid, as_grid
 from torch_harmonics.disco import backends as disco_backends
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
+from torch_harmonics.disco._disco_utils import _weight_contraction, _weight_expansion, _weight_gradient
 from torch_harmonics.disco._psi_layouts import arcs_to_coo, build_arcs, build_kpacked
 from torch_harmonics.disco.backends import RaggedOptimizedBackend, RaggedReferenceBackend, RegularOptimizedBackend, RegularReferenceBackend
 from torch_harmonics.disco.convolution import (
@@ -523,7 +524,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
             [8, 4, 2, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.bfloat16, False, True, 5e-2, 5e-2],
             # The fused input gradient takes the spatial-first path only when the output is less than
             # half as wide as the input, as in the 4 -> 2 rows above; equal and widening channel
-            # counts take the weight-first path, with the einsum ahead of the sparse transpose
+            # counts take the weight-first path, with the weight matmul ahead of the sparse transpose
             [8, 4, 4, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
             [8, 2, 4, (24, 48), (12, 24), (2, 2), "harmonic", "mean", "equiangular", "equiangular", torch.float32, False, True, 1e-4, 1e-4],
             [8, 4, 4, (16, 32), (16, 32), (3), "piecewise linear", "mean", "equiangular", "equiangular", torch.float16, False, True, 2e-2, 1e-2],
@@ -868,7 +869,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         """Direct check that the autocast registration on the optimized DISCO custom_ops
         produces output in the active autocast dtype.
 
-        Uses bias=False so the final op of the conv module is the einsum, which is
+        Uses bias=False so the final op of the conv module is the weight matmul, which is
         autocast-eligible and preserves the autocast dtype. A bias add of bf16+fp32
         would dtype-promote to fp32 and mask the autocast contract we're testing.
         """
@@ -1079,7 +1080,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         schema are int index buffers, float ``vals`` registered as a non-grad buffer, and Python
         ints. So the contract reduces to: when ``inp.requires_grad=False``, the backward must not
         crash and ``inp.grad`` must remain ``None`` — while the conv's learnable weight still gets
-        a gradient via the einsum that sits outside the custom op.
+        a gradient via the weight matmul that sits outside the custom op.
 
         Baseline (``inp.requires_grad=True``) is also exercised as a sanity check.
         """
@@ -1120,7 +1121,7 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
         out = conv(inp_nograd)
         out.sum().backward()
         self.assertIsNone(inp_nograd.grad, "contract violation: inp.grad must be None when requires_grad=False")
-        self.assertIsNotNone(conv.weight.grad, "weight.grad should still be populated via the einsum outside the op")
+        self.assertIsNotNone(conv.weight.grad, "weight.grad should still be populated via the weight matmul outside the op")
 
         # --- contract: psi_* buffers must never accumulate gradients ---
         # (they are non-learnable index/value tensors registered via register_buffer)
@@ -1210,6 +1211,49 @@ def _kpacked_runnable_here():
 def _is_kpacked_supported():
     """Return True when the kpacked forward can actually run here (device AND build)."""
     return _kpacked_built_for_sm90() or _kpacked_built_for_sm100()
+
+
+@parameterized_class(("device"), _devices)
+class TestWeightContraction(unittest.TestCase):
+    """The matmul weight contractions of the DISCO layers against einsum, including the outer-product cases."""
+
+    @parameterized.expand(
+        [
+            # [batch, groups, in_per_group, out_per_group, kernel_size, spatial]
+            [2, 1, 4, 6, 3, (5, 7)],
+            [2, 3, 4, 2, 3, (5, 7)],
+            [1, 4, 2, 3, 1, (11,)],
+            # one in-channel per group and K = 1: the contraction is an outer product
+            [2, 4, 1, 3, 1, (5, 7)],
+            # one out-channel per group: the expansion is an outer product
+            [2, 4, 3, 1, 2, (5, 7)],
+        ],
+        skip_on_empty=True,
+    )
+    def test_against_einsum(self, B, G, Cg, Og, K, spatial):
+        set_seed(333)
+        kw = dict(device=self.device, dtype=torch.float64)
+        w = torch.randn(G, Og, Cg, K, **kw)
+        x = torch.randn(B, G * Cg, K, *spatial, **kw)
+        y = torch.randn(B, G * Og, *spatial, **kw)
+        xg, yg = x.reshape(B, G, Cg, K, -1), y.reshape(B, G, Og, -1)
+
+        out = torch.einsum("bgckn,gock->bgon", xg, w).reshape(B, G * Og, *spatial)
+        self.assertTrue(torch.allclose(_weight_contraction(x, w), out))
+        exp = torch.einsum("bgon,gock->bgckn", yg, w).reshape(B, G * Cg, K, *spatial)
+        self.assertTrue(torch.allclose(_weight_expansion(y, w), exp))
+        grad = torch.einsum("bgon,bgckn->gock", yg, xg)
+        self.assertTrue(torch.allclose(_weight_gradient(y, x, G), grad))
+
+    @parameterized.expand([[1, 3], [3, 1], [3, 3]], skip_on_empty=True)
+    def test_autocast_dtype(self, Cg, Og):
+        """Under autocast the outer-product cases give the autocast dtype, as the matmul does."""
+        if self.device.type != "cuda":
+            raise unittest.SkipTest("autocast to float16 is checked on CUDA")
+        w = torch.randn(2, Og, Cg, 1, device=self.device)
+        with torch.autocast("cuda", dtype=torch.float16):
+            self.assertEqual(_weight_contraction(torch.randn(2, 2 * Cg, 1, 4, 8, device=self.device), w).dtype, torch.float16)
+            self.assertEqual(_weight_expansion(torch.randn(2, 2 * Og, 4, 8, device=self.device), w).dtype, torch.float16)
 
 
 class TestKpackedDeviceGate(unittest.TestCase):

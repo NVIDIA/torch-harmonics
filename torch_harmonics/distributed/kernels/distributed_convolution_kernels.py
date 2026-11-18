@@ -39,11 +39,11 @@ Two variants, selected by the public ``fused=`` flag (mirrors the serial
              via an all-to-all (channel<->azimuth swap), the sparse psi
              contraction runs against the full nlon_in row, polar
              reduce_scatter completes the H sum, a second a2a swaps back to
-             channel-distributed, then a local einsum with the replicated
+             channel-distributed, then a local weight contraction with the replicated
              weight produces ``(B, O, H_out_local, W_out_local)``. The
              K-expanded intermediate is saved for backward.
 
-  ``fused=True``  : the reordered path. The weight einsum is done FIRST, on
+  ``fused=True``  : the reordered path. The weight contraction is done FIRST, on
              the local azimuth channel shard, through the backend's fused
              node (K-expanded recomputed in backward, not saved); the
              collectives then move only the K-less ``(B, O, H, W)``. Trades
@@ -67,6 +67,7 @@ from itertools import accumulate
 
 import torch
 
+from torch_harmonics.disco._disco_utils import _weight_contraction
 from torch_harmonics.distributed.primitives import (
     compute_split_shapes,
     distributed_transpose_azimuth,
@@ -89,7 +90,7 @@ def _distributed_disco_fwd_a2a(layer, x: torch.Tensor) -> torch.Tensor:
       3. Sparse psi contraction → K-expanded (B, C, K, H_out, W).
       4. (reduce-scatter only) polar reduce_scatter on H.
       5. (optional) azimuth <-> channel A2A back so W is split, C is local.
-      6. Local einsum (C, K) × (O, C, K) → (B, O, H_out_local, W_out_local).
+      6. Local weight contraction (C, K) × (O, C, K) → (B, O, H_out_local, W_out_local).
 
     Two polar strategies, chosen by the layer's ``polar_mode``:
 
@@ -138,10 +139,7 @@ def _distributed_disco_fwd_a2a(layer, x: torch.Tensor) -> torch.Tensor:
         chan_shapes = compute_split_shapes(num_chans, comm_size_azimuth)
         x = distributed_transpose_azimuth(x, (-1, 1), chan_shapes)
 
-    B, C, K, H, W = x.shape
-    x = x.reshape(B, layer.groups, layer.groupsize, K, H, W)
-    out = torch.einsum("bgckxy,gock->bgoxy", x, layer._weight_r()).contiguous()
-    return out.reshape(B, layer.groups * layer.out_per_group, H, W)
+    return _weight_contraction(x, layer._weight_r())
 
 
 # ---------------------------------------------------------------------------
@@ -152,16 +150,16 @@ def _distributed_disco_fwd_a2a(layer, x: torch.Tensor) -> torch.Tensor:
 def _distributed_disco_fwd_a2a_reordered(layer, x: torch.Tensor) -> torch.Tensor:
     """Reordered + fused A2A DISCO forward (the ``fused=True`` path).
 
-    The weight einsum (a linear contraction over C, K) commutes with the linear
+    The weight contraction (linear, over C, K) commutes with the linear
     collectives, so it is done FIRST — on the local azimuth channel shard, through
     the backend's fused node (which recomputes the K-expanded in backward instead
     of saving it, where the backend can). The collectives then move the K-less
     ``(B, O, H, W)`` instead of the K-expanded tensor:
 
-        transpose(W->C) -> fused contraction+einsum(local C-shard) ->
+        transpose(W->C) -> fused contraction+weights(local C-shard) ->
             reduce_scatter(polar, H) -> reduce_scatter(azimuth, W)
 
-    vs the non-reordered a2a (``fused=False``), which keeps the einsum last and
+    vs the non-reordered a2a (``fused=False``), which keeps the weight contraction last and
     saves/communicates the K-expanded. This trades ~one extra contraction in
     backward for K x lower activation memory and K x less collective volume.
 
@@ -228,7 +226,7 @@ def _distributed_disco_fwd_a2a_reordered(layer, x: torch.Tensor) -> torch.Tensor
         # (n_local_groups, out_per_group, groupsize, K)
         weight_local = weight.reshape(groups, out_per_group, groupsize, K)[group_lo:group_hi]
 
-    # 2+3. fused contraction + local weight einsum ->
+    # 2+3. fused contraction + local weight contraction ->
     #      (B, n_local_groups * out_per_group, H_out_full, W_full).
     local_out = layer.backend.conv(layer, x_padded, weight_local, n_local_groups, local_groupsize, recompute=True)
 
@@ -253,7 +251,7 @@ def _distributed_disco_fwd_a2a_reordered(layer, x: torch.Tensor) -> torch.Tensor
     # back a channels-last / non-default-strided tensor; without this it
     # propagates downstream and trips DDP's gradient-layout-contract warning on
     # the next layer (e.g. the 1x1 MLP conv gets a channels-last weight grad).
-    # The non-reordered a2a path is already contiguous via its einsum. Use a
+    # The non-reordered a2a path is already contiguous via its weight matmul. Use a
     # plain .contiguous() (the memory_format= kwarg is silently ignored in some
     # op paths).
     return out.contiguous()

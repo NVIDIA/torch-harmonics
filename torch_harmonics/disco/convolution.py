@@ -48,7 +48,7 @@ from torch_harmonics.quadrature import THETA_CUTOFF_EPS, effective_theta_cutoff,
 from torch_harmonics.radial import fold_radius, split_radial_pair, unfold_radius
 from torch_harmonics.truncation import truncate_support
 
-from ._disco_utils import _get_psi, _get_psi_ragged
+from ._disco_utils import _get_psi, _get_psi_ragged, _weight_expansion
 from .backends import BACKENDS
 from .optimized.disco_optimized import _use_spatial_first_dgrad
 
@@ -1188,14 +1188,9 @@ class DiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
 
         x = _to_flat(self, x)
 
-        # extract shape; one spatial axis on a ragged layer, two on a regular one
-        B = x.shape[0]
-        spatial = x.shape[2:]
-        x = x.reshape(B, self.groups, self.groupsize, *spatial)
-
-        # do weight multiplication
-        x = torch.einsum("bgc...,gock->bgok...", x, self._weight_r()).contiguous()
-        x = x.reshape(B, self.weight.shape[0], self.kernel_size, *spatial)
+        # do weight multiplication, (B, in_channels, *spatial) -> (B, out_channels, K, *spatial):
+        # the adjoint of the forward layer's contraction, with the weight's channel axes swapped
+        x = _weight_expansion(x, self._weight_r().transpose(1, 2))
 
         # the backend is fixed before tracing, see torch_harmonics._backend
         out = self.backend.transpose(self, x)
