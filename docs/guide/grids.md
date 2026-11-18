@@ -79,13 +79,9 @@ whose length grows from 4 at the poles to `4 * nside` at the equator. Its
 quadrature integrates only constants exactly, so no SHT on it is exact in
 analysis. The scalar and vector SHTs accept it all the same: synthesis is exact,
 and analysis is approximate, refined by Jacobi iteration (see "SHT on HEALPix"
-below). It is also accepted by `SpectralConvS2`, `ResampleS2`,
-`GaussianRandomFieldS2`, `AttentionS2`, `NeighborhoodAttentionS2`,
-`DiscreteContinuousConvS2`, `DiscreteContinuousConvTransposeS2` and `QuadratureS2`.
-Of the distributed layers, the four distributed SHTs, `DistributedSpectralConvS2`,
-`DistributedResampleS2`, `DistributedNeighborhoodAttentionS2`, `DistributedDiscreteContinuousConvS2`, `DistributedDiscreteContinuousConvTransposeS2` and `DistributedQuadratureS2` accept it, with the grid decomposed along latitude only: more than one azimuth
-rank is rejected (see "HEALPix" in the distributed guide). The other distributed
-layers still require a latitude-longitude grid. `HealpixGrid.from_level(k)`
+below). Every other layer accepts it as well, and so does every distributed
+layer, with the grid decomposed along latitude only: more than one azimuth rank is
+rejected (see "HEALPix" in the distributed guide). `HealpixGrid.from_level(k)`
 builds the grid with `nside = 2**k`.
 
 ## Spherical harmonic truncation

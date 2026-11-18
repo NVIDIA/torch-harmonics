@@ -186,8 +186,8 @@ x_local = x_global[
 A {class}`~torch_harmonics.healpix.HealpixGrid` decomposes along **latitude
 only**. Its rings differ in length and carry different phases, so there is no
 global `nlon` to split, and `grid.shard` raises `NotImplementedError` for an
-azimuth group of more than one rank. Every distributed layer that accepts
-HEALPix inherits this, so it refuses such a process grid at construction; run it
+azimuth group of more than one rank. Every distributed layer accepts HEALPix
+and inherits this, so it refuses such a process grid at construction; run it
 on a `num_polar × 1` layout.
 
 Each polar rank holds a contiguous band of whole rings. The bands are cut so
@@ -208,10 +208,7 @@ npix_local, = shard.shape
 x_local = torch.split(x_global, pixel_shapes, dim=-1)[polar_rank]
 ```
 
-The distributed SHTs (`DistributedRealSHT`, `DistributedInverseRealSHT` and
-their vector variants), `DistributedSpectralConvS2`, `DistributedResampleS2`,
-`DistributedNeighborhoodAttentionS2`, the distributed DISCO convolutions and
-`DistributedQuadratureS2` accept HEALPix. The spectral layout of the SHTs is the same as on a latitude-longitude grid
+The spectral layout of the SHTs is the same as on a latitude-longitude grid
 with one azimuth rank: degrees `l` split across the polar ranks, all orders `m`
 local. So `DistributedSpectralConvS2` can map between HEALPix and a
 latitude-longitude grid as well as within either, and its weights are split

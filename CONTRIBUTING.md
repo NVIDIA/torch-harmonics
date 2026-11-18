@@ -464,8 +464,8 @@ notebooks/          # Exploratory notebooks (not run in CI)
   - **Downsample / self-attention:** `nlon_in % nlon_out == 0`
   - **Upsample:** `nlon_out % nlon_in == 0`
 - On ragged grids such as `HealpixGrid` no ratio is required; the direction follows the point
-  counts. `DistributedNeighborhoodAttentionS2` accepts regular grids only and supports both
-  directions.
+  counts. `DistributedNeighborhoodAttentionS2` accepts both, with HEALPix decomposed along
+  latitude only, and supports both directions.
 - After editing attention C++ or CUDA sources, rebuild and run `tests/test_attention.py` and
   `tests/test_attention_layout.py`, covering regular and ragged grids and upsampling.
 

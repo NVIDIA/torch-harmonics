@@ -19,8 +19,10 @@ are arranged:
 | `GridS2`        | isolatitude rings, equispaced in longitude | an FFT in longitude (hence a fast SHT), ragged grids (HEALPix) |
 | `RegularGridS2` | every ring the same length                 | a dense `(nlat, nlon)` layout and a 2D decomposition           |
 
-Today `QuadratureS2` accepts any `PointSetS2`, `AttentionS2` and
-`NeighborhoodAttentionS2` any `GridS2`, and all other layers a `RegularGridS2`.
+`QuadratureS2` accepts any `PointSetS2`. The attention layers, the DISCO
+convolutions and `ResampleS2` accept any `GridS2`, and the SHTs and the layers
+built on them, `SpectralConvS2` and `GaussianRandomFieldS2`, a `RegularGridS2` or a
+`HealpixGrid`. Only the example models and solvers require a `RegularGridS2`.
 `SpectralGrid` is separate from this spatial hierarchy: it describes the
 coefficient support of an SHT.
 
