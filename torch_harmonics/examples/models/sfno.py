@@ -232,12 +232,6 @@ class SphericalFourierNeuralOperator(nn.Module):
         Activation function to use, by default "gelu"
     encoder_layers : int, optional
         Number of layers in the encoder, by default 1
-    decoder_layers : int, optional
-        Number of layers in the decoder, by default 1
-    block_inner_skip : str, optional
-        Inner skip connection of the blocks ("none", "identity", "linear"), by default "none"
-    block_outer_skip : str, optional
-        Outer skip connection of the blocks ("none", "identity", "linear"), by default "identity"
     use_mlp : int, optional
         Whether to use MLPs in the SFNO blocks, by default True
     mlp_ratio : int, optional
@@ -260,6 +254,12 @@ class SphericalFourierNeuralOperator(nn.Module):
         Whether to use gradient checkpointing in the block MLPs, by default False
     layer_scale : float, optional
         Initial value of a per-channel LayerScale on each block branch, by default None (off)
+    decoder_layers : int, optional
+        Number of layers in the decoder, by default 1
+    block_inner_skip : str, optional
+        Inner skip connection of the blocks ("none", "identity", "linear"), by default "none"
+    block_outer_skip : str, optional
+        Outer skip connection of the blocks ("none", "identity", "linear"), by default "identity"
 
     Examples
     --------
@@ -290,9 +290,6 @@ class SphericalFourierNeuralOperator(nn.Module):
         num_layers=4,
         activation_function="gelu",
         encoder_layers=1,
-        decoder_layers=1,
-        block_inner_skip="none",
-        block_outer_skip="identity",
         use_mlp=True,
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -304,6 +301,9 @@ class SphericalFourierNeuralOperator(nn.Module):
         bias=False,
         checkpointing=False,
         layer_scale=None,
+        decoder_layers=1,
+        block_inner_skip="none",
+        block_outer_skip="identity",
     ):
 
         super().__init__()
