@@ -41,8 +41,8 @@ from torch_harmonics.examples.models._layers import (
     DropPath,
     LearnablePositionEmbedding,
     SequencePositionEmbedding,
-    SpectralConvS2,
     SpectralPositionEmbedding,
+    spectral_conv,
 )
 from torch_harmonics.grid import require_regular_grid
 
@@ -199,18 +199,23 @@ class DiscreteContinuousDecoder(nn.Module):
 
 class SphericalNeuralOperatorBlock(nn.Module):
     """
-    Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
+    Helper module for a single block of the local spherical neural operator: a DISCO
+    convolution, or the library's :class:`~torch_harmonics.SpectralConvS2`.
 
     Parameters
     ----------
-    forward_transform : torch.nn.Module
-        Forward transform to use for the block
-    inverse_transform : torch.nn.Module
-        Inverse transform to use for the block
+    grid_in : RegularGridS2
+        Grid of the block's input
+    grid_out : RegularGridS2
+        Grid of the block's output
     input_dim : int
         Input dimension
     output_dim : int
         Output dimension
+    lmax : int
+        Maximum degree (non-inclusive) of the spectral convolution
+    mmax : int
+        Maximum order (non-inclusive) of the spectral convolution
     conv_type : str, optional
         Type of convolution to use, by default "local"
     mlp_ratio : float, optional
@@ -244,10 +249,12 @@ class SphericalNeuralOperatorBlock(nn.Module):
 
     def __init__(
         self,
-        forward_transform,
-        inverse_transform,
+        grid_in,
+        grid_out,
         input_dim,
         output_dim,
+        lmax,
+        mmax,
         conv_type="local",
         mlp_ratio=2.0,
         drop_rate=0.0,
@@ -273,10 +280,10 @@ class SphericalNeuralOperatorBlock(nn.Module):
 
         # convolution layer
         if conv_type == "local":
-            theta_cutoff = 2.0 * _compute_cutoff_radius(forward_transform.nlat, disco_kernel_shape, disco_basis_type)
+            theta_cutoff = 2.0 * _compute_cutoff_radius(grid_in.nlat, disco_kernel_shape, disco_basis_type)
             self.local_conv = DiscreteContinuousConvS2(
-                forward_transform.grid,
-                inverse_transform.grid,
+                grid_in,
+                grid_out,
                 input_dim,
                 output_dim,
                 kernel_shape=disco_kernel_shape,
@@ -285,7 +292,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
                 theta_cutoff=theta_cutoff,
             )
         elif conv_type == "global":
-            self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=bias)
+            self.global_conv = spectral_conv(grid_in, grid_out, input_dim, output_dim, lmax, mmax, gain=gain_factor, bias=bias)
         else:
             raise ValueError(f"Unknown convolution type {conv_type}")
 
@@ -303,7 +310,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
 
         # normalisation layer
         if norm_layer == "layer_norm":
-            self.norm = nn.LayerNorm(normalized_shape=(inverse_transform.nlat, inverse_transform.nlon), eps=1e-6)
+            self.norm = nn.LayerNorm(normalized_shape=grid_out.shape, eps=1e-6)
         elif norm_layer == "instance_norm":
             self.norm = nn.InstanceNorm2d(num_features=output_dim, eps=1e-6, affine=True, track_running_stats=False)
         elif norm_layer == "none":
@@ -347,7 +354,7 @@ class SphericalNeuralOperatorBlock(nn.Module):
         residual = x
 
         if hasattr(self, "global_conv"):
-            x, _ = self.global_conv(x)
+            x = self.global_conv(x)
         elif hasattr(self, "local_conv"):
             x = self.local_conv(x)
 
@@ -529,17 +536,18 @@ class LocalSphericalNeuralOperator(nn.Module):
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans = RealSHT(self.grid_internal, lmax=modes_lat, mmax=modes_lon).float()
-        self.itrans = InverseRealSHT(self.grid_internal, lmax=modes_lat, mmax=modes_lon).float()
+        self.lmax, self.mmax = modes_lat, modes_lon
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
 
             block = SphericalNeuralOperatorBlock(
-                self.trans,
-                self.itrans,
+                self.grid_internal,
+                self.grid_internal,
                 self.embed_dim,
                 self.embed_dim,
+                self.lmax,
+                self.mmax,
                 conv_type="global" if i % sfno_block_frequency == (sfno_block_frequency - 1) else "local",
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,

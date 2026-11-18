@@ -45,6 +45,7 @@ import torch
 from parameterized import parameterized
 from testutils import compare_tensors, float64_buffers, move_as_to_mps
 
+import torch_harmonics as th
 from torch_harmonics import as_grid
 from torch_harmonics.examples import ShallowWaterDataset, ShallowWaterSolver, SphereSolver
 from torch_harmonics.examples.models import (
@@ -81,6 +82,33 @@ class TestExampleModels(unittest.TestCase):
             out = model(torch.randn(2, 2, *_GRID.shape))
         self.assertEqual(tuple(out.shape), (2, 3, *_GRID.shape))
         self.assertTrue(torch.isfinite(out).all())
+
+    def test_spectral_blocks_run_the_library_convolution(self):
+        """
+        The spectral blocks of SFNO and LSNO run the library's SpectralConvS2 with the truncation
+        the model computes, and only the SFNO blocks that change the grid project their skip.
+        """
+        sfno = SphericalFourierNeuralOperator(_GRID, _LATENT, in_chans=2, out_chans=3, embed_dim=8, num_layers=3)
+        lsno = LocalSphericalNeuralOperator(_GRID, _LATENT, in_chans=2, out_chans=3, embed_dim=8, num_layers=2)
+        for model in (sfno, lsno):
+            convs = [blk.global_conv for blk in model.blocks if hasattr(blk, "global_conv")]
+            self.assertTrue(convs)
+            for conv in convs:
+                self.assertIsInstance(conv, th.SpectralConvS2)
+                self.assertEqual((conv.lmax, conv.mmax), (model.lmax, model.mmax))
+        self.assertEqual([hasattr(blk, "residual_projection") for blk in sfno.blocks], [True, False, True])
+        self.assertEqual([blk.global_conv.grid_in for blk in sfno.blocks], [_GRID, _LATENT, _LATENT])
+        self.assertEqual([blk.global_conv.grid_out for blk in sfno.blocks], [_LATENT, _LATENT, _GRID])
+
+    def test_sfno_keeps_its_residual_stream_in_float32_under_autocast(self):
+        """The skips take the block input in float32, so half-precision blocks do not round the residual stream."""
+        model = SphericalFourierNeuralOperator(_GRID, _LATENT, in_chans=2, out_chans=3, embed_dim=8, num_layers=3)
+        dtypes = []
+        for blk in model.blocks:
+            blk.register_forward_hook(lambda module, args, out: dtypes.append(out.dtype))
+        with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+            model(torch.randn(1, 2, *_GRID.shape))
+        self.assertEqual(dtypes, [torch.float32] * 3)
 
     def test_the_old_shape_and_scale_factor_arguments_are_rejected(self):
         with self.assertRaises(TypeError):

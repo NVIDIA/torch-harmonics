@@ -33,25 +33,39 @@ import math
 import torch
 import torch.nn as nn
 
-from torch_harmonics import InverseRealSHT, RealSHT
-from torch_harmonics.examples.models._layers import MLP, DropPath, LearnablePositionEmbedding, SequencePositionEmbedding, SpectralConvS2, SpectralPositionEmbedding
+from torch_harmonics.examples.models._layers import (
+    MLP,
+    DropPath,
+    LearnablePositionEmbedding,
+    SequencePositionEmbedding,
+    SpectralPositionEmbedding,
+    SpectralProjection,
+    spectral_conv,
+)
 from torch_harmonics.grid import require_regular_grid
 
 
 class SphericalFourierNeuralOperatorBlock(nn.Module):
     """
-    Helper module for a single SFNO/FNO block. Can use both FFTs and SHTs to represent either FNO or SFNO blocks.
+    Helper module for a single SFNO block, around the library's :class:`~torch_harmonics.SpectralConvS2`.
+
+    A block that changes the grid passes its input to the skip connections through the
+    band-limited projection onto the output grid, with the truncation of the convolution.
 
     Parameters
     ----------
-    forward_transform : torch.nn.Module
-        Forward transform to use for the block
-    inverse_transform : torch.nn.Module
-        Inverse transform to use for the block
+    grid_in : RegularGridS2
+        Grid of the block's input
+    grid_out : RegularGridS2
+        Grid of the block's output
     input_dim : int
         Input dimension
     output_dim : int
         Output dimension
+    lmax : int
+        Maximum degree (non-inclusive) of the spectral convolution
+    mmax : int
+        Maximum order (non-inclusive) of the spectral convolution
     mlp_ratio : float, optional
         MLP expansion ratio, by default 2.0
     drop_rate : float, optional
@@ -79,10 +93,12 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
     def __init__(
         self,
-        forward_transform,
-        inverse_transform,
+        grid_in,
+        grid_out,
         input_dim,
         output_dim,
+        lmax,
+        mmax,
         mlp_ratio=2.0,
         drop_rate=0.0,
         drop_path=0.0,
@@ -103,7 +119,9 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
         if inner_skip == "linear" or inner_skip == "identity":
             gain_factor /= 2.0
 
-        self.global_conv = SpectralConvS2(forward_transform, inverse_transform, input_dim, output_dim, gain=gain_factor, bias=bias)
+        self.global_conv = spectral_conv(grid_in, grid_out, input_dim, output_dim, lmax, mmax, gain=gain_factor, bias=bias)
+        if grid_in != grid_out:
+            self.residual_projection = SpectralProjection(grid_in, grid_out, lmax, mmax)
 
         if inner_skip == "linear":
             self.inner_skip = nn.Conv2d(input_dim, output_dim, 1, 1)
@@ -119,7 +137,7 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
         # normalisation layer
         if norm_layer == "layer_norm":
-            self.norm = nn.LayerNorm(normalized_shape=(inverse_transform.nlat, inverse_transform.nlon), eps=1e-6)
+            self.norm = nn.LayerNorm(normalized_shape=grid_out.shape, eps=1e-6)
         elif norm_layer == "instance_norm":
             self.norm = nn.InstanceNorm2d(num_features=output_dim, eps=1e-6, affine=True, track_running_stats=False)
         elif norm_layer == "none":
@@ -154,7 +172,10 @@ class SphericalFourierNeuralOperatorBlock(nn.Module):
 
     def forward(self, x):
 
-        x, residual = self.global_conv(x)
+        # the skips take the input in at least float32, which keeps a half-precision residual stream in float32
+        residual = self.residual_projection(x) if hasattr(self, "residual_projection") else x.to(torch.promote_types(x.dtype, torch.float32))
+
+        x = self.global_conv(x)
 
         x = self.norm(x)
 
@@ -333,10 +354,7 @@ class SphericalFourierNeuralOperator(nn.Module):
 
         modes_lat = modes_lon = int(min(modes_lat, modes_lon) * self.hard_thresholding_fraction)
 
-        self.trans_down = RealSHT(self.grid, lmax=modes_lat, mmax=modes_lon).float()
-        self.itrans_up = InverseRealSHT(self.grid, lmax=modes_lat, mmax=modes_lon).float()
-        self.trans = RealSHT(self.grid_internal, lmax=modes_lat, mmax=modes_lon).float()
-        self.itrans = InverseRealSHT(self.grid_internal, lmax=modes_lat, mmax=modes_lon).float()
+        self.lmax, self.mmax = modes_lat, modes_lon
 
         self.blocks = nn.ModuleList([])
         for i in range(self.num_layers):
@@ -345,10 +363,12 @@ class SphericalFourierNeuralOperator(nn.Module):
             last_layer = i == self.num_layers - 1
 
             block = SphericalFourierNeuralOperatorBlock(
-                self.trans_down if first_layer else self.trans,
-                self.itrans_up if last_layer else self.itrans,
+                self.grid if first_layer else self.grid_internal,
+                self.grid if last_layer else self.grid_internal,
                 self.embed_dim,
                 self.embed_dim,
+                self.lmax,
+                self.mmax,
                 mlp_ratio=mlp_ratio,
                 drop_rate=drop_rate,
                 drop_path=dpr[i],

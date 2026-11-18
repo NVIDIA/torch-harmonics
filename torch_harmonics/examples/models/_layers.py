@@ -38,7 +38,7 @@ import torch.fft
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from torch_harmonics import InverseRealSHT
+from torch_harmonics import InverseRealSHT, RealSHT, SpectralConvS2
 from torch_harmonics.grid import require_regular_grid
 from torch_harmonics.utils import check
 
@@ -377,87 +377,64 @@ class LayerNorm(nn.Module):
         return self.norm(x.transpose(self.channel_dim, -1)).transpose(-1, self.channel_dim)
 
 
-class SpectralConvS2(nn.Module):
+def spectral_conv(grid_in, grid_out, in_channels, out_channels, lmax, mmax, gain=2.0, bias=False):
     """
-    Spectral Convolution according to Driscoll & Healy. Designed for convolutions on the two-sphere S2
-    using the Spherical Harmonic Transforms in torch-harmonics, but supports convolutions on the periodic
-    domain via the RealFFT2 and InverseRealFFT2 wrappers.
+    The library's :class:`~torch_harmonics.SpectralConvS2` with the initialization of the example blocks.
+
+    The library initializes its weights for unit gain. The blocks of the example models scale
+    every layer by the gain their activation and skip connections call for, as their MLPs and
+    skip convolutions do, so the spectral weights are scaled by ``sqrt(gain)`` here.
 
     Parameters
     ----------
-    forward_transform : nn.Module
-        Forward transform (SHT or FFT)
-    inverse_transform : nn.Module
-        Inverse transform (ISHT or IFFT)
-    in_channels : int
-        Number of input channels
-    out_channels : int
-        Number of output channels
+    grid_in, grid_out : RegularGridS2
+        Grids the convolution maps between.
+    in_channels, out_channels : int
+        Number of input and output channels.
+    lmax, mmax : int
+        Spectral truncation, as for :class:`~torch_harmonics.RealSHT`.
     gain : float, optional
-        Gain factor for weight initialization, by default 2.0
-    operator_type : str, optional
-        Type of spectral operator ("driscoll-healy", "diagonal", "block-diagonal"), by default "driscoll-healy"
-    lr_scale_exponent : int, optional
-        Learning rate scaling exponent, by default 0
+        Gain of the weight initialization, by default 2.0
     bias : bool, optional
-        Whether to use bias, by default False
+        Whether to learn the library layer's spectral bias, by default False
+
+    Returns
+    -------
+    SpectralConvS2
+        The convolution.
+    """
+    conv = SpectralConvS2(grid_in, grid_out, in_channels, out_channels, bias=bias, lmax=lmax, mmax=mmax)
+    with torch.no_grad():
+        conv.weight.mul_(math.sqrt(gain))
+    return conv
+
+
+class SpectralProjection(nn.Module):
+    """
+    Band-limited projection of a field from one grid onto another, ``ISHT(SHT(x))``.
+
+    The skip connections of a block that changes the grid take its input through this
+    projection, the same truncation as the block's spectral convolution. It runs outside
+    autocast and returns at least float32, so that a half-precision block keeps the
+    residual stream in float32.
+
+    Parameters
+    ----------
+    grid_in, grid_out : RegularGridS2
+        Grids the projection maps between.
+    lmax, mmax : int
+        Spectral truncation, as for :class:`~torch_harmonics.RealSHT`.
     """
 
-    def __init__(self, forward_transform, inverse_transform, in_channels, out_channels, gain=2.0, operator_type="driscoll-healy", lr_scale_exponent=0, bias=False):
+    def __init__(self, grid_in, grid_out, lmax, mmax):
         super().__init__()
-
-        self.forward_transform = forward_transform
-        self.inverse_transform = inverse_transform
-
-        self.modes_lat = self.inverse_transform.lmax
-        self.modes_lon = self.inverse_transform.mmax
-
-        self.scale_residual = (self.forward_transform.nlat != self.inverse_transform.nlat) or (self.forward_transform.nlon != self.inverse_transform.nlon)
-
-        # remember factorization details
-        self.operator_type = operator_type
-
-        weight_shape = [out_channels, in_channels]
-
-        if self.operator_type == "diagonal":
-            weight_shape += [self.modes_lat, self.modes_lon]
-            self.contract_func = "...ilm,oilm->...olm"
-        elif self.operator_type == "block-diagonal":
-            weight_shape += [self.modes_lat, self.modes_lon, self.modes_lon]
-            self.contract_func = "...ilm,oilnm->...oln"
-        elif self.operator_type == "driscoll-healy":
-            weight_shape += [self.modes_lat]
-            self.contract_func = "...ilm,oil->...olm"
-        else:
-            raise NotImplementedError(f"Unkonw operator type f{self.operator_type}")
-
-        # form weight tensors
-        scale = math.sqrt(gain / in_channels)
-        self.weight = nn.Parameter(scale * torch.randn(*weight_shape, dtype=torch.complex64))
-        if bias:
-            self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
+        self.sht = RealSHT(grid_in, lmax=lmax, mmax=mmax)
+        self.isht = InverseRealSHT(grid_out, lmax=lmax, mmax=mmax)
 
     def forward(self, x):
-
-        dtype = x.dtype
-        x = x.float()
-        residual = x
-
-        with torch.autocast(device_type="cuda", enabled=False):
-            x = self.forward_transform(x)
-            if self.scale_residual:
-                residual = self.inverse_transform(x)
-
-        x = torch.einsum(self.contract_func, x, self.weight)
-
-        with torch.autocast(device_type="cuda", enabled=False):
-            x = self.inverse_transform(x)
-
-        if hasattr(self, "bias"):
-            x = x + self.bias
-        x = x.type(dtype)
-
-        return x, residual
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            x = x.to(torch.promote_types(x.dtype, torch.float32))
+            return self.isht(self.sht(x))
 
 
 class PositionEmbedding(nn.Module, metaclass=abc.ABCMeta):
