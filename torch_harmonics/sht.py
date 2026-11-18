@@ -622,7 +622,7 @@ class RealSHT(SharedBufferMixin, nn.Module):
     )
     def __init__(
         self,
-        grid: RegularGridS2,
+        grid: GridS2,
         lmax: Optional[int] = None,
         mmax: Optional[int] = None,
         lmmax: Optional[int] = None,
@@ -856,7 +856,7 @@ class InverseRealSHT(SharedBufferMixin, nn.Module):
     )
     def __init__(
         self,
-        grid: RegularGridS2,
+        grid: GridS2,
         lmax: Optional[int] = None,
         mmax: Optional[int] = None,
         lmmax: Optional[int] = None,
@@ -1063,7 +1063,7 @@ class RealVectorSHT(SharedBufferMixin, nn.Module):
     )
     def __init__(
         self,
-        grid: RegularGridS2,
+        grid: GridS2,
         lmax: Optional[int] = None,
         mmax: Optional[int] = None,
         lmmax: Optional[int] = None,
@@ -1304,7 +1304,7 @@ class InverseRealVectorSHT(SharedBufferMixin, nn.Module):
     )
     def __init__(
         self,
-        grid: RegularGridS2,
+        grid: GridS2,
         lmax: Optional[int] = None,
         mmax: Optional[int] = None,
         lmmax: Optional[int] = None,

@@ -20,14 +20,13 @@ which do not.
 | `NeighborhoodAttentionS2`           | `DistributedNeighborhoodAttentionS2`           | HEALPix, polar ranks only                |
 | `ResampleS2`                        | `DistributedResampleS2`                        | HEALPix, polar ranks only                |
 | `QuadratureS2`                      | `DistributedQuadratureS2`                      | HEALPix, polar ranks only                |
-| `QuadratureVolume`                  | `DistributedQuadratureVolume`                  |                                          |
+| `QuadratureVolume`                  | `DistributedQuadratureVolume`                  | HEALPix, polar ranks only                |
 | `AttentionS2`                       | —                                              | Global attention; no distributed version |
 | `GaussianRandomFieldS2`             | —                                              | Sampling utility                         |
 
 HEALPix grids decompose along latitude only: each polar rank holds a band of
 whole rings, and a layer built on a process grid with more than one azimuth rank
-raises `NotImplementedError`. The other distributed layers require a
-latitude-longitude grid for now.
+raises `NotImplementedError`.
 
 ## Layer reference
 
