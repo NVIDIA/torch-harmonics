@@ -42,6 +42,77 @@ def _compute_dtype(dtype: torch.dtype) -> torch.dtype:
     return dtype
 
 
+# The weight contractions of the DISCO layers, as batched GEMMs over the groups. The
+# K-expanded tensor (B, C, K, *spatial) is channel-first, so (C, K) and the spatial axes are
+# already the two matrix axes of a GEMM. einsum instead makes the spatial axes the GEMM's rows
+# and copies the K-expanded tensor into and out of that layout, which costs several times the
+# GEMM itself. The forward and transpose layers, serial and distributed, regular and ragged,
+# all contract through these three.
+#
+# A contraction over a single entry is an outer product and runs as a broadcast multiply:
+# a GEMM with an inner dimension of 1 and an output over 2^31 elements hits an illegal memory
+# access in cuBLAS (torch 2.13 nv26.06). The multiply is not autocast-eligible, so it casts
+# both operands to the dtype the matmul would run in (see _outer).
+def _outer(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """
+    ``w * x`` in the dtype ``torch.matmul(w, x)`` would give.
+
+    That is the autocast dtype if autocast is on, else the activation's. Autocast leaves
+    float64 alone, so a float64 operand keeps the activation's dtype either way.
+    """
+    device_type = x.device.type
+    autocast = torch.is_autocast_enabled(device_type) and torch.float64 not in (w.dtype, x.dtype)
+    dtype = torch.get_autocast_dtype(device_type) if autocast else x.dtype
+    return w.to(dtype) * x.to(dtype)
+
+
+def _weight_contraction(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """``(B, G*Cg, K, *spatial)`` x ``(G, Og, Cg, K)`` -> ``(B, G*Og, *spatial)``, summing over the channels and K."""
+    G, Og, Cg, K = weight.shape
+    B, spatial = x.shape[0], x.shape[3:]
+    w, xf = weight.reshape(G, Og, Cg * K), x.reshape(B, G, Cg * K, -1)
+    out = _outer(w, xf) if Cg * K == 1 else torch.matmul(w, xf)
+    return out.reshape(B, G * Og, *spatial)
+
+
+def _weight_expansion(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """``(B, G*Og, *spatial)`` x ``(G, Og, Cg, K)`` -> ``(B, G*Cg, K, *spatial)``, the adjoint of :func:`_weight_contraction`."""
+    G, Og, Cg, K = weight.shape
+    B, spatial = x.shape[0], x.shape[2:]
+    w, xf = weight.reshape(G, Og, Cg * K).transpose(1, 2), x.reshape(B, G, Og, -1)
+    out = _outer(w, xf) if Og == 1 else torch.matmul(w, xf)
+    return out.reshape(B, G * Cg, K, *spatial)
+
+
+def _weight_gradient(grad_out: torch.Tensor, x: torch.Tensor, groups: int) -> torch.Tensor:
+    """
+    The weight gradient of :func:`_weight_contraction`: ``(B, G*Og, *spatial)``, ``(B, G*Cg, K, *spatial)`` -> ``(G, Og, Cg, K)``.
+
+    One bmm over the flat ``(B * G)`` batch, summed over B. Grouped layers run it as
+    ``x @ grad_out^T``, which cuBLAS serves up to 3x faster for their narrow groups on H100
+    and GB200; ungrouped ones as ``grad_out @ x^T``, the faster order there.
+
+    In half precision with more than one batch entry, the per-entry products are kept in
+    float32 through the batch sum and rounded once, as a single GEMM over batch and space
+    would: rounded per entry, float16 partial sums that cancel in the total can overflow.
+    """
+    B, C, K = x.shape[:3]
+    Og, Cg = grad_out.shape[1] // groups, C // groups
+    go, xf = grad_out.reshape(B * groups, Og, -1), x.reshape(B * groups, Cg * K, -1)
+    a, b = (xf, go) if groups > 1 else (go, xf)
+    grad = _bmm_wide(a, b.transpose(1, 2)) if B > 1 and x.dtype in (torch.float16, torch.bfloat16) else torch.bmm(a, b.transpose(1, 2))
+    grad = grad.reshape(B, groups, *grad.shape[1:]).sum(0).to(x.dtype)
+    grad = grad.transpose(1, 2) if groups > 1 else grad
+    return grad.reshape(groups, Og, Cg, K)
+
+
+def _bmm_wide(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """``torch.bmm`` of half-precision operands with a float32 result: ``out_dtype`` on CUDA, which CPU lacks, else upcast operands."""
+    if a.is_cuda:
+        return torch.bmm(a, b, out_dtype=torch.float32)
+    return torch.bmm(a.float(), b.float())
+
+
 # sparse-psi helper used by both the torch reference kernels (in kernels_torch/)
 # and the optimized custom_op path (in optimized/).
 def _get_psi(

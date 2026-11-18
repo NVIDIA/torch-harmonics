@@ -35,6 +35,7 @@ from typing import Optional, Tuple, Union
 import torch
 
 from torch_harmonics._field_contract import check_field
+from torch_harmonics.disco._disco_utils import _weight_expansion
 from torch_harmonics.disco.convolution import (
     DiscreteContinuousConv,
     _from_flat,
@@ -401,8 +402,8 @@ class DistributedDiscreteContinuousConvS2(DiscreteContinuousConv):
         if self.radial is not None:
             x = fold_radius(x)
 
-        # reordered a2a: einsum-first on the local channel shard, K-expanded recomputed in
-        # backward; standard a2a: contraction, collectives, then the einsum
+        # reordered a2a: weights first on the local channel shard, K-expanded recomputed in
+        # backward; standard a2a: contraction, collectives, then the weights
         if self.ragged:
             out = self._forward_ragged(x)
         elif self.fused:
@@ -575,22 +576,14 @@ class DistributedDiscreteContinuousConvTransposeS2(DiscreteContinuousConv):
         if self.comm_size_polar > 1:
             x = polar_halo_exchange(x, self.halo, lat_dim=-1)
 
-        B, _, P = x.shape
-        x = x.reshape(B, self.groups, self.groupsize, P)
-        x = torch.einsum("bgcp,gock->bgokp", x, self._weight_r()).contiguous()
-        x = x.reshape(B, self.weight.shape[0], self.kernel_size, P)
+        x = _weight_expansion(x, self._weight_r().transpose(1, 2))
 
         out = self.backend.transpose(self, x)
         return _from_flat(self, out)
 
     def _forward_regular(self, x: torch.Tensor) -> torch.Tensor:
-        # extract shape
-        B, C, H, W = x.shape
-        x = x.reshape(B, self.groups, self.groupsize, H, W)
-
-        # do weight multiplication
-        x = torch.einsum("bgcxy,gock->bgokxy", x, self._weight_r()).contiguous()
-        x = x.reshape(B, self.weight.shape[0], x.shape[-3], H, W)
+        # do weight multiplication, (B, in_channels, H, W) -> (B, out_channels, K, H, W)
+        x = _weight_expansion(x, self._weight_r().transpose(1, 2))
         num_chans = x.shape[1]
 
         # transpose such that lon is local, channels are split

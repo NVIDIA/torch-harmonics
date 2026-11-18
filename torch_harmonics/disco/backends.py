@@ -98,6 +98,7 @@ from disco_helpers import optimized_kernels_is_available
 
 from torch_harmonics._backend import BackendS2, _kernel_device_types, _reference_state_dtype
 
+from ._disco_utils import _weight_contraction
 from ._psi_layouts import build_arcs, build_kpacked, build_split
 from .kernels_torch.disco_ragged_torch import _disco_s2_contraction_ragged_torch, _disco_s2_transpose_contraction_ragged_torch
 from .kernels_torch.disco_regular_torch import _disco_s2_contraction_regular_torch, _disco_s2_transpose_contraction_regular_torch
@@ -145,15 +146,6 @@ def _amp_dtype(x: torch.Tensor) -> torch.dtype:
     return x.dtype
 
 
-def _weight_contraction(x: torch.Tensor, weight: torch.Tensor, groups: int, groupsize: int) -> torch.Tensor:
-    """(B, G*Cg, K, *spatial) x (G, Og, Cg, K) -> (B, G*Og, *spatial); spatial is (H, W), or (npoints,) on a ragged grid."""
-    B, _, K = x.shape[:3]
-    spatial = x.shape[3:]
-    x = x.reshape(B, groups, groupsize, K, *spatial)
-    out = torch.einsum("bgck...,gock->bgo...", x, weight).contiguous()
-    return out.reshape(B, groups * weight.shape[1], *spatial)
-
-
 class DiscoBackendS2(BackendS2):
     """
     One way of evaluating the psi contraction of a DISCO layer.
@@ -178,7 +170,7 @@ class DiscoBackendS2(BackendS2):
         raise NotImplementedError
 
     def conv(self, layer: "DiscreteContinuousConv", x: torch.Tensor, weight: torch.Tensor, groups: int, groupsize: int, recompute: bool = False) -> torch.Tensor:
-        return _weight_contraction(self.contract(layer, x), weight, groups, groupsize)
+        return _weight_contraction(self.contract(layer, x), weight)
 
     def transpose(self, layer: "DiscreteContinuousConv", x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
