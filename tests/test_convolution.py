@@ -1450,10 +1450,18 @@ class TestKpackedPath(unittest.TestCase):
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_fused_matches_unfused(self):
-        """fused=True kpacked path gives the same result as fused=False."""
+        """
+        fused=True kpacked path gives the same result as fused=False.
+
+        The weight gradient is the part that reads the recomputed intermediate. The recompute
+        runs the forward's own kpacked contraction on the saved input, so it reproduces the
+        intermediate the unfused layer saved bit for bit, and the weight gradients are equal,
+        not merely close. A recompute on another kernel (the arc gather) would differ.
+        """
         set_seed(42)
         conv_unfused = self._make_conv(1, 8, (16, 32), fused=False)
         conv_fused = self._make_conv(1, 8, (16, 32), fused=True)
+        self.assertEqual(conv_fused.backend.name, "regular-kpacked")
         # share weights so outputs are identical
         conv_fused.weight.data.copy_(conv_unfused.weight.data)
 
@@ -1468,6 +1476,7 @@ class TestKpackedPath(unittest.TestCase):
         out_u.backward(grad)
         out_f.backward(grad.clone())
         self.assertTrue(compare_tensors("inp grad", inp.grad, inp2.grad, atol=1e-2, rtol=1e-2))
+        self.assertTrue(torch.equal(conv_unfused.weight.grad, conv_fused.weight.grad), "the fused recompute must reproduce the saved intermediate exactly")
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_bwd_bc_tile_boundaries(self):
