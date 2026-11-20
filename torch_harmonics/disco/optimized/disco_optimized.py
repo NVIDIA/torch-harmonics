@@ -51,6 +51,25 @@ from torch_harmonics.utils import check
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype, _weight_contraction, _weight_expansion, _weight_gradient
 
+# The kpacked forward and the arc scatter are called through these two functions, so that the
+# experimental Kernel Factory kernels (see disco_kf.py) can take the calls of their own layers.
+# Without a hook they are the operators.
+_kernel_hooks = {}
+
+
+def _forward_kpacked(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out):
+    hook = _kernel_hooks.get("forward_kpacked")
+    if hook is not None:
+        return hook(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
+    return disco_kernels.forward_kpacked.default(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
+
+
+def _backward_regular(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out):
+    hook = _kernel_hooks.get("backward_regular")
+    if hook is not None:
+        return hook(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out)
+    return disco_kernels.backward_regular.default(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out)
+
 
 @functools.lru_cache(maxsize=None)
 def _kpacked_build_available() -> bool:
@@ -136,7 +155,7 @@ def _spatial_first_dgrad(grad_output_r, weight, row_lat, seg_off, seg, val_off, 
         if r1 == r0:
             parts.append(grad_output_r.new_zeros((B, G, Og, nlat_in, nlon_in)))
             continue
-        part = disco_kernels.backward_regular.default(grad_small, split_ker[: r1 - r0], row_lat[r0:r1], seg_off[r0 : r1 + 1], seg, val_off[r0 : r1 + 1], vals, 1, nlat_in, nlon_in)
+        part = _backward_regular(grad_small, split_ker[: r1 - r0], row_lat[r0:r1], seg_off[r0 : r1 + 1], seg, val_off[r0 : r1 + 1], vals, 1, nlat_in, nlon_in)
         parts.append(part.reshape(B, G, Og, nlat_in, nlon_in))
 
     # (B, G, Og, K, H, W) contracted over Og and K: the weight with its channel axes swapped
@@ -361,7 +380,7 @@ if optimized_kernels_is_available():
     ) -> torch.Tensor:
         itype = inp.dtype
         vals = vals.to(_compute_dtype(itype))
-        out = disco_kernels.backward_regular.default(inp.contiguous(), row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out)
+        out = _backward_regular(inp.contiguous(), row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out)
         return out.to(itype)
 
     @torch.library.register_fake("disco_kernels::_disco_s2_contraction_regular_optimized")
@@ -578,7 +597,7 @@ def _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack
     """The raw forward contraction: tensor-core kpacked when its layout is given, the arc gather otherwise."""
     inp = inp.contiguous()
     if pack_idx is not None:
-        return disco_kernels.forward_kpacked.default(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
+        return _forward_kpacked(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
     itype = inp.dtype
     out = disco_kernels.forward_regular.default(inp, row_ker, row_lat, seg_off, seg, val_off, vals.to(_compute_dtype(itype)), kernel_size, nlat_out, nlon_out)
     return out.to(itype)
@@ -719,7 +738,7 @@ class _DiscoConvFn(torch.autograd.Function):
                 )
             else:
                 grad_x_expanded = _weight_expansion(grad_output, weight.to(itype))
-                grad_inp = disco_kernels.backward_regular.default(grad_x_expanded, row_ker, row_lat, seg_off, seg, val_off, vals_c, K, ctx.nlat_in, ctx.nlon_in)
+                grad_inp = _backward_regular(grad_x_expanded, row_ker, row_lat, seg_off, seg, val_off, vals_c, K, ctx.nlat_in, ctx.nlon_in)
             grad_inp = grad_inp.to(itype)
 
         if ctx.needs_input_grad[1]:

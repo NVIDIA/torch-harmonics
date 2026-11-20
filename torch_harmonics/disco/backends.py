@@ -389,6 +389,50 @@ class RaggedReferenceBackend(DiscoBackendS2):
         return _disco_s2_transpose_contraction_ragged_torch(x, layer.psi)
 
 
+class RegularKFBackend(RegularKpackedBackend):
+    """
+    Experimental: the kpacked backend with the Kernel Factory kernels underneath.
+
+    Same state and the same autograd as ``regular-kpacked``; the forward contraction and the
+    arc scatter of its layers run on the kernels in ``kernels_cuda/kf/`` where one was built
+    for the device and the call is fp16, and on the shipped ones otherwise (see
+    :mod:`.optimized.disco_kf`). Not in :data:`BACKENDS`: a layer gets it only from a
+    candidate list that names it, such as the B arm of ``performance/disco/disco_ab.py``.
+    """
+
+    name = "regular-kf"
+
+    @classmethod
+    def available(cls, layer, device):
+        from .optimized import disco_kf
+
+        return super().available(layer, device) and disco_kf.available(device)
+
+    def prepare(self, layer, device):
+        from .optimized import disco_kf
+
+        disco_kf.install()
+        return super().prepare(layer, device)
+
+    def _route(self, layer):
+        # the psi the layer holds now, which a dtype change may have restored to new tensors
+        from .optimized import disco_kf
+
+        disco_kf.register(layer.psi_kpacked_idx, layer.psi_seg)
+
+    def contract(self, layer, x):
+        self._route(layer)
+        return super().contract(layer, x)
+
+    def conv(self, layer, x, weight, groups, groupsize, recompute=False):
+        self._route(layer)
+        return super().conv(layer, x, weight, groups, groupsize, recompute)
+
+
+#: Backends that are not candidates of any layer by default; see RegularKFBackend.
+EXPERIMENTAL_BACKENDS = (RegularKFBackend,)
+
+
 #: Every backend, most specific first; see :mod:`torch_harmonics._backend`. A regular
 #: and a ragged backend never both accept a layer, so the two families are ordered only
 #: among themselves, as in :data:`torch_harmonics.attention.backends.BACKENDS`. The

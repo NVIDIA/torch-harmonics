@@ -118,6 +118,52 @@ def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
     }
 
 
+# Experimental DISCO kernels from Kernel Factory campaigns, opt-in with
+# TORCH_HARMONICS_BUILD_KF_KERNELS=1. One extension per kernel and architecture, each built for
+# exactly its arch-specific target and only if TORCH_CUDA_ARCH_LIST requests it: the sources use
+# WGMMA (9.0a) or tcgen05 (10.0a) and do not compile for anything else. They are the kernels of
+# the regular-kf backend (torch_harmonics/disco/optimized/disco_kf.py), which the A/B benchmark
+# (performance/disco/disco_ab.py) compares against the shipped ones.
+_KF_KERNELS = {
+    # name: (directory, binding, arch)
+    "fwd_sm90": ("fwd_sm90", "kf_bind_fwd.cpp", "9.0a"),
+    "fwd_sm100": ("fwd_sm100", "kf_bind_fwd.cpp", "10.0a"),
+    "bwd_sm90": ("bwd_sm90", "kf_bind_bwd.cpp", "9.0a"),
+    "bwd_sm100": ("bwd_sm100", "kf_bind_bwd.cpp", "10.0a"),
+}
+
+
+def get_kf_ext_modules(CUDAExtension):
+    from torch.utils.cpp_extension import CUDA_HOME
+
+    root = "torch_harmonics/disco/optimized/kernels_cuda/kf"
+    flags = get_compile_args("disco_kf")
+    # the kernels convert between __half and float implicitly, which torch's build disables
+    undef = ["-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__", "-U__CUDA_NO_BFLOAT16_CONVERSIONS__", "-U__CUDA_NO_HALF2_OPERATORS__"]
+    modules = []
+    for name, (directory, binding, arch) in _KF_KERNELS.items():
+        if not _torch_cuda_arch_list_has(arch):
+            print(f"NOTE: skipping Kernel Factory kernel {name}: {arch} is not in TORCH_CUDA_ARCH_LIST")
+            continue
+        sm = arch.replace(".", "")
+        # an explicit -gencode keeps torch from adding the TORCH_CUDA_ARCH_LIST targets
+        gencode = f"-gencode=arch=compute_{sm},code=sm_{sm}"
+        print(f"Compiling Kernel Factory DISCO kernel {name} for sm_{sm}.")
+        modules.append(
+            CUDAExtension(
+                f"torch_harmonics.disco._kf_{name}",
+                [f"{root}/{binding}", f"{root}/{directory}/kf_entry.cu"],
+                include_dirs=[os.path.abspath(f"{root}/shim"), os.path.abspath(f"{root}/{directory}")],
+                extra_compile_args={"cxx": flags["cxx"], "nvcc": flags["nvcc"] + undef + [gencode, "-std=c++17"]},
+                # TMA descriptors come from the driver API (cuTensorMapEncodeTiled); the stub
+                # is only for linking, the driver's libcuda is loaded at run time
+                libraries=["cuda"],
+                library_dirs=[os.path.join(CUDA_HOME, "lib64", "stubs")],
+            )
+        )
+    return modules
+
+
 def get_ext_modules():
     """Get list of extension modules to compile."""
 
@@ -201,6 +247,9 @@ def get_ext_modules():
         ext_modules.append(CUDAExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))
     else:
         ext_modules.append(CppExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))
+
+    if BUILD_CUDA and os.getenv("TORCH_HARMONICS_BUILD_KF_KERNELS", "0") == "1":
+        ext_modules.extend(get_kf_ext_modules(CUDAExtension))
 
     # ATTENTION
     # Create a single extension that includes both CPU and CUDA code
