@@ -524,7 +524,10 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
     **Polar exchange.** With ``polar_exchange="transpose"`` steps 1 and 2 become a polar
     transpose (``N`` ↔ ``lmax``), which makes the degrees local, a synthesis from all of
     them, and a polar transpose (``nlat`` ↔ ``N``) back, with the Legendre polynomials
-    replicated over the polar group. The trade-off is that of :class:`DistributedRealSHT`.
+    replicated over the polar group. Each rank then exchanges about
+    ``(nlat + lmax) * mmax_local * N / p`` values instead of ``nlat * mmax_local * N``, so
+    the transpose moves less data once ``p > 1 + lmax / nlat``, earlier than in the forward;
+    see the distributed guide.
 
     **HEALPix.** On a :class:`~torch_harmonics.healpix.HealpixGrid` the reduce-scatter of
     step 2 leaves each polar rank its band of rings, split by pixel count rather than evenly,

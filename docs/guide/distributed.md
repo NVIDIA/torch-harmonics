@@ -332,22 +332,26 @@ mixed freely, and results agree up to rounding.
 The two exchanges trade table memory against communication. Per rank, with `p`
 polar ranks and `m` the local orders:
 
-|                        | `"reduce-scatter"`          | `"transpose"`                     |
-| ---------------------- | --------------------------- | --------------------------------- |
-| Legendre tables        | split over the polar group  | replicated over the polar group   |
-| table size             | about `nlat * lmax * m / p` | about `nlat * lmax * m`           |
-| values exchanged       | about `lmax * m * N`        | about `(nlat + lmax) * m * N / p` |
-| collectives per call   | 1 reduce-scatter            | 2 all-to-alls                     |
-| `N` padded to at least | the azimuth group size      | the larger of the two group sizes |
+|                           | `"reduce-scatter"`          | `"transpose"`                     |
+| ------------------------- | --------------------------- | --------------------------------- |
+| Legendre tables           | split over the polar group  | replicated over the polar group   |
+| table size                | about `nlat * lmax * m / p` | about `nlat * lmax * m`           |
+| values exchanged, forward | about `lmax * m * N`        | about `(nlat + lmax) * m * N / p` |
+| values exchanged, inverse | about `nlat * m * N`        | about `(nlat + lmax) * m * N / p` |
+| collectives per call      | 1 reduce-scatter            | 2 all-to-alls                     |
+| `N` padded to at least    | the azimuth group size      | the larger of the two group sizes |
 
 With `"reduce-scatter"`, each rank holds partial sums of every output row
 (every `l` in the forward, every latitude in the inverse), so the volume it
 sends does not shrink as the polar group grows. With `"transpose"`, each rank
 only sends its own rows, so the volume falls as `1/p`, but each rank keeps the
 tables of its orders over the whole contraction axis. The transpose moves less
-data once `p > 1 + nlat / lmax`: from 3 polar ranks on a Gauss grid with
-`lmax = nlat`, and from 4 on an equiangular grid with `lmax = nlat / 2`. The gap
-grows with `p`.
+data in the forward once `p > 1 + nlat / lmax`, and in the inverse once
+`p > 1 + lmax / nlat`. On a Gauss grid with `lmax = nlat` that is from 3 polar
+ranks on in both directions; on an equiangular grid with `lmax = nlat / 2` it is
+from 4 in the forward but already from 2 in the inverse. A forward and inverse
+pair, as in a spectral convolution, moves less data with the transpose from 3
+polar ranks on, whatever the grid; at 2 the two move the same. The gap grows with `p`.
 
 As a rule of thumb:
 
