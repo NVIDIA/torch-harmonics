@@ -127,7 +127,8 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            (geometry, vector, dtype, lmax, mmax, lmmax)
+            (geometry, vector, dtype, lmax, mmax, lmmax, polar_exchange)
+            for polar_exchange in ("reduce-scatter", "transpose")
             for geometry, cases in [
                 ("equiangular", [(16, 16, None), (15, 7, None), (15, 9, None), (15, 7, 8), (15, 15, 5), (16, 1, None), (16, 0, None)]),
                 ("fejer1", [(17, 17, None), (17, 17, 5), (16, 9, None)]),
@@ -138,20 +139,24 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_extended_folded(self, geometry, vector, dtype, lmax, mmax, lmmax):
-        """Uneven shards, padded channels and masked high-bandlimit analysis."""
+    def test_extended_folded(self, geometry, vector, dtype, lmax, mmax, lmmax, polar_exchange):
+        """Uneven shards, padded channels and masked high-bandlimit analysis, with either polar exchange."""
         grid = th.as_grid(geometry, nlat=17, nlon=33)
         serial = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device, dtype)
         if mmax < self.grid_size_w:
             # Existing distributed partitions require a nonempty order shard.
             with self.assertRaises(RuntimeError):
-                (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax)
+                (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, polar_exchange=polar_exchange)
             return
-        distributed = (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device, dtype)
+        distributed = (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, polar_exchange=polar_exchange).to(
+            self.device, dtype
+        )
         self.assertTrue(distributed._extended_folded)
-        block = serial.weights[
-            ..., distributed.mmax_offset : distributed.mmax_offset + distributed.mmax_local, :, distributed.lat_offset : distributed.lat_offset + distributed.nlat_local
-        ]
+        # the folded projection of this rank's orders, on its own latitudes, or on all of them
+        # when they are transposed in
+        transposed = polar_exchange == "transpose" and self.grid_size_h > 1
+        kmin, kmax = (0, grid.nlat) if transposed else (distributed.lat_offset, distributed.lat_offset + distributed.nlat_local)
+        block = serial.weights[..., distributed.mmax_offset : distributed.mmax_offset + distributed.mmax_local, :, kmin:kmax]
         # a rank's blocks cover fewer orders than the serial ones, which changes the roundoff of
         # the folded projection at the level of float64; in float32 that can flip the rounding of
         # an entry, by one ulp, or by about 1e-17 at entries that are themselves roundoff
@@ -175,15 +180,17 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         import torch_harmonics.distributed.distributed_sht as implementation
 
-        # Instrument the complete forward: exactly the existing two azimuth
-        # redistributions and one polar reduction, with no latitude gather.
+        # Instrument the complete forward: exactly the existing two azimuth redistributions,
+        # and either one polar reduction or two polar transposes, with no latitude gather.
         with (
             patch.object(implementation, "distributed_transpose_azimuth", wraps=implementation.distributed_transpose_azimuth) as transpose,
+            patch.object(implementation, "distributed_transpose_polar", wraps=implementation.distributed_transpose_polar) as polar_transpose,
             patch.object(implementation, "reduce_from_scatter_to_polar_region", wraps=implementation.reduce_from_scatter_to_polar_region) as reduction,
         ):
             local = distributed(self._split_helper(spatial))
             self.assertEqual(transpose.call_count, 2 if self.grid_size_w > 1 else 0)
-            self.assertEqual(reduction.call_count, 1 if self.grid_size_h > 1 else 0)
+            self.assertEqual(polar_transpose.call_count, 2 if transposed else 0)
+            self.assertEqual(reduction.call_count, 1 if self.grid_size_h > 1 and not transposed else 0)
         actual = self._gather_helper_fwd(local, distributed)
         expected = torch.zeros_like(actual)
         if mmax and (lmmax is None or l < lmmax):
@@ -342,7 +349,9 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     def test_distributed_sht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
         self._check_distributed_sht(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose)
 
-    def _check_distributed_sht(self, grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True, iter=0):
+    def _check_distributed_sht(
+        self, grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True, iter=0, polar_exchange="reduce-scatter"
+    ):
         """The distributed forward SHT on ``grid``, a grid descriptor, against the serial one: output and input gradient."""
 
         set_seed(333)
@@ -353,7 +362,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         # set up handles
         local_cls, dist_cls = (th.RealVectorSHT, thd.DistributedRealVectorSHT) if vector else (th.RealSHT, thd.DistributedRealSHT)
         forward_transform_local = local_cls(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, iter=iter).to(device=self.device, dtype=dtype)
-        forward_transform_dist = dist_cls(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, iter=iter).to(device=self.device, dtype=dtype)
+        forward_transform_dist = dist_cls(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, iter=iter, polar_exchange=polar_exchange).to(device=self.device, dtype=dtype)
 
         # create tensors: (B, C, *grid.shape), (B, C, 2, *grid.shape) for a vector field
         inp_full = torch.randn((B, C, *((2,) if vector else ()), *grid.shape), dtype=dtype, device=self.device)
@@ -473,7 +482,9 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
     def test_distributed_isht(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
         self._check_distributed_isht(th.as_grid(grid, nlat=nlat, nlon=nlon), lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose)
 
-    def _check_distributed_isht(self, grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
+    def _check_distributed_isht(
+        self, grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True, polar_exchange="reduce-scatter"
+    ):
         """The distributed inverse SHT on ``grid``, a grid descriptor, against the serial one: output and input gradient."""
 
         set_seed(333)
@@ -487,11 +498,13 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         if vector:
             forward_transform_local = None if oversized else th.RealVectorSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
             backward_transform_local = th.InverseRealVectorSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            backward_transform_dist = thd.DistributedInverseRealVectorSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_dist = thd.DistributedInverseRealVectorSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax, polar_exchange=polar_exchange).to(
+                device=self.device, dtype=dtype
+            )
         else:
             forward_transform_local = None if oversized else th.RealSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
             backward_transform_local = th.InverseRealSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
-            backward_transform_dist = thd.DistributedInverseRealSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax).to(device=self.device, dtype=dtype)
+            backward_transform_dist = thd.DistributedInverseRealSHT(grid_desc, lmax=lmax, mmax=mmax, lmmax=lmmax, polar_exchange=polar_exchange).to(device=self.device, dtype=dtype)
 
         # create tensors
         if forward_transform_local is not None:
@@ -649,24 +662,39 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             getattr(thd, cls_name)(grid, lmax=lmax, mmax=mmax)
 
     @parameterized.expand(
-        [["DistributedRealSHT", "weights"], ["DistributedInverseRealSHT", "pct"], ["DistributedRealVectorSHT", "weights"], ["DistributedInverseRealVectorSHT", "dpct"]]
+        [
+            [cls_name, buffer, polar_exchange]
+            for polar_exchange in ("reduce-scatter", "transpose")
+            for cls_name, buffer in [
+                ("DistributedRealSHT", "weights"),
+                ("DistributedInverseRealSHT", "pct"),
+                ("DistributedRealVectorSHT", "weights"),
+                ("DistributedInverseRealVectorSHT", "dpct"),
+            ]
+        ]
     )
-    def test_identical_transforms_share_their_block(self, cls_name, buffer):
+    def test_identical_transforms_share_their_block(self, cls_name, buffer, polar_exchange):
         """
         Two identical distributed transforms hold one copy of this rank's block, and it is
         the block a transform of different bounds does not get; see torch_harmonics.cache.
+        A transform with the other polar exchange shares it only where the two blocks are the
+        same, on a single polar rank: otherwise one spans the polar axis and the other does not.
         """
         grid = th.as_grid("legendre-gauss", nlat=16, nlon=32)
         cls = getattr(thd, cls_name)
-        a = cls(grid, block_size=3).to(self.device)
-        b = cls(grid, block_size=3).to(self.device)
-        other = cls(grid, lmax=10, mmax=10, block_size=3).to(self.device)
+        a = cls(grid, block_size=3, polar_exchange=polar_exchange).to(self.device)
+        b = cls(grid, block_size=3, polar_exchange=polar_exchange).to(self.device)
+        other = cls(grid, lmax=10, mmax=10, block_size=3, polar_exchange=polar_exchange).to(self.device)
         tables = [getattr(a, name) for name in a._block_names]
         self.assertEqual([name.rsplit("_", 1)[0] for name in a._block_names], [buffer] * len(tables))
         self.assertGreater(len(tables), 1)
         for name, table in zip(a._block_names, tables):
             self.assertIs(getattr(b, name), table)
         self.assertFalse(any(getattr(other, name) is table for name in other._block_names for table in tables))
+
+        crossed = cls(grid, block_size=3, polar_exchange="transpose" if polar_exchange == "reduce-scatter" else "reduce-scatter").to(self.device)
+        shared = [getattr(crossed, name) is table for name, table in zip(crossed._block_names, tables)]
+        self.assertEqual(shared, [self.grid_size_h == 1] * len(tables))
 
     @parameterized.expand(
         [
@@ -692,7 +720,7 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         """
         self._check_distributed_sht_double_backward(th.as_grid(grid, nlat=nlat, nlon=nlon), vector, inverse, verbose)
 
-    def _check_distributed_sht_double_backward(self, grid, vector, inverse, verbose=False):
+    def _check_distributed_sht_double_backward(self, grid, vector, inverse, verbose=False, polar_exchange="reduce-scatter"):
         """The penalty gradient through the distributed (inverse) SHT on ``grid``, a grid descriptor, against the serial one."""
         set_seed(333)
         B, C = 2, 3
@@ -706,11 +734,11 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         if inverse:
             inp_full = sht_local(inp_full).detach()
             transform_local = isht_cls(grid).to(device=self.device, dtype=torch.float64)
-            transform_dist = idist_cls(grid).to(device=self.device, dtype=torch.float64)
+            transform_dist = idist_cls(grid, polar_exchange=polar_exchange).to(device=self.device, dtype=torch.float64)
             inp_local, gather_inp = self._split_helper(inp_full), self._gather_helper_fwd
         else:
             transform_local = sht_local
-            transform_dist = dist_cls(grid).to(device=self.device, dtype=torch.float64)
+            transform_dist = dist_cls(grid, polar_exchange=polar_exchange).to(device=self.device, dtype=torch.float64)
             inp_local, gather_inp = self._split_spatial(inp_full, transform_dist), self._gather_helper_bwd
 
         def sq_norm(t):
@@ -735,6 +763,90 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         self.assertTrue(reduce_success(ok, self.device), "gradients")
         ok = compare_tensors("penalty grad", gather_inp(h_local, transform_dist), h_full, atol=0.0, rtol=0.0, ulps=8, verbose=verbose)
         self.assertTrue(reduce_success(ok, self.device), "penalty grad")
+
+    # -- polar_exchange="transpose" ------------------------------------------------------
+    # The same checks with the polar contraction completed by transposes instead of a
+    # reduce-scatter, on a selection of the rows above: both kinds of grid, even and uneven
+    # splits, fewer channels than ranks, asymmetric truncation, float64 and Jacobi iterations.
+
+    @parameterized.expand(
+        [
+            # nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax, lmmax, dtype, iter
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, None, 1, 1, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "equiangular", True, 1e-5, 1e-5],
+            [33, 64, None, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
+            [32, 64, 24, 1, 10, "legendre-gauss", False, 1e-5, 1e-6, 9, 6],
+            [32, 64, 24, 1, 10, "legendre-gauss", True, 1e-5, 1e-6, 9, 6],
+            [33, 64, None, 2, 3, "equiangular", False, 1e-12, 1e-12, None, None, torch.float64],
+            [33, 64, None, 2, 3, "fejer1", True, 1e-12, 1e-12, None, None, torch.float64],
+            [32, 64, None, 2, 3, "legendre-gauss", False, 1e-12, 1e-12, None, None, torch.float64, 2],
+            [32, 64, None, 2, 3, "legendre-gauss", True, 1e-12, 1e-12, None, None, torch.float64, 2],
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_sht_transpose(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, iter=0, verbose=True):
+        grid = th.as_grid(grid, nlat=nlat, nlon=nlon)
+        self._check_distributed_sht(grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose, iter=iter, polar_exchange="transpose")
+
+    @parameterized.expand(
+        [
+            # nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax, lmmax, dtype
+            [32, 64, None, 32, 8, "legendre-gauss", False, 1e-5, 1e-6],
+            [33, 64, None, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, None, 1, 1, "equiangular", False, 1e-5, 1e-5],
+            [32, 64, None, 1, 1, "equiangular", True, 1e-5, 1e-5],
+            [33, 64, None, 1, 10, "legendre-gauss", True, 1e-5, 1e-6],
+            [33, 64, 65, 1, 10, "equiangular", False, 1e-5, 1e-6],
+            [32, 64, 24, 1, 10, "legendre-gauss", True, 1e-5, 1e-6, 9, 6],
+            [96, 192, 85, 1, 2, "legendre-gauss", False, 1e-10, 1e-10, 43, 43, torch.float64],
+            [96, 192, 64, 1, 2, "legendre-gauss", True, 1e-10, 1e-10, 43, 43, torch.float64],
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_isht_transpose(self, nlat, nlon, lmax, batch_size, num_chan, grid, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, verbose=True):
+        grid = th.as_grid(grid, nlat=nlat, nlon=nlon)
+        self._check_distributed_isht(grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose, polar_exchange="transpose")
+
+    @parameterized.expand(
+        [
+            # nlat, nlon, grid, vector, inverse
+            [33, 64, "legendre-gauss", False, False],
+            [33, 64, "equiangular", True, False],
+            [33, 64, "legendre-gauss", False, True],
+            [33, 64, "equiangular", True, True],
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_sht_transpose_double_backward(self, nlat, nlon, grid, vector, inverse, verbose=False):
+        """The penalty gradient through the transposes, whose adjoints are transposes, see test_distributed_sht_double_backward."""
+        self._check_distributed_sht_double_backward(th.as_grid(grid, nlat=nlat, nlon=nlon), vector, inverse, verbose, polar_exchange="transpose")
+
+    @parameterized.expand(
+        [["DistributedRealSHT", "weights"], ["DistributedInverseRealSHT", "pct"], ["DistributedRealVectorSHT", "weights"], ["DistributedInverseRealVectorSHT", "dpct"]]
+    )
+    def test_transpose_tables_span_the_polar_axis(self, cls_name, buffer):
+        """
+        Under "transpose" a rank's tables hold every latitude (analysis) or degree (synthesis)
+        of its orders, the same on every polar rank, and the serial tables' rows of those orders.
+        """
+        grid = th.as_grid("legendre-gauss", nlat=17, nlon=32)
+        cls = getattr(thd, cls_name)
+        local_cls = getattr(th, cls_name.removeprefix("Distributed"))
+        dist = cls(grid, block_size=3, polar_exchange="transpose").to(self.device)
+        local = local_cls(grid, block_size=3).to(self.device)
+        m_off, m_loc = dist.mmax_offset, dist.mmax_local
+        got = getattr(dist, buffer)
+        ref = getattr(local, buffer)[..., m_off : m_off + m_loc, :, :]
+        self.assertEqual(tuple(got.shape), tuple(ref.shape))
+        ok = compare_tensors(buffer, got, ref.contiguous(), atol=1e-14, rtol=1e-14, verbose=False)
+        self.assertTrue(reduce_success(ok, self.device), buffer)
+
+    @parameterized.expand([[name] for name in ("DistributedRealSHT", "DistributedInverseRealSHT", "DistributedRealVectorSHT", "DistributedInverseRealVectorSHT")])
+    def test_rejects_unknown_polar_exchange(self, cls_name):
+        with self.assertRaisesRegex(ValueError, "polar_exchange"):
+            getattr(thd, cls_name)(th.as_grid("legendre-gauss", nlat=8, nlon=16), polar_exchange="all-gather")
 
     # -- HEALPix -------------------------------------------------------------------------
     # The same checks as above on a HealpixGrid, row for row in the same order with nside in
@@ -819,6 +931,26 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         if self.grid_size_w > 1:
             self.skipTest("HEALPix decomposes along latitude only")
         self._check_distributed_sht_double_backward(th.HealpixGrid(nside=nside), vector, inverse, verbose)
+
+    @parameterized.expand(
+        [
+            # nside, lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, iter
+            [8, None, 2, 3, False, 1e-5, 1e-6],
+            [8, None, 1, 1, True, 1e-5, 1e-5],
+            [8, 16, 1, 4, True, 1e-5, 1e-6, 9, 5],
+            [8, 24, 2, 3, True, 1e-12, 1e-12, None, None, torch.float64],
+            [8, None, 2, 3, False, 1e-12, 1e-12, None, None, torch.float64, 2],
+        ],
+        skip_on_empty=True,
+    )
+    def test_distributed_sht_healpix_transpose(self, nside, lmax, batch_size, num_chan, vector, atol, rtol, mmax=None, lmmax=None, dtype=torch.float32, iter=0, verbose=True):
+        """The transposes on bands of rings split by pixel count rather than evenly."""
+        if self.grid_size_w > 1:
+            self.skipTest("HEALPix decomposes along latitude only")
+        grid = th.HealpixGrid(nside=nside)
+        self._check_distributed_sht(grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose, iter=iter, polar_exchange="transpose")
+        if iter == 0:
+            self._check_distributed_isht(grid, lmax, batch_size, num_chan, vector, atol, rtol, mmax, lmmax, dtype, verbose, polar_exchange="transpose")
 
     @parameterized.expand([[name] for name in ("DistributedRealSHT", "DistributedInverseRealSHT", "DistributedRealVectorSHT", "DistributedInverseRealVectorSHT")])
     def test_healpix_refuses_an_azimuthal_decomposition(self, cls_name):
