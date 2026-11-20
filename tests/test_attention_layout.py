@@ -209,8 +209,10 @@ class TestAttentionLayout(unittest.TestCase):
                     self.assertEqual(y.dtype, dtype)
                     self.assertTrue(torch.equal(y, x.permute(0, 2, 3, 1).contiguous()))
 
-    @unittest.skipUnless(optimized_kernels_is_available(), "optimized kernels not available")
+    # the skip goes under expand: expand builds the generated tests from the function it is
+    # given, so a skip above it marks only the base method and every case runs anyway
     @parameterized.expand(_shapes)
+    @unittest.skipUnless(optimized_kernels_is_available(), "optimized kernels not available")
     def test_opcheck(self, B, C, H, W):
         """Schema, fake impl and autograd registration are mutually consistent."""
 
