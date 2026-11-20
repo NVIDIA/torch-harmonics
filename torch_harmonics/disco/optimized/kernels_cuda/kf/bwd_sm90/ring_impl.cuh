@@ -79,7 +79,12 @@ namespace leader_impl
 
     struct PrepCfg {
         int P, Wi, Wo, Ho, Hi, G, XW, XLMAX, SPMAX, SEGMAX;
+        int *laps;                 // max wraps of an arc around the circle (psi scale headroom for folded arcs)
+        const unsigned char *skip; // rings owned by the frequency-domain path (nullptr: none)
     };
+
+    __device__ __forceinline__ void pdl_wait() { asm volatile("griddepcontrol.wait;\n" ::: "memory"); }
+    __device__ __forceinline__ void pdl_trigger() { asm volatile("griddepcontrol.launch_dependents;\n" ::: "memory"); }
 
     __device__ __forceinline__ int floordiv_i(int a, int b)
     {
@@ -123,8 +128,10 @@ namespace leader_impl
                 int ring = ring8[k], start = start8[k], len = len8[k];
                 long long myvoff = voff;
                 if (len > 0) voff += len;
+                // An arc longer than Wo wraps onto itself; k_build_sp folds the repeated values in fp32.
+                if (!WRITE_SINFO && len > c.Wo && c.laps) atomicMax(c.laps, (int)(((long long)len + c.Wo - 1) / c.Wo));
                 int lc = min(len, c.Wo);
-                if (lc <= 0 || ring < 0 || ring >= c.Ho) {
+                if (lc <= 0 || ring < 0 || ring >= c.Ho || (c.skip && c.skip[ring])) {
                     if (open) {
                         emit(e_g, e_s0, s, e_EB & ~7, xl_of(e_EB, e_end), e_spw, e_n, e_rsp, e_work);
                         open = false;
@@ -195,6 +202,7 @@ namespace leader_impl
                                  const int64_t *__restrict__ val_off, PrepCfg c, int *__restrict__ gcount,
                                  unsigned long long *__restrict__ gwork, int *__restrict__ row_spw)
     {
+        pdl_trigger();
         int r = blockIdx.x * blockDim.x + threadIdx.x;
         if (r >= nrows) return;
         row_spw[r] = walk_row<false>(r, seg_off, seg, val_off, c, nullptr, 0,
@@ -210,6 +218,8 @@ namespace leader_impl
                                  const long long *__restrict__ row_spoff, int *__restrict__ gcursor,
                                  Entry *__restrict__ ents, SegInfo *__restrict__ sinfo)
     {
+        pdl_wait();
+        pdl_trigger();
         int r = blockIdx.x * blockDim.x + threadIdx.x;
         if (r >= nrows) return;
         const int xrow = row_ker[r] * c.Hi + row_lat[r];
@@ -251,8 +261,10 @@ namespace leader_impl
     // The two scaled residual terms retain about 22 mantissa bits of each fp32 psi value.
     template <int P>
     __global__ void k_build_sp(long long nseg, const SegInfo *__restrict__ sinfo, const float *__restrict__ vals,
-                               const float *__restrict__ gscale, uint32_t *__restrict__ spglob, SegHot *__restrict__ shot)
+                               const float *__restrict__ gscale, uint32_t *__restrict__ spglob,
+                               SegHot *__restrict__ shot, const int *__restrict__ seg, int Wo)
     {
+        pdl_wait();
         const long long s = ((long long)blockIdx.x * blockDim.x + threadIdx.x) >> 5;
         const int lane = threadIdx.x & 31;
         if (s >= nseg) return;
@@ -263,6 +275,7 @@ namespace leader_impl
         const int NK = sg.kp + 8;
         uint32_t *dst = spglob + sg.pad;
         const float *v = vals + sg.voff;
+        const int flen = seg[3 * s + 2];
         for (int t = lane; t < NK; t += 32) {
 #pragma unroll
             for (int b = 0; b < P; ++b) {
@@ -271,7 +284,10 @@ namespace leader_impl
                 for (int u = 0; u < 2; ++u) {
                     int a = 8 - (t + u) - sg.base;
                     int jj = P * a + b - sg.st;
-                    y[u] = (jj >= 0 && jj < sg.len) ? __ldg(v + jj) * scale : 0.f;
+                    float acc = 0.f;
+                    if (jj >= 0 && jj < sg.len)
+                        for (int j = jj; j < flen; j += Wo) acc += __ldg(v + j);
+                    y[u] = acc * scale;
                 }
 #pragma unroll
                 for (int k = 0; k < NSPLIT; ++k) {
@@ -287,6 +303,8 @@ namespace leader_impl
 
     __global__ void k_absmax(const float *__restrict__ v, long long n, int *__restrict__ gmax)
     {
+        pdl_wait();
+        pdl_trigger();
         __shared__ float wm[32];
         float m = 0.f;
         for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -346,6 +364,8 @@ namespace leader_impl
                const int *__restrict__ gmax, float *__restrict__ gscale, int *__restrict__ gheavy,
                int4 *__restrict__ items, double split_scale, int max_extra, int max_slots, int NG)
     {
+        pdl_wait();
+        pdl_trigger();
         __shared__ int wsum[32];
         __shared__ long long wsum64[32];
         __shared__ int carry;
@@ -470,7 +490,7 @@ namespace leader_impl
             }
         }
         if (tid == 0) {
-            float m = __int_as_float(*gmax);
+            float m = __int_as_float(gmax[0]) * (float)max(1, gmax[1]);
             int sc = 0;
             if (m > 0.f && m <= 3.0e38f) {
                 int e;
@@ -634,6 +654,7 @@ namespace leader_impl
                    const int *__restrict__ gheavy, const int4 *__restrict__ items, const float *__restrict__ gscale,
                    __half *__restrict__ out, float *__restrict__ scratch, int *__restrict__ scnt, MainCfg c)
     {
+        pdl_wait();
         extern __shared__ __align__(128) unsigned char smem[];
         __shared__ __align__(8) uint64_t full_bar[NSLOT];
         __shared__ __align__(8) uint64_t empty_bar[NSLOT];
@@ -943,6 +964,22 @@ namespace leader_impl
     // ----------------------------------------------------------------------------------------------------------
     static inline size_t align_up(size_t x, size_t a) { return (x + a - 1) / a * a; }
 
+    template <typename... KArgs, typename... Args>
+    static void launch_pdl(void (*k)(KArgs...), dim3 grid, dim3 block, size_t smem, cudaStream_t st, Args... args)
+    {
+        cudaLaunchConfig_t cfg = {};
+        cfg.gridDim = grid;
+        cfg.blockDim = block;
+        cfg.dynamicSmemBytes = smem;
+        cfg.stream = st;
+        cudaLaunchAttribute at[1];
+        at[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+        at[0].val.programmaticStreamSerializationAllowed = 1;
+        cfg.attrs = at;
+        cfg.numAttrs = 1;
+        cudaLaunchKernelEx(&cfg, k, static_cast<KArgs>(args)...);
+    }
+
     template <int P, int MTW, int G, int MINB, bool PAIR>
     static void launch_tc(MainCfg mc, int nctas, cudaStream_t stream, const __half *inp, const uint32_t *spglob,
                           const SegHot *shot, const Entry *ents, const int *gstart, const int *gorder, const int *gheavy,
@@ -955,13 +992,13 @@ namespace leader_impl
         cudaFuncSetAttribute(k_disco_tc<P, MTW, G, MINB, PAIR>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
         dim3 grid((unsigned)nctas);
         dim3 block(32 * (mc.CB * mc.WPC + 1));
-        k_disco_tc<P, MTW, G, MINB, PAIR><<<grid, block, smem, stream>>>(inp, spglob, shot, ents, gstart, gorder,
-                                                                         gheavy, items, gscale, out, scratch, scnt, mc);
+        launch_pdl(k_disco_tc<P, MTW, G, MINB, PAIR>, grid, block, smem, stream, inp, spglob, shot, ents, gstart,
+                   gorder, gheavy, items, gscale, out, scratch, scnt, mc);
     }
 
     void Run(ffi::TensorView inp, ffi::TensorView row_ker, ffi::TensorView row_lat, ffi::TensorView seg_off,
              ffi::TensorView seg, ffi::TensorView val_off, ffi::TensorView vals, int64_t nlat_out, int64_t nlon_out,
-             ffi::TensorView out)
+             ffi::TensorView out, const unsigned char *skip = nullptr)
     {
         const int B = (int)inp.size(0), C = (int)inp.size(1), K = (int)inp.size(2), Hi = (int)inp.size(3),
                   Wi = (int)inp.size(4);
@@ -1006,7 +1043,7 @@ namespace leader_impl
                 = align_up(64 + (size_t)SEGMAX * sizeof(SegHot) + (size_t)SPMAX * 4 + (size_t)CB * XLMAX * 2, 128);
             if (max_entry > 64 * 1024) tc = false;
             int NG = (Ho + G - 1) / G;
-            pc = PrepCfg {P, Wi, Wo, Ho, Hi, G, XW, XLMAX, SPMAX, SEGMAX};
+            pc = PrepCfg {P, Wi, Wo, Ho, Hi, G, XW, XLMAX, SPMAX, SEGMAX, nullptr, skip};
             mc = MainCfg {BC, K, Hi, Wi, Ho, Wo, NG, WPC, CB, (BC + CB - 1) / CB, 0};
         }
 
@@ -1060,6 +1097,7 @@ namespace leader_impl
             int *d_gcount = reinterpret_cast<int *>(ws + o_gcount);
             int *d_gcursor = reinterpret_cast<int *>(ws + o_gcursor);
             int *d_gmax = reinterpret_cast<int *>(ws + o_gmax);
+            pc.laps = d_gmax + 1;
             int *d_gstart = reinterpret_cast<int *>(ws + o_gstart);
             int *d_gorder = reinterpret_cast<int *>(ws + o_gorder);
             float *d_gscale = reinterpret_cast<float *>(ws + o_gscale);
@@ -1073,19 +1111,21 @@ namespace leader_impl
             k_prep_count<<<pg, pb, 0, stream>>>(NROWS, d_so, d_seg, d_vo, pc, d_gcount, d_gwork, d_rspw);
             int mg = (int)std::min<long long>((NNZ + 255) / 256, 2 * 132);
             if (mg < 1) mg = 1;
-            k_absmax<<<mg, 256, 0, stream>>>(d_vals, NNZ, d_gmax);
-            k_scan<<<1, 1024, 0, stream>>>(d_gcount, d_gwork, d_gstart, d_gorder, d_rspw, d_rspoff, NROWS, d_gmax,
-                                           d_gscale, d_gheavy, d_items, split_scale, max_extra, max_slots, NG);
-            k_prep_place<<<pg, pb, 0, stream>>>(NROWS, d_so, d_seg, d_vo, d_rk, d_rl, pc, d_gstart, d_rspoff, d_gcursor,
-                                                d_ents, d_sinfo);
+            launch_pdl(k_absmax, dim3(mg), dim3(256), 0, stream, d_vals, NNZ, d_gmax);
+            launch_pdl(k_scan, dim3(1), dim3(1024), 0, stream, d_gcount, d_gwork, d_gstart, d_gorder, d_rspw, d_rspoff,
+                       NROWS, d_gmax, d_gscale, d_gheavy, d_items, split_scale, max_extra, max_slots, NG);
+            launch_pdl(k_prep_place, dim3(pg), dim3(pb), 0, stream, NROWS, d_so, d_seg, d_vo, d_rk, d_rl, pc, d_gstart,
+                       d_rspoff, d_gcursor, d_ents, d_sinfo);
             unsigned sg_blocks = (unsigned)((NSEG * 32 + 255) / 256);
             const int nctas = (NG + max_extra) * ncb;
             if (P == 1) {
-                k_build_sp<1><<<sg_blocks, 256, 0, stream>>>(NSEG, d_sinfo, d_vals, d_gscale, d_sp, d_shot);
+                launch_pdl(k_build_sp<1>, dim3(sg_blocks), dim3(256), 0, stream, NSEG, d_sinfo, d_vals, d_gscale, d_sp,
+                           d_shot, d_seg, Wo);
                 launch_tc<1, 6, 3, 3, false>(mc, nctas, stream, d_inp, d_sp, d_shot, d_ents, d_gstart, d_gorder,
                                              d_gheavy, d_items, d_gscale, d_out, d_scratch, d_scnt);
             } else {
-                k_build_sp<2><<<sg_blocks, 256, 0, stream>>>(NSEG, d_sinfo, d_vals, d_gscale, d_sp, d_shot);
+                launch_pdl(k_build_sp<2>, dim3(sg_blocks), dim3(256), 0, stream, NSEG, d_sinfo, d_vals, d_gscale, d_sp,
+                           d_shot, d_seg, Wo);
                 if (BC > 16)
                     launch_tc<2, 6, 2, 3, true>(mc, nctas, stream, d_inp, d_sp, d_shot, d_ents, d_gstart, d_gorder,
                                                 d_gheavy, d_items, d_gscale, d_out, d_scratch, d_scnt);

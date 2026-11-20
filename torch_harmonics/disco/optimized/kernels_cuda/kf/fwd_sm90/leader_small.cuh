@@ -153,13 +153,14 @@ namespace leader_small
     }
 
 // ------------------------------------------------------------------------------------------------
-// prep, part 1: one 1024-thread CTA per output row.
+// prep, part 1: one 256-thread CTA per output row; four consecutive points/thread.
 //   segments (runs of points with equal hi and consecutive wi, seam-crossing runs merged),
 //   dense-filter positions, zeroed dense-filter region and the stage schedule.
 // Stage record (16 ints): R (Vd position of block 0), nb, np, -, hi[4], wbase[4], nbp[4]
 // prep, part 2 (disco_scatter_kernel): one thread per point writes its K values into Vd.
 // ------------------------------------------------------------------------------------------------
-#define PREP_THREADS 1024
+#define PREP_THREADS 256
+#define PREP_ITEMS 4
 #define PREP_WARPS (PREP_THREADS / 32)
 
     __device__ __forceinline__ int block_incl_scan(int v, int *s_warp, int &total)
@@ -203,7 +204,8 @@ namespace leader_small
                           __half *__restrict__ Vd, int *__restrict__ stages, int *__restrict__ nstages)
     {
         __shared__ int s_warp[64];
-        const int ho = blockIdx.x;
+        const int yi = (int)blockIdx.x;
+        const int ho = (yi & 1) ? ((int)gridDim.x - 1 - (yi >> 1)) : (yi >> 1);
         const int tid = threadIdx.x;
         const int64_t a = poff[ho];
         const int cnt = (int)(poff[ho + 1] - a);
@@ -216,25 +218,40 @@ namespace leader_small
 
         // 1. segment starts + ids
         int nseg = 0;
-        for (int base = 0; base < cnt; base += PREP_THREADS) {
-            const int i = base + tid;
-            int f = 0;
-            if (i < cnt) {
-                const longlong2 cur = *reinterpret_cast<const longlong2 *>(P + 2 * i);
-                if (i == 0) {
-                    f = 1;
-                } else {
-                    const longlong2 prv = *reinterpret_cast<const longlong2 *>(P + 2 * i - 2);
-                    const int d = (int)(cur.y - prv.y);
-                    f = (cur.x != prv.x) || d < 1 || d > GMAX;
+        for (int base = 0; base < cnt; base += PREP_THREADS * PREP_ITEMS) {
+            const int i0 = base + tid * PREP_ITEMS;
+            int fl[PREP_ITEMS] = {};
+            int c = 0;
+            longlong2 prv = make_longlong2(0LL, 0LL);
+            if (i0 > 0 && i0 < cnt) prv = *reinterpret_cast<const longlong2 *>(P + 2 * i0 - 2);
+#pragma unroll
+            for (int q = 0; q < PREP_ITEMS; q++) {
+                const int i = i0 + q;
+                if (i < cnt) {
+                    const longlong2 cur = *reinterpret_cast<const longlong2 *>(P + 2 * i);
+                    if (i == 0) {
+                        fl[q] = 1;
+                    } else {
+                        const int d = (int)(cur.y - prv.y);
+                        fl[q] = (cur.x != prv.x) || d < 1 || d > GMAX;
+                    }
+                    prv = cur;
+                    c += fl[q];
                 }
             }
             int tot;
-            const int inc = block_incl_scan(f, s_warp, tot);
-            if (i < cnt) {
-                const int s = nseg + inc - 1;
-                gsid[a + i] = (int)a + s;
-                if (f) shead[s] = i;
+            const int inc = block_incl_scan(c, s_warp, tot);
+            const int before = inc - c;
+            int local = 0;
+#pragma unroll
+            for (int q = 0; q < PREP_ITEMS; q++) {
+                const int i = i0 + q;
+                if (i < cnt) {
+                    local += fl[q];
+                    const int s = nseg + before + local - 1;
+                    gsid[a + i] = (int)a + s;
+                    if (fl[q]) shead[s] = i;
+                }
             }
             nseg += tot;
         }
@@ -631,6 +648,16 @@ namespace leader_small
         asm volatile("{\n.reg .b64 st;\nmbarrier.arrive.expect_tx.shared::cta.b64 st, [%0], %1;\n}\n" ::"r"(bar), "r"(tx)
                      : "memory");
     }
+    __device__ __forceinline__ bool mbar_test(uint32_t bar, uint32_t parity)
+    {
+        uint32_t r;
+        asm volatile(
+            "{\n .reg .pred P;\n mbarrier.test_wait.parity.shared::cta.b64 P, [%1], %2;\n selp.u32 %0, 1, 0, P;\n}"
+            : "=r"(r)
+            : "r"(bar), "r"(parity)
+            : "memory");
+        return __shfl_sync(0xffffffffu, r, 0) != 0;
+    }
     __device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t parity)
     {
         asm volatile("{\n.reg .pred p;\nWAIT_%=:\n"
@@ -681,7 +708,7 @@ namespace leader_small
         }
     }
 
-    template <int N, int S, int NCW>
+    template <int N, int S, int NCW, int KF>
     __global__ void __launch_bounds__(128 * (NCW + 1), NCW == 1 ? 2 : 1) disco_main_kernel(const MainParams p)
     {
         constexpr int NT = 128 * (NCW + 1); // threads: NCW consumer warpgroups + 1 producer warpgroup
@@ -692,7 +719,11 @@ namespace leader_small
         const int warp_id = __shfl_sync(0xffffffffu, tid >> 5, 0), lane = tid & 31;
         const int NA = p.na, NG = p.ng;
         const int Cc = p.Cc, Tc = p.Tc, CW = p.CW;
-        const int Kk = p.K;
+        const int Kk = KF ? KF : p.K;
+        // producer warps: K-specialized kernels use separate filter-row (warp 0) and input-window (warp 1)
+        // loader warps and two builders; the generic kernel keeps one loader warp and three builders
+        constexpr int NBW = KF ? 2 : 3;
+        constexpr int B0 = 4 - NBW; // first builder warp
 
         // this CTA: one (channel, longitude) tile for the output rows of one row group
         const int tb = blockIdx.x % p.nTB;
@@ -747,7 +778,7 @@ namespace leader_small
             const bool one = tid < NA || (tid >= 2 * NA && tid < 2 * NA + NV);
             const bool prod = (tid >= 2 * NA + NV && tid < 2 * NA + 2 * NV)
                 || (tid >= 2 * NA + 2 * NV && tid < 2 * NA + 2 * NV + NG);
-            mbar_init(bar0 + 8 * tid, one ? 1 : prod ? 3 : 4 * NCW);
+            mbar_init(bar0 + 8 * tid, one ? 1 : prod ? NBW : 4 * NCW);
         }
         for (int i = tid; i < GST / 16; i += NT) reinterpret_cast<uint4 *>(zblk)[i] = make_uint4(0, 0, 0, 0);
         // padding columns n in [K*S, N) of every B buffer are constant zeros
@@ -847,9 +878,10 @@ namespace leader_small
                 mbar_wait(V_LOAD(v), (j / NV) & 1);
                 const uint8_t *V = vring + v * p.VBYTES;
                 uint8_t *G = gring + g * GSB;
-                for (int task = lane; task < NBMAX * 6; task += 32) {
+                constexpr int KPW = KF ? ((KF + NBW - 1) / NBW) : 6;
+                for (int task = lane; task < NBMAX * KPW; task += 32) {
                     const int blk = task % NBMAX;
-                    const int k = (pw - 1) + 3 * (task / NBMAX); // K <= 16 (6 rows of blocks per warp cover 18 rows)
+                    const int k = (pw - B0) + NBW * (task / NBMAX); // K <= 16 (generic: 6 rows per warp cover 18)
                     if (blk < nb && k < Kk) {
                         const uint4 *src = reinterpret_cast<const uint4 *>(V + (k * (NBMAX + 1) + blk) * 16);
                         const uint4 lo = src[0], hi = src[1];
@@ -857,7 +889,7 @@ namespace leader_small
                     }
                 }
                 // info: nb, A slot/phase/first/last, chunk offset of every block (16 bit each)
-                if (pw == 1 && lane < NBMAX) {
+                if (pw == B0 && lane < NBMAX) {
                     const int4 rn = reinterpret_cast<const int4 *>(rp)[3];
                     const int np = r0.z;
                     const int j8 = NBMAX * c.gs + (lane < nb ? lane : nb - 1);
@@ -905,33 +937,45 @@ namespace leader_small
             int vJ = 0, bJ = 0, bAg = 0, done = -1; // V loads issued, stages built, A index of build cursor
             // warp 4 only issues bulk copies (it never executes the proxy fence, which would make it wait for
             // its own in-flight copies); warps 5..7 build the shifted filters and hand them to the consumers
-            while (bJ < totG) {
-                if (pw == 0) {
-                    // dense-filter rows: up to NV stages ahead of the builders (V slots are freed by the builds)
-                    while (vJ < totG && vJ <= bJ + NV - 1) {
-                        if (vJ >= NV) mbar_wait(V_FREE(vJ % NV), ((vJ / NV) - 1) & 1);
+            if (KF && pw == 0) {
+                // dense-filter rows only; the V slots are freed by the builders
+                for (; vJ < totG; ++vJ) {
+                    if (vJ >= NV) mbar_wait(V_FREE(vJ % NV), ((vJ / NV) - 1) & 1);
+                    load_V(cv, vJ);
+                    advG(cv);
+                }
+            } else if (KF && pw == 1) {
+                // input windows only; the A slots are freed by the consumers
+                for (; ca.r < nR; ++aL) {
+                    if (aL >= NA) mbar_wait(A_EMPTY(aL % NA), ((aL / NA) - 1) & 1);
+                    load_A(ca, aL);
+                    ca.ia++;
+                    norm(ca);
+                }
+            } else if (pw == 0) {
+                // Keep the input-window and dense-filter copy streams independent: issue whichever has a free slot.
+                (void)bJ;
+                (void)gfirst;
+                while (vJ < totG || ca.r < nR) {
+                    bool prog = false;
+                    if (vJ < totG && (vJ < NV || mbar_test(V_FREE(vJ % NV), ((vJ / NV) - 1) & 1))) {
                         load_V(cv, vJ);
                         advG(cv);
                         vJ++;
+                        prog = true;
                     }
-                    // A windows: load an A-stage once its first G-stage is inside the V lookahead. Blocking on the
-                    // slot is safe: all stages of the previous occupant already have their V rows in flight.
-                    while (ca.r < nR) {
-                        const int a = aL % NA;
-                        if (aL >= NA) {
-                            if (gfirst > bJ + NV - 1) break;
-                            mbar_wait(A_EMPTY(a), ((aL / NA) - 1) & 1);
-                        }
-                        const int nbA = recp(ca.r, ca.ia)[1];
-                        const int ng = (nbA + NBMAX - 1) / NBMAX;
+                    if (ca.r < nR && (aL < NA || mbar_test(A_EMPTY(aL % NA), ((aL / NA) - 1) & 1))) {
                         load_A(ca, aL);
-                        gfirst += ng;
                         aL++;
                         ca.ia++;
                         norm(ca);
+                        prog = true;
                     }
-                    bJ++; // pacing counter: the loader runs up to NV stages ahead of the builders
-                } else {
+                    if (!prog) __nanosleep(32);
+                }
+            }
+            while (pw >= B0 && bJ < totG) {
+                {
                     build_G(cbd, bJ, bAg);
                     if (advG(cbd)) bAg++;
                     bJ++;
@@ -1136,11 +1180,6 @@ namespace leader_small
         mp.ng = cand[pick][1];
         mp.nv = cand[pick][2];
         const int smem = smem_of(mp.na, mp.ng, mp.nv);
-        static bool configured = false;
-        if (!configured) {
-            cudaFuncSetAttribute(disco_main_kernel<N, S, NCW>, cudaFuncAttributeMaxDynamicSharedMemorySize, 227 * 1024);
-            configured = true;
-        }
         // rows per CTA: amortize the pipeline fill while keeping >= ~6 CTAs per SM slot
         const int tiles = nCB * mp.nTB;
         const int slots = (NCW == 1 ? 2 : 1) * 132;
@@ -1148,7 +1187,23 @@ namespace leader_small
         while (R < RMAX && (int64_t)tiles * ((mp.Ho + 2 * R - 1) / (2 * R)) >= 6 * slots) R *= 2;
         mp.R = R;
         dim3 grid(tiles, (mp.Ho + R - 1) / R);
-        disco_main_kernel<N, S, NCW><<<grid, 128 * (NCW + 1), smem, stream>>>(mp);
+        if (mp.K == 9) {
+            static bool configured9 = false;
+            if (!configured9) {
+                cudaFuncSetAttribute(disco_main_kernel<N, S, NCW, 9>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                     227 * 1024);
+                configured9 = true;
+            }
+            disco_main_kernel<N, S, NCW, 9><<<grid, 128 * (NCW + 1), smem, stream>>>(mp);
+        } else {
+            static bool configured0 = false;
+            if (!configured0) {
+                cudaFuncSetAttribute(disco_main_kernel<N, S, NCW, 0>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                     227 * 1024);
+                configured0 = true;
+            }
+            disco_main_kernel<N, S, NCW, 0><<<grid, 128 * (NCW + 1), smem, stream>>>(mp);
+        }
     }
 
     static inline bool supported(int Wi, int Wo, int K)
@@ -1291,6 +1346,7 @@ namespace leader_small
 #undef NCW_MAX
 #undef NCW2_DISCOUNT
 #undef PREP_THREADS
+#undef PREP_ITEMS
 #undef PREP_WARPS
 #undef DISPATCH_MAIN
 #undef DISPATCH_MAIN2

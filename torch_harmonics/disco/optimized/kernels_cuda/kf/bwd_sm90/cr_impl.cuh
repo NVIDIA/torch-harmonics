@@ -45,6 +45,12 @@ namespace ffi = tvm::ffi;
 
 namespace cr
 {
+    __device__ __forceinline__ void cr_pdl_wait() { asm volatile("griddepcontrol.wait;\n" ::: "memory"); }
+    __device__ __forceinline__ void cr_pdl_trigger()
+    {
+        asm volatile("griddepcontrol.launch_dependents;\n" ::: "memory");
+    }
+
     // DISCO spherical convolution transpose (arc scatter), fp16 activations, fp32 psi / accumulation.
     //
     // Fast path (pscale P = 1 or 2): gather by output ring on tensor cores, channels in the MMA rows.
@@ -83,8 +89,8 @@ namespace cr
         int S, CT, MS, NWL, G, NG, NB, RB, CLW;
         int CHS, XLMAX, SPMAX;
         int off_ps, off_hot, off_ent, stage_bytes, nst, ntiles;
-        int sig_lo, sig_hi;
-        int rowch[16], rowsp[16];
+        unsigned rowch_lo, rowch_hi, rowsp_lo, rowsp_hi;
+        const unsigned char *skip; // rings owned by the frequency-domain path (nullptr: none)
     };
 
     struct __align__(16) Entry {
@@ -133,7 +139,7 @@ namespace cr
             const int ring = seg[3 * s], start = seg[3 * s + 1], len = seg[3 * s + 2];
             const long long myv = voff;
             if (len > 0) voff += len;
-            if (len <= 0 || ring < 0 || ring >= c.Ho) continue;
+            if (len <= 0 || ring < 0 || ring >= c.Ho || (c.skip && c.skip[ring])) continue;
             const int g = ring / c.G;
             int st0 = start % c.Wo;
             if (st0 < 0) st0 += c.Wo;
@@ -183,6 +189,8 @@ namespace cr
                             const int64_t *__restrict__ val_off, Cfg c, int *__restrict__ bcount,
                             unsigned long long *__restrict__ gwork, int *__restrict__ row_nsub, int *__restrict__ row_spw)
     {
+        cr_pdl_wait();
+        cr_pdl_trigger();
         const int r = blockIdx.x * blockDim.x + threadIdx.x;
         if (r >= nrows) return;
         const int b = r / c.RB;
@@ -205,6 +213,8 @@ namespace cr
                             const long long *__restrict__ row_spoff, Entry *__restrict__ ents, int4 *__restrict__ hot,
                             BuildRec *__restrict__ brec)
     {
+        cr_pdl_wait();
+        cr_pdl_trigger();
         const int r = blockIdx.x * blockDim.x + threadIdx.x;
         if (r >= nrows) return;
         const int b = r / c.RB;
@@ -241,7 +251,18 @@ namespace cr
                 e.len2 = l2;
                 e.spg = sp0 + ersp;
                 e.len3 = l3;
-                e.grp = g;
+                // For small ring groups, pack the per-ring sub-arc bounds into four-bit fields.
+                // Records are ring-ordered, so consumers can skip the other rings' hot records entirely.
+                unsigned bounds = 0;
+                if (c.G <= 7) {
+                    int k = 0;
+                    for (int rs = 0; rs <= c.G; ++rs) {
+                        const int ring_cut = g * c.G + rs;
+                        while (k < en && hot[u0 + eu0 + k].x < ring_cut) ++k;
+                        bounds |= (unsigned)k << (4 * rs);
+                    }
+                }
+                e.grp = (int)bounds;
                 ents[pos] = e;
             },
             ns, sw);
@@ -254,6 +275,8 @@ namespace cr
                                const float *__restrict__ vals, const float *__restrict__ gscale,
                                uint32_t *__restrict__ spglob)
     {
+        cr_pdl_wait();
+        cr_pdl_trigger();
         const long long u = ((long long)blockIdx.x * blockDim.x + threadIdx.x) >> 5;
         const int lane = threadIdx.x & 31;
         if (u >= *ntot) return;
@@ -287,6 +310,7 @@ namespace cr
 
     __global__ void k_absmax(const float *__restrict__ v, long long n, int *__restrict__ gmax)
     {
+        cr_pdl_trigger();
         __shared__ float wm[32];
         float m = 0.f;
         for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n;
@@ -348,6 +372,8 @@ namespace cr
                const int *__restrict__ gmax, float *__restrict__ gscale, int *__restrict__ ginfo,
                Item *__restrict__ items, int *__restrict__ gnorm, int nslots_cta)
     {
+        cr_pdl_wait();
+        cr_pdl_trigger();
         __shared__ int wsum[32];
         __shared__ long long wsum64[32];
         __shared__ int carry;
@@ -686,16 +712,18 @@ namespace cr
         }
     }
 
-    template <int P>
+    template <int P, bool PACKED_BOUNDS>
     __global__ void __launch_bounds__(32 * (MAXMW + NPW), 1)
         k_disco_tc(const __half *__restrict__ inp, const uint32_t *__restrict__ spglob, const int4 *__restrict__ hot,
                    const Entry *__restrict__ ents, const int *__restrict__ bstart, const int *__restrict__ ginfo,
                    const Item *__restrict__ items, const int *__restrict__ gnorm, const float *__restrict__ gscale,
                    __half *__restrict__ out, float *__restrict__ scratch, int *__restrict__ scnt, const Cfg c)
     {
+        cr_pdl_wait();
         extern __shared__ __align__(128) unsigned char smem[];
         __shared__ __align__(8) uint64_t full_bar[MAXST];
         __shared__ __align__(8) uint64_t empty_bar[MAXST];
+        __shared__ __align__(16) Entry producer_entries[2][32];
         __shared__ int s_last;
         constexpr int Ph = 8 / P;
         const int tid = threadIdx.x;
@@ -758,53 +786,56 @@ namespace cr
             for (int k = pw; k < c.CT; k += NPW) nmine += (c0 + k < c.BC) ? 1 : 0;
             const __half *chbase = inp + (rvalid ? (size_t)ch * cstride : 0);
             __half *rowdst = reinterpret_cast<__half *>(smem) + 2 * chl * c.CHS;
-            // entries are fetched 32 at a time (lane j holds entry base + j), one batch ahead
-            Entry Ecur {}, Enxt {};
-            if (lane < n) Ecur = ents[e0 + lane];
-            if (32 + lane < n) Enxt = ents[e0 + 32 + lane];
             int s = 0, rnd = 0;
-            for (int i = 0; i < n; ++i) {
-                const int j = i & 31;
-                if (j == 0 && i > 0) {
-                    Ecur = Enxt;
-                    if (i + 32 + lane < n) Enxt = ents[e0 + i + 32 + lane];
+            if (pw == 0 && lane < n) producer_entries[0][lane] = ents[e0 + lane];
+            asm volatile("bar.sync 2, 128;\n" ::: "memory");
+            for (int base = 0; base < n; base += 32) {
+                const int buf = (base >> 5) & 1;
+                const int nb = min(32, n - base);
+                for (int j = 0; j < nb; ++j) {
+                    Entry E {};
+                    if (lane == 0) E = producer_entries[buf][j];
+                    const int xrow = __shfl_sync(0xffffffffu, E.xrow, 0);
+                    const int q0 = __shfl_sync(0xffffffffu, E.q0, 0);
+                    const int len1 = __shfl_sync(0xffffffffu, E.len1, 0);
+                    const int len2 = __shfl_sync(0xffffffffu, E.len2, 0);
+                    const int len3 = __shfl_sync(0xffffffffu, E.len3, 0);
+                    int meta = 0;
+                    const void *msrc = nullptr;
+                    int moff = 0;
+                    if (pw == 1 % NPW) {
+                        meta = 4 * __shfl_sync(0xffffffffu, E.spw, 0);
+                        msrc = spglob + __shfl_sync(0xffffffffu, E.spg, 0);
+                        moff = c.off_ps;
+                    } else if (pw == 2 % NPW) {
+                        meta = 16 * __shfl_sync(0xffffffffu, E.nsub, 0);
+                        msrc = hot + __shfl_sync(0xffffffffu, E.u0, 0);
+                        moff = c.off_hot;
+                    } else if (pw == 3 % NPW) {
+                        meta = (int)sizeof(Entry);
+                        msrc = ents + e0 + base + j;
+                        moff = c.off_ent;
+                    }
+                    if (rnd > 0) mbar_wait(&empty_bar[s], (rnd - 1) & 1);
+                    const int sofs = s * c.stage_bytes;
+                    if (lane == 0) mbar_expect_tx(&full_bar[s], (unsigned)(2 * nmine * (len1 + len2 + len3) + meta));
+                    __syncwarp();
+                    if (rvalid) {
+                        const __half *src = chbase + (size_t)xrow * c.Wi;
+                        __half *dst = rowdst + sofs / 2;
+                        bulk_g2s(dst, src + q0, (unsigned)len1 * 2, &full_bar[s]);
+                        if (len2 > 0) bulk_g2s(dst + len1, src, (unsigned)len2 * 2, &full_bar[s]);
+                        if (len3 > 0) bulk_g2s(dst + len1 + len2, src, (unsigned)len3 * 2, &full_bar[s]);
+                    }
+                    if (lane == 31 && meta > 0) bulk_g2s(smem + sofs + moff, msrc, (unsigned)meta, &full_bar[s]);
+                    if (++s == nst) {
+                        s = 0;
+                        ++rnd;
+                    }
                 }
-                const int xrow = __shfl_sync(0xffffffffu, Ecur.xrow, j);
-                const int q0 = __shfl_sync(0xffffffffu, Ecur.q0, j);
-                const int len1 = __shfl_sync(0xffffffffu, Ecur.len1, j);
-                const int len2 = __shfl_sync(0xffffffffu, Ecur.len2, j);
-                const int len3 = __shfl_sync(0xffffffffu, Ecur.len3, j);
-                int meta = 0;
-                const void *msrc = nullptr;
-                int moff = 0;
-                if (pw == 1 % NPW) {
-                    meta = 4 * __shfl_sync(0xffffffffu, Ecur.spw, j);
-                    msrc = spglob + __shfl_sync(0xffffffffu, Ecur.spg, j);
-                    moff = c.off_ps;
-                } else if (pw == 2 % NPW) {
-                    meta = 16 * __shfl_sync(0xffffffffu, Ecur.nsub, j);
-                    msrc = hot + __shfl_sync(0xffffffffu, Ecur.u0, j);
-                    moff = c.off_hot;
-                } else if (pw == 3 % NPW) {
-                    meta = (int)sizeof(Entry);
-                    msrc = ents + e0 + i;
-                    moff = c.off_ent;
-                }
-                if (rnd > 0) mbar_wait(&empty_bar[s], (rnd - 1) & 1);
-                const int sofs = s * c.stage_bytes;
-                if (lane == 0) mbar_expect_tx(&full_bar[s], (unsigned)(2 * nmine * (len1 + len2 + len3) + meta));
-                __syncwarp();
-                if (rvalid) {
-                    const __half *src = chbase + (size_t)xrow * c.Wi;
-                    __half *dst = rowdst + sofs / 2;
-                    bulk_g2s(dst, src + q0, (unsigned)len1 * 2, &full_bar[s]);
-                    if (len2 > 0) bulk_g2s(dst + len1, src, (unsigned)len2 * 2, &full_bar[s]);
-                    if (len3 > 0) bulk_g2s(dst + len1 + len2, src, (unsigned)len3 * 2, &full_bar[s]);
-                }
-                if (lane == 31 && meta > 0) bulk_g2s(smem + sofs + moff, msrc, (unsigned)meta, &full_bar[s]);
-                if (++s == nst) {
-                    s = 0;
-                    ++rnd;
+                if (base + 32 < n) {
+                    if (pw == 0 && base + 32 + lane < n) producer_entries[buf ^ 1][lane] = ents[e0 + base + 32 + lane];
+                    asm volatile("bar.sync 2, 128;\n" ::: "memory");
                 }
             }
             return;
@@ -825,8 +856,11 @@ namespace cr
             for (int q = 0; q < 4; ++q) acc[j][q] = 0.f;
 
         // lane row bases (words): row g8 and g8 + 8, + t4
-        const int rw0 = c.rowch[g8] * c.CHS + c.rowsp[g8] * (c.Wi / c.S / 2) + t4;
-        const int rw1 = c.rowch[g8 + 8] * c.CHS + c.rowsp[g8 + 8] * (c.Wi / c.S / 2) + t4;
+        const int sh = 4 * g8;
+        const int rowch0 = (c.rowch_lo >> sh) & 15, rowch1 = (c.rowch_hi >> sh) & 15;
+        const int rowsp0 = (c.rowsp_lo >> sh) & 15, rowsp1 = (c.rowsp_hi >> sh) & 15;
+        const int rw0 = rowch0 * c.CHS + rowsp0 * (c.Wi / c.S / 2) + t4;
+        const int rw1 = rowch1 * c.CHS + rowsp1 * (c.Wi / c.S / 2) + t4;
         const int bofs = bsel * NSPLIT; // residue array (in units of nk words)
         const int blane = Ph - phl + 2 * t4;
 
@@ -838,9 +872,16 @@ namespace cr
             const Entry *E = reinterpret_cast<const Entry *>(smem + s * c.stage_bytes + c.off_ent);
             const int nsub = E->nsub, WB = E->WB;
             const int4 *hs = reinterpret_cast<const int4 *>(smem + s * c.stage_bytes + c.off_hot);
-            for (int k = 0; k < nsub; ++k) {
+            int k0 = 0, k1 = nsub;
+            if constexpr (PACKED_BOUNDS) {
+                const unsigned bounds = (unsigned)E->grp;
+                k0 = (bounds >> (4 * rs)) & 15;
+                k1 = (bounds >> (4 * (rs + 1))) & 15;
+            }
+            for (int k = k0; k < k1; ++k) {
                 const int4 h = hs[k];
-                if (h.x != myring) continue;
+                if constexpr (!PACKED_BOUNDS)
+                    if (h.x != myring) continue;
                 const int koff = h.y, kp = h.z;
                 const int nk = nk_words(P, kp);
                 const int wa = (Ph * mu0 + koff - WB) >> 1; // even
@@ -857,8 +898,8 @@ namespace cr
         }
 
         // output rows of this lane
-        const int chA = c0 + c.rowch[g8], chB = c0 + c.rowch[g8 + 8];
-        const int oA = c.rowsp[g8] * (c.Wo / c.S), oB = c.rowsp[g8 + 8] * (c.Wo / c.S);
+        const int chA = c0 + rowch0, chB = c0 + rowch1;
+        const int oA = rowsp0 * (c.Wo / c.S), oB = rowsp1 * (c.Wo / c.S);
         const int ospan = c.Wo / c.S;
 
         if (slot >= 0) {
@@ -936,8 +977,8 @@ namespace cr
     __global__ void k_fb_scatter(const __half *__restrict__ inp, const int *__restrict__ row_ker,
                                  const int *__restrict__ row_lat, const int *__restrict__ seg,
                                  const float *__restrict__ vals, const long long *__restrict__ svoff,
-                                 const int *__restrict__ srow, float *__restrict__ out32, long long nseg, int BC, int K,
-                                 int Hi, int Wi, int Ho, int Wo)
+                                 const int *__restrict__ srow, float *__restrict__ out32, long long nseg, long long BC,
+                                 int K, int Hi, int Wi, int Ho, int Wo)
     {
         const int P = Wo / Wi;
         for (long long s = blockIdx.x; s < nseg; s += gridDim.x) {
@@ -949,7 +990,7 @@ namespace cr
             const long long voff = svoff[s];
             int st = start % Wo;
             if (st < 0) st += Wo;
-            for (int bc = blockIdx.y; bc < BC; bc += gridDim.y) {
+            for (long long bc = blockIdx.y; bc < BC; bc += gridDim.y) {
                 const __half *x = inp + (((size_t)bc * K + row_ker[r]) * Hi + row_lat[r]) * Wi;
                 float *o = out32 + ((size_t)bc * Ho + ring) * Wo;
                 for (int q = threadIdx.x; q < Wi; q += blockDim.x) {
@@ -975,6 +1016,22 @@ namespace cr
     // Host
     // ----------------------------------------------------------------------------------------------------------
     static inline size_t align_up(size_t x, size_t a) { return (x + a - 1) / a * a; }
+
+    template <typename... KArgs, typename... Args>
+    static void cr_launch_pdl(void (*k)(KArgs...), dim3 grid, dim3 block, size_t smem, cudaStream_t st, Args... args)
+    {
+        cudaLaunchConfig_t cfg = {};
+        cfg.gridDim = grid;
+        cfg.blockDim = block;
+        cfg.dynamicSmemBytes = smem;
+        cfg.stream = st;
+        cudaLaunchAttribute at[1];
+        at[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+        at[0].val.programmaticStreamSerializationAllowed = 1;
+        cfg.attrs = at;
+        cfg.numAttrs = 1;
+        cudaLaunchKernelEx(&cfg, k, static_cast<KArgs>(args)...);
+    }
 
     // Choose the tensor-core configuration; returns false if the fast path does not apply.
     static bool make_cfg(Cfg &c, int BC, int K, int Hi, int Wi, int Ho, int Wo, int NROWS)
@@ -1025,21 +1082,28 @@ namespace cr
         c.CLW = P * (KPMAX - Ph - 1);
         // MMA rows: (channel, split) pairs ordered so that rows 0..7 share one 16-byte phase and rows 8..15 the other
         const int sw = Wi / c.S;
+        int rowch[16], rowsp[16];
         int nr = 0;
         for (int pass = 0; pass < 2; ++pass)
             for (int sp = 0; sp < c.S; ++sp) {
                 const int sig = (sp * sw) % 8;
                 if ((sig != 0) != (pass == 1)) continue;
                 for (int ch = 0; ch < c.CT; ++ch) {
-                    c.rowch[nr] = ch;
-                    c.rowsp[nr] = sp;
+                    rowch[nr] = ch;
+                    rowsp[nr] = sp;
                     ++nr;
                 }
             }
-        c.sig_lo = (c.rowsp[0] * sw) % 8;
-        c.sig_hi = (c.rowsp[8] * sw) % 8;
+        const int sig_lo = (rowsp[0] * sw) % 8;
+        const int sig_hi = (rowsp[8] * sw) % 8;
         for (int i = 0; i < 8; ++i)
-            if ((c.rowsp[i] * sw) % 8 != c.sig_lo || (c.rowsp[i + 8] * sw) % 8 != c.sig_hi) return false;
+            if ((rowsp[i] * sw) % 8 != sig_lo || (rowsp[i + 8] * sw) % 8 != sig_hi) return false;
+        for (int i = 0; i < 8; ++i) {
+            c.rowch_lo |= (unsigned)rowch[i] << (4 * i);
+            c.rowch_hi |= (unsigned)rowch[i + 8] << (4 * i);
+            c.rowsp_lo |= (unsigned)rowsp[i] << (4 * i);
+            c.rowsp_hi |= (unsigned)rowsp[i + 8] << (4 * i);
+        }
         // stage layout: one contiguous window row per channel; split s of the row starts s * sw / 2 words in
         const int xlmax = sw + KPMAX + 8; // max split window (halfs)
         c.XLMAX = xlmax;
@@ -1050,7 +1114,7 @@ namespace cr
             for (int h = 0; h < 2 && ok; ++h) {
                 unsigned used = 0;
                 for (int i = 8 * h; i < 8 * h + 8; ++i) {
-                    const int base = (c.rowch[i] * cand + c.rowsp[i] * (sw / 2)) & 31;
+                    const int base = (rowch[i] * cand + rowsp[i] * (sw / 2)) & 31;
                     for (int t = 0; t < 4; ++t) {
                         const unsigned bit = 1u << ((base + t) & 31);
                         if (used & bit) ok = false;
@@ -1078,7 +1142,7 @@ namespace cr
 
     bool RunCR(ffi::TensorView inp, ffi::TensorView row_ker, ffi::TensorView row_lat, ffi::TensorView seg_off,
                ffi::TensorView seg, ffi::TensorView val_off, ffi::TensorView vals, int64_t nlat_out, int64_t nlon_out,
-               ffi::TensorView out)
+               ffi::TensorView out, const unsigned char *skip = nullptr)
     {
         const int B = (int)inp.size(0), C = (int)inp.size(1), K = (int)inp.size(2), Hi = (int)inp.size(3),
                   Wi = (int)inp.size(4);
@@ -1102,10 +1166,11 @@ namespace cr
         if (BCl <= 0 || Ho <= 0 || Wo <= 0) return true;
         const int BC = (int)BCl;
 
-        Cfg c;
+        Cfg c {};
         bool tc = NROWS > 0 && NSEG > 0 && NSEG < (1LL << 30) && BCl < (1LL << 30)
             && make_cfg(c, BC, K, Hi, Wi, Ho, Wo, NROWS);
         if (tc && (long long)c.NG * c.NB > (1 << 22)) tc = false;
+        if (tc) c.skip = skip;
 
         if (tc) {
             const int NG = c.NG, NB = c.NB;
@@ -1178,27 +1243,45 @@ namespace cr
             int mg = (int)std::min<long long>((NNZ + 255) / 256, 2 * nsm);
             if (mg < 1) mg = 1;
             k_absmax<<<mg, 256, 0, stream>>>(d_vals, NNZ, d_gmax);
-            k_count<<<pg, pb, 0, stream>>>(NROWS, d_so, d_seg, d_vo, c, d_bcount, d_gwork, d_rnsub, d_rspw);
-            k_scan<<<1, 1024, 0, stream>>>(c, d_bcount, d_gwork, d_bstart, d_rnsub, d_rsuboff, d_rspw, d_rspoff, NROWS,
-                                           d_gmax, d_gscale, d_ginfo, d_items, d_gnorm, use_split ? nslots_cta : 1 << 30);
-            k_place<<<pg, pb, 0, stream>>>(NROWS, d_so, d_seg, d_vo, d_rk, d_rl, c, d_bstart, d_bcursor, d_rsuboff,
-                                           d_rspoff, d_ents, d_hot, d_brec);
+            cr_launch_pdl(k_count, dim3(pg), dim3(pb), 0, stream, NROWS, d_so, d_seg, d_vo, c, d_bcount, d_gwork,
+                          d_rnsub, d_rspw);
+            cr_launch_pdl(k_scan, dim3(1), dim3(1024), 0, stream, c, d_bcount, d_gwork, d_bstart, d_rnsub, d_rsuboff,
+                          d_rspw, d_rspoff, NROWS, d_gmax, d_gscale, d_ginfo, d_items, d_gnorm,
+                          use_split ? nslots_cta : 1 << 30);
+            cr_launch_pdl(k_place, dim3(pg), dim3(pb), 0, stream, NROWS, d_so, d_seg, d_vo, d_rk, d_rl, c, d_bstart,
+                          d_bcursor, d_rsuboff, d_rspoff, d_ents, d_hot, d_brec);
             // the sub-arc count is device-side: launch for the bound, surplus warps exit
             const long long nsub_launch = nsub_max;
             const unsigned sb_blocks = (unsigned)((nsub_launch * 32 + 255) / 256);
-            const int nctas = (NG + MAXSI) * c.ntiles;
+            // Split work items can add up to MAXSI grid rows.  When splitting is disabled,
+            // do not launch those full-size, high-smem CTAs only to return at the work decoder.
+            const int nctas = (NG + (use_split ? MAXSI : 0)) * c.ntiles;
             const size_t smem = (size_t)c.nst * c.stage_bytes;
             const int threads = 32 * (c.G * c.NWL + NPW);
             if (c.P == 1) {
-                k_build_sp<1><<<sb_blocks, 256, 0, stream>>>(d_rsuboff + NROWS, d_brec, d_vals, d_gscale, d_sp);
-                cudaFuncSetAttribute(k_disco_tc<1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
-                k_disco_tc<1><<<nctas, threads, smem, stream>>>(d_inp, d_sp, d_hot, d_ents, d_bstart, d_ginfo, d_items,
-                                                                d_gnorm, d_gscale, d_out, d_scratch, d_scnt, c);
+                cr_launch_pdl(k_build_sp<1>, dim3(sb_blocks), dim3(256), 0, stream, d_rsuboff + NROWS, d_brec, d_vals,
+                              d_gscale, d_sp);
+                if (c.G <= 7) {
+                    cudaFuncSetAttribute(k_disco_tc<1, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+                    cr_launch_pdl(k_disco_tc<1, true>, dim3(nctas), dim3(threads), smem, stream, d_inp, d_sp, d_hot,
+                                  d_ents, d_bstart, d_ginfo, d_items, d_gnorm, d_gscale, d_out, d_scratch, d_scnt, c);
+                } else {
+                    cudaFuncSetAttribute(k_disco_tc<1, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+                    cr_launch_pdl(k_disco_tc<1, false>, dim3(nctas), dim3(threads), smem, stream, d_inp, d_sp, d_hot,
+                                  d_ents, d_bstart, d_ginfo, d_items, d_gnorm, d_gscale, d_out, d_scratch, d_scnt, c);
+                }
             } else {
-                k_build_sp<2><<<sb_blocks, 256, 0, stream>>>(d_rsuboff + NROWS, d_brec, d_vals, d_gscale, d_sp);
-                cudaFuncSetAttribute(k_disco_tc<2>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
-                k_disco_tc<2><<<nctas, threads, smem, stream>>>(d_inp, d_sp, d_hot, d_ents, d_bstart, d_ginfo, d_items,
-                                                                d_gnorm, d_gscale, d_out, d_scratch, d_scnt, c);
+                cr_launch_pdl(k_build_sp<2>, dim3(sb_blocks), dim3(256), 0, stream, d_rsuboff + NROWS, d_brec, d_vals,
+                              d_gscale, d_sp);
+                if (c.G <= 7) {
+                    cudaFuncSetAttribute(k_disco_tc<2, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+                    cr_launch_pdl(k_disco_tc<2, true>, dim3(nctas), dim3(threads), smem, stream, d_inp, d_sp, d_hot,
+                                  d_ents, d_bstart, d_ginfo, d_items, d_gnorm, d_gscale, d_out, d_scratch, d_scnt, c);
+                } else {
+                    cudaFuncSetAttribute(k_disco_tc<2, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem);
+                    cr_launch_pdl(k_disco_tc<2, false>, dim3(nctas), dim3(threads), smem, stream, d_inp, d_sp, d_hot,
+                                  d_ents, d_bstart, d_ginfo, d_items, d_gnorm, d_gscale, d_out, d_scratch, d_scnt, c);
+                }
             }
             cudaFreeAsync(ws, stream);
             return true;
@@ -1230,7 +1313,6 @@ namespace cr
         __half *d_out = static_cast<__half *>(out.data_ptr());
 
         if (BCl <= 0 || Ho <= 0 || Wo <= 0) return;
-        const int BC = (int)BCl;
 
         // ---- general path ----
         const long long nout = BCl * Ho * Wo;
@@ -1248,8 +1330,8 @@ namespace cr
             cudaMemsetAsync(d_srow, 0xff, (size_t)NSEG * 4, stream);
             k_fb_prep<<<(NROWS + 127) / 128, 128, 0, stream>>>(NROWS, d_so, d_vo, d_seg, d_svoff, d_srow);
             dim3 grid((unsigned)std::min<long long>(NSEG, 1 << 20), (unsigned)std::min<long long>(BCl, 65535));
-            k_fb_scatter<<<grid, 256, 0, stream>>>(d_inp, d_rk, d_rl, d_seg, d_vals, d_svoff, d_srow, d_out32, NSEG, BC,
-                                                   K, Hi, Wi, Ho, Wo);
+            k_fb_scatter<<<grid, 256, 0, stream>>>(d_inp, d_rk, d_rl, d_seg, d_vals, d_svoff, d_srow, d_out32, NSEG,
+                                                   BCl, K, Hi, Wi, Ho, Wo);
         }
         k_fb_narrow<<<1024, 256, 0, stream>>>(d_out32, d_out, nout);
         cudaFreeAsync(ws, stream);

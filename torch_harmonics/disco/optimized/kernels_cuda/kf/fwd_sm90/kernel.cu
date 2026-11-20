@@ -48,6 +48,8 @@
 #include <tvm/ffi/extra/c_env_api.h>
 
 #include "leader_small.cuh"
+#include "hankel_path.cuh"
+#include "fft_path.cuh"
 
 namespace ffi = tvm::ffi;
 
@@ -72,6 +74,10 @@ __device__ __forceinline__ void mbar_arrive_expect_tx(uint32_t bar, uint32_t byt
     asm volatile("{\n .reg .b64 st;\n mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 st, [%0], %1;\n}" ::"r"(bar),
                  "r"(bytes)
                  : "memory");
+}
+__device__ __forceinline__ void mbar_expect_tx(uint32_t bar, uint32_t bytes)
+{
+    asm volatile("mbarrier.expect_tx.relaxed.cta.shared::cta.b64 [%0], %1;" ::"r"(bar), "r"(bytes) : "memory");
 }
 __device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t parity)
 {
@@ -312,8 +318,14 @@ __device__ __forceinline__ void block_scan_excl(int v, int &excl, int &total, in
 
 __global__ void __launch_bounds__(PREP_THREADS)
     seg_prep_kernel(const long long *__restrict__ idx, const long long *__restrict__ off, Seg *__restrict__ segs,
-                    int *__restrict__ nseg_out, int Hi, int Wi, const FtParams F)
+                    int *__restrict__ nseg_out, int Hi, int Wi, const FtParams F, int *__restrict__ counter,
+                    const int *__restrict__ fftflag)
 {
+    if (blockIdx.x == 0 && threadIdx.x == 0) *counter = 0; // main kernel's work queue (launched after us)
+    if (fftflag && fftflag[blockIdx.x]) {                  // row evaluated by the FFT path
+        if (threadIdx.x == 0) nseg_out[blockIdx.x] = -2;
+        return;
+    }
     __shared__ int s_n[PREP_THREADS], s_hi[PREP_THREADS], s_wi[PREP_THREADS];
     __shared__ int s_wsum[PREP_THREADS / 32];
     const int segcap = F.segcap;
@@ -517,7 +529,7 @@ __global__ void __launch_bounds__(256)
                    int Hi, int Wi, int Ho, int Wo, int K, int KP, int p)
 {
     const int ho = blockIdx.x;
-    if (rowflag && rowflag[ho] >= 0) return;
+    if (rowflag && rowflag[ho] != -1) return; // -1: rejected by the fast path; -2: FFT path row
     const long long a = off[ho], b = off[ho + 1];
     const long long total = (long long)BC * Wo;
     for (long long q = threadIdx.x; q < total; q += blockDim.x) {
@@ -571,6 +583,8 @@ struct MainParams {
     int ROWS, FJS, OFF, nstage;
     uint32_t ft_off, tab_off, stage_bytes, stg_off, stg_bytes, seg_off, piece_off, stage_off, bar_off;
     int tma_store, boxR, nbox; // epilogue through TMA tensor stores of boxR staging rows each
+    int npass;                 // epilogue passes: the staging tile holds 1/npass of a warpgroup's tile
+    int *counter;              // dynamic work queue: units handed out past the first grid-size ones
 };
 
 template <int NG, int T, int KF, int PF>
@@ -648,6 +662,7 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
                 xr += rows;
                 fc += FJ;
                 bytes += (uint32_t)(NG * rows * 16);
+                if constexpr (KF == 9 && PF == 1) bytes += (uint32_t)(FJ * K * 4);
                 b += nb;
                 if (b == nbe) {
                     ++e;
@@ -660,12 +675,21 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
             sd.fin = (short)(e == nseg);
             sd.bytes = (int)bytes;
         };
+        int cur_unit = 0; // unit whose stages are being issued (tagged into every stage header)
         // all 128 producer threads: issue the bulk copies + block table of one stage, then arrive
         auto issue_stage = [&](const StageD sd, int s, int base_shift, int ct) {
             const uint32_t xs = sbase + s * P.stage_bytes;
             const uint32_t fts_p = xs + P.ft_off;
             int *tab = reinterpret_cast<int *>(smem + s * P.stage_bytes + P.tab_off);
-            constexpr int CPP = NG;
+            if constexpr (KF == 9 && PF == 1) {
+                if (ptid == 0) {
+                    tab[0] = sd.nblk;
+                    tab[1] = sd.fin | (cur_unit << 1);
+                    mbar_expect_tx(bar_full + 8 * s, (uint32_t)sd.bytes);
+                }
+                named_bar(1, 128);
+            }
+            constexpr int CPP = NG + ((KF == 9 && PF == 1) ? 1 : 0);
             const int nq = (sd.pe - sd.pb) * CPP;
             // bulk copies issue one lane at a time per warp: spread the tasks over the 4 producer warps
             for (int q = ((ptid & 31) << 2) | (ptid >> 5); q < nq; q += 128) {
@@ -712,6 +736,10 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
                             if (win_pos >= P.Wi) win_pos -= P.Wi;
                         }
                     }
+                } else if constexpr (KF == 9 && PF == 1) {
+                    const uint32_t *fsrc = P.ftg + ((long long)sg.pad0 + 8 * pc.b0) * K;
+                    const uint32_t fdst = fts_p + (uint32_t)(pc.fo * K) * 4u;
+                    bulk_g2s(fdst, fsrc, (uint32_t)((8 * pc.nb + OFF) * K) * 4u, bar_full + 8 * s);
                 }
                 const int TS = pc.contig ? Tw * p : 8 * pc.nb;
                 for (int bb = sub; bb < pc.nb; bb += CPP) {
@@ -719,31 +747,49 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
                     tab[2 + 2 * (pc.blk + bb) + 1] = (pc.fo + 8 * bb) * K * 4;
                 }
             }
-            // filter rows (f^T) of every piece: classic 16-byte cp.async spread over all producer threads
-            // (every piece's f^T run is a whole number of 16-byte chunks: columns come in multiples of 8)
-            for (int pi = sd.pb + (ptid >> 5); pi < sd.pe; pi += 4) { // one piece per producer warp
-                const Piece pc = s_piece[pi];
-                const int pad0 = s_seg[pc.e].pad0;
-                const int nch = ((8 * pc.nb + OFF) * K) >> 2;
-                const uint32_t *fsrc = P.ftg + ((long long)pad0 + 8 * pc.b0) * K;
-                const uint32_t fdst = fts_p + (uint32_t)(pc.fo * K) * 4u;
-                for (int c = ptid & 31; c < nch; c += 32) cp_async16(fdst + 16u * (uint32_t)c, fsrc + 4 * c);
-            }
-            cp_async_mbar_arrive(bar_full + 8 * s);
-            if (ptid == 0) {
-                tab[0] = sd.nblk;
-                tab[1] = sd.fin;
-                mbar_arrive_expect_tx(bar_full + 8 * s, (uint32_t)sd.bytes);
-            } else {
+            if constexpr (KF == 9 && PF == 1) {
                 mbar_arrive(bar_full + 8 * s);
+            } else {
+                // Filter rows (f^T) of every piece: classic 16-byte cp.async spread over all producer threads.
+                for (int pi = sd.pb + (ptid >> 5); pi < sd.pe; pi += 4) {
+                    const Piece pc = s_piece[pi];
+                    const int pad0 = s_seg[pc.e].pad0;
+                    const int nch = ((8 * pc.nb + OFF) * K) >> 2;
+                    const uint32_t *fsrc = P.ftg + ((long long)pad0 + 8 * pc.b0) * K;
+                    const uint32_t fdst = fts_p + (uint32_t)(pc.fo * K) * 4u;
+                    for (int c = ptid & 31; c < nch; c += 32) cp_async16(fdst + 16u * (uint32_t)c, fsrc + 4 * c);
+                }
+                cp_async_mbar_arrive(bar_full + 8 * s);
+                if (ptid == 0) {
+                    tab[0] = sd.nblk;
+                    tab[1] = sd.fin | (cur_unit << 1);
+                    mbar_arrive_expect_tx(bar_full + 8 * s, (uint32_t)sd.bytes);
+                } else {
+                    mbar_arrive(bar_full + 8 * s);
+                }
             }
         };
 
-        for (int unit = blockIdx.x; unit < P.units; unit += gridDim.x) {
-            const int per_row = P.CT * P.NWC;
-            const int rr = unit / per_row, rem = unit - rr * per_row;
+        // dynamic work queue over the heavy-first unit list: the first grid-size units go to the CTAs in
+        // order, every further one to whichever CTA's producer asks next
+        auto next_unit = [&]() -> int {
+            if (ptid == 0) s_plan[4] = (int)gridDim.x + atomicAdd(P.counter, 1);
+            named_bar(1, 128);
+            const int u = s_plan[4];
+            named_bar(1, 128);
+            return u;
+        };
+        for (int unit = blockIdx.x;; unit = next_unit()) {
+            if (unit >= P.units) break;
+            cur_unit = unit;
+            // heavy-first blocks of 8 rows; inside a block the channel tile is the outer index, so units in
+            // flight together share their input rows in L2
+            const int blk = unit / (8 * P.CT * P.NWC);
+            const int rin = min(8, P.Ho - 8 * blk);
+            const int rb = unit - blk * (8 * P.CT * P.NWC);
+            const int ct = rb / (rin * P.NWC), rb2 = rb - ct * (rin * P.NWC);
+            const int rr = 8 * blk + rb2 / P.NWC, wc = rb2 - (rb2 / P.NWC) * P.NWC;
             const int ho = (rr & 1) ? (P.Ho - 1 - (rr >> 1)) : (rr >> 1);
-            const int ct = rem / P.NWC, wc = rem - ct * P.NWC;
             const int nseg = P.nseg[ho];
             if (nseg < 0) continue;
             const long long a = P.off[ho];
@@ -818,6 +864,18 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
                 }
             }
         }
+        {
+            // end of work: an empty stage whose header tells the consumers to stop
+            const int s = it % NSTAGE;
+            const uint32_t ph = (it / NSTAGE) & 1;
+            mbar_wait(bar_empty + 8 * s, ph ^ 1);
+            if (ptid == 0) {
+                int *tab = reinterpret_cast<int *>(smem + s * P.stage_bytes + P.tab_off);
+                tab[0] = 0;
+                tab[1] = -1;
+            }
+            mbar_arrive(bar_full + 8 * s);
+        }
     } else {
         // ============================== consumer warpgroups ==============================
         reg_alloc<232>();
@@ -844,11 +902,24 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
         __half *stg = reinterpret_cast<__half *>(smem + P.stg_off + wg * P.stg_bytes);
         const int TTw = T * Tw;
 
-        for (int unit = blockIdx.x; unit < P.units; unit += gridDim.x) {
-            const int per_row = P.CT * P.NWC;
-            const int rr = unit / per_row, rem = unit - rr * per_row;
+        for (;;) {
+            // the next unit is announced in the header of its first stage (negative: no more work)
+            int unit;
+            {
+                const int s0 = it % NSTAGE;
+                mbar_wait(bar_full + 8 * s0, (it / NSTAGE) & 1);
+                unit = reinterpret_cast<const int *>(smem + s0 * P.stage_bytes + P.tab_off)[1];
+                if (unit < 0) break;
+                unit >>= 1;
+            }
+            // heavy-first blocks of 8 rows; inside a block the channel tile is the outer index, so units in
+            // flight together share their input rows in L2
+            const int blk = unit / (8 * P.CT * P.NWC);
+            const int rin = min(8, P.Ho - 8 * blk);
+            const int rb = unit - blk * (8 * P.CT * P.NWC);
+            const int ct = rb / (rin * P.NWC), rb2 = rb - ct * (rin * P.NWC);
+            const int rr = 8 * blk + rb2 / P.NWC, wc = rb2 - (rb2 / P.NWC) * P.NWC;
             const int ho = (rr & 1) ? (P.Ho - 1 - (rr >> 1)) : (rr >> 1);
-            const int ct = rem / P.NWC, wc = rem - ct * P.NWC;
             if (P.nseg[ho] < 0) continue;
             const int wt_end = min(P.WT, (wc + 1) * P.WTC);
             for (int wt = wc * P.WTC; wt < wt_end; ++wt) {
@@ -862,7 +933,7 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
                     const uint32_t ph = (it / NSTAGE) & 1;
                     mbar_wait(bar_full + 8 * s, ph);
                     const int *tab = reinterpret_cast<const int *>(smem + s * P.stage_bytes + P.tab_off);
-                    const int nblk = tab[0], fin = tab[1];
+                    const int nblk = tab[0], fin = tab[1] & 1;
                     const int2 *ent = reinterpret_cast<const int2 *>(tab + 2);
                     const uint32_t xs = sbase + s * P.stage_bytes;
                     const uint32_t fts = sbase + s * P.stage_bytes + P.ft_off;
@@ -917,6 +988,7 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
                     }
                     if (pend >= 0) mbar_arrive(bar_empty + 8 * pend);
                     pend = -1;
+                    if constexpr (KF == 9 && PF == 1) asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
                     mbar_arrive(bar_empty + 8 * s);
                     ++it;
                     if (fin) break;
@@ -927,79 +999,106 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
                     for (int j = 0; j < N / 2; ++j) fence_f32(acc[tt][j]);
 
                 // ---- epilogue: registers -> smem [c][k][wo_local] -> global (TMA tensor store or vector stores)
-                if (P.tma_store && ltid == 0) bulk_wait_read0(); // previous tile's store has read the staging
-                named_bar(2 + wg, 128);
-                {
-                    const int KTT = K * TTw;
-                    const int sb0 = (2 * t * K + k0) * TTw + wl0;
-                    const int sb1 = (2 * t * K + k1) * TTw + wl1;
+                const int npass = P.tma_store ? P.npass : 1;
+                for (int pass = 0; pass < npass; ++pass) {
+                    if (P.tma_store && ltid == 0) bulk_wait_read0(); // previous store has read the staging
+                    named_bar(2 + wg, 128);
+                    {
+                        const int KTT = K * TTw;
+                        const int sb0 = (2 * t * K + k0) * TTw + wl0;
+                        const int sb1 = (2 * t * K + k1) * TTw + wl1;
+                        const int jlo = pass * (N / 8) / npass, jhi = (pass + 1) * (N / 8) / npass;
 #pragma unroll
-                    for (int tt = 0; tt < T; ++tt) {
+                        for (int tt = 0; tt < T; ++tt) {
 #pragma unroll
-                        for (int j = 0; j < N / 8; ++j) {
-                            const int cb = 8 * j * KTT + tt * Tw;
-                            if (v0) {
-                                stg[sb0 + cb] = __float2half_rn(acc[tt][4 * j + 0]);
-                                stg[sb0 + cb + KTT] = __float2half_rn(acc[tt][4 * j + 1]);
-                            }
-                            if (v1) {
-                                stg[sb1 + cb] = __float2half_rn(acc[tt][4 * j + 2]);
-                                stg[sb1 + cb + KTT] = __float2half_rn(acc[tt][4 * j + 3]);
+                            for (int j = 0; j < N / 8; ++j) {
+                                if (j < jlo || j >= jhi) continue;
+                                const int cb = 8 * (j - jlo) * KTT + tt * Tw;
+                                if (v0) {
+                                    stg[sb0 + cb] = __float2half_rn(acc[tt][4 * j + 0]);
+                                    stg[sb0 + cb + KTT] = __float2half_rn(acc[tt][4 * j + 1]);
+                                }
+                                if (v1) {
+                                    stg[sb1 + cb] = __float2half_rn(acc[tt][4 * j + 2]);
+                                    stg[sb1 + cb + KTT] = __float2half_rn(acc[tt][4 * j + 3]);
+                                }
                             }
                         }
                     }
-                }
-                if (P.tma_store) {
-                    // generic-proxy staging writes -> async-proxy reads of the TMA store
-                    asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
-                    named_bar(2 + wg, 128);
-                    if (ltid == 0) {
-                        const int row0 = ct * N * K;
-                        const int wbase = wt * TT * Tw + wg * TTw;
-                        const uint32_t sa = smem_u32(stg);
-                        for (int b = 0; b < P.nbox; ++b)
-                            tma_store_3d(&omap, sa + (uint32_t)(b * P.boxR * TTw * 2), wbase, ho, row0 + b * P.boxR);
-                        bulk_commit();
-                    }
-                } else {
-                    named_bar(2 + wg, 128);
-                    {
-                        // rows of the staging tile are (c*K + k); global row index = ch0*K + row, so
-                        // address = out + row * Ho*Wo + (ch0*K*Ho + ho)*Wo + wbase + chunk*CH  (no div/mod per element)
-                        const int CH = ((TTw & 7) == 0 && (P.Wo & 7) == 0) ? 8 :
-                            ((TTw & 3) == 0 && (P.Wo & 3) == 0)            ? 4 :
-                            ((TTw & 1) == 0 && (P.Wo & 1) == 0)            ? 2 :
-                                                                             1;
-                        const int CPR = TTw / CH;
-                        const int ch0 = ct * N;
-                        const int wbase = wt * TT * Tw + wg * TTw;
-                        const int nrow_valid = min(N, P.BC - ch0) * K;
-                        int cvalid = (P.Wo - wbase + CH - 1) / CH;
-                        cvalid = cvalid < 0 ? 0 : (cvalid > CPR ? CPR : cvalid);
-                        const size_t HoWo = (size_t)P.Ho * P.Wo;
-                        __half *gbase = P.out + ((size_t)ch0 * K * P.Ho + ho) * P.Wo + wbase;
-                        const int nchunk = nrow_valid * CPR;
-                        const int q128 = 128 / CPR, r128 = 128 - q128 * CPR;
-                        int row = ltid / CPR, chk = ltid - row * CPR;
-                        if constexpr (KF == 9 && PF == 1) {
-                            if (wbase + TTw <= P.Wo) {
-                                for (int lin = ltid; lin < nchunk; lin += 128) {
-                                    __half *gp = gbase + (size_t)row * HoWo + chk * 8;
-                                    const __half *sp = stg + row * TTw + chk * 8;
-                                    *reinterpret_cast<uint4 *>(gp) = *reinterpret_cast<const uint4 *>(sp);
-                                    chk += r128;
-                                    row += q128;
-                                    if (chk >= CPR) {
-                                        chk -= CPR;
-                                        ++row;
+                    if (P.tma_store) {
+                        // generic-proxy staging writes -> async-proxy reads of the TMA store
+                        asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+                        named_bar(2 + wg, 128);
+                        if (ltid == 0) {
+                            const int bpp = P.nbox / npass; // boxes staged per pass
+                            const int row0 = ct * N * K + pass * bpp * P.boxR;
+                            const int wbase = wt * TT * Tw + wg * TTw;
+                            const uint32_t sa = smem_u32(stg);
+                            for (int b = 0; b < bpp; ++b)
+                                tma_store_3d(&omap, sa + (uint32_t)(b * P.boxR * TTw * 2), wbase, ho, row0 + b * P.boxR);
+                            bulk_commit();
+                        }
+                    } else {
+                        named_bar(2 + wg, 128);
+                        {
+                            // rows of the staging tile are (c*K + k); global row index = ch0*K + row, so
+                            // address = out + row * Ho*Wo + (ch0*K*Ho + ho)*Wo + wbase + chunk*CH  (no div/mod per element)
+                            const int CH = ((TTw & 7) == 0 && (P.Wo & 7) == 0) ? 8 :
+                                ((TTw & 3) == 0 && (P.Wo & 3) == 0)            ? 4 :
+                                ((TTw & 1) == 0 && (P.Wo & 1) == 0)            ? 2 :
+                                                                                 1;
+                            const int CPR = TTw / CH;
+                            const int ch0 = ct * N;
+                            const int wbase = wt * TT * Tw + wg * TTw;
+                            const int nrow_valid = min(N, P.BC - ch0) * K;
+                            int cvalid = (P.Wo - wbase + CH - 1) / CH;
+                            cvalid = cvalid < 0 ? 0 : (cvalid > CPR ? CPR : cvalid);
+                            const size_t HoWo = (size_t)P.Ho * P.Wo;
+                            __half *gbase = P.out + ((size_t)ch0 * K * P.Ho + ho) * P.Wo + wbase;
+                            const int nchunk = nrow_valid * CPR;
+                            const int q128 = 128 / CPR, r128 = 128 - q128 * CPR;
+                            int row = ltid / CPR, chk = ltid - row * CPR;
+                            if constexpr (KF == 9 && PF == 1) {
+                                if (wbase + TTw <= P.Wo) {
+                                    for (int lin = ltid; lin < nchunk; lin += 128) {
+                                        __half *gp = gbase + (size_t)row * HoWo + chk * 8;
+                                        const __half *sp = stg + row * TTw + chk * 8;
+                                        *reinterpret_cast<uint4 *>(gp) = *reinterpret_cast<const uint4 *>(sp);
+                                        chk += r128;
+                                        row += q128;
+                                        if (chk >= CPR) {
+                                            chk -= CPR;
+                                            ++row;
+                                        }
+                                    }
+                                } else {
+                                    for (int lin = ltid; lin < nchunk; lin += 128) {
+                                        if (chk < cvalid) {
+                                            __half *gp = gbase + (size_t)row * HoWo + chk * 8;
+                                            const __half *sp = stg + row * TTw + chk * 8;
+                                            *reinterpret_cast<uint4 *>(gp) = *reinterpret_cast<const uint4 *>(sp);
+                                        }
+                                        chk += r128;
+                                        row += q128;
+                                        if (chk >= CPR) {
+                                            chk -= CPR;
+                                            ++row;
+                                        }
                                     }
                                 }
                             } else {
                                 for (int lin = ltid; lin < nchunk; lin += 128) {
                                     if (chk < cvalid) {
-                                        __half *gp = gbase + (size_t)row * HoWo + chk * 8;
-                                        const __half *sp = stg + row * TTw + chk * 8;
-                                        *reinterpret_cast<uint4 *>(gp) = *reinterpret_cast<const uint4 *>(sp);
+                                        __half *gp = gbase + (size_t)row * HoWo + chk * CH;
+                                        const __half *sp = stg + row * TTw + chk * CH;
+                                        if (CH == 8)
+                                            *reinterpret_cast<uint4 *>(gp) = *reinterpret_cast<const uint4 *>(sp);
+                                        else if (CH == 4)
+                                            *reinterpret_cast<uint2 *>(gp) = *reinterpret_cast<const uint2 *>(sp);
+                                        else if (CH == 2)
+                                            *reinterpret_cast<uint32_t *>(gp) = *reinterpret_cast<const uint32_t *>(sp);
+                                        else
+                                            *gp = *sp;
                                     }
                                     chk += r128;
                                     row += q128;
@@ -1009,30 +1108,9 @@ __global__ void __launch_bounds__(384, 1) disco_main_kernel(const MainParams P, 
                                     }
                                 }
                             }
-                        } else {
-                            for (int lin = ltid; lin < nchunk; lin += 128) {
-                                if (chk < cvalid) {
-                                    __half *gp = gbase + (size_t)row * HoWo + chk * CH;
-                                    const __half *sp = stg + row * TTw + chk * CH;
-                                    if (CH == 8)
-                                        *reinterpret_cast<uint4 *>(gp) = *reinterpret_cast<const uint4 *>(sp);
-                                    else if (CH == 4)
-                                        *reinterpret_cast<uint2 *>(gp) = *reinterpret_cast<const uint2 *>(sp);
-                                    else if (CH == 2)
-                                        *reinterpret_cast<uint32_t *>(gp) = *reinterpret_cast<const uint32_t *>(sp);
-                                    else
-                                        *gp = *sp;
-                                }
-                                chk += r128;
-                                row += q128;
-                                if (chk >= CPR) {
-                                    chk -= CPR;
-                                    ++row;
-                                }
-                            }
                         }
                     }
-                }
+                } // pass
             } // wt
         }
         if (P.tma_store && ltid == 0) bulk_wait0(); // staging must outlive the last TMA store
@@ -1064,17 +1142,49 @@ static void *ws_get(size_t bytes, cudaStream_t st)
 
 static int g_num_sms = 0;
 
-template <int NG, int T> static bool prepare_main(MainParams &P, uint32_t &smem)
+// out viewed as [B*C*K][Ho][Wo]; one box = TTw longitudes x 1 latitude x boxR (channel, k) rows of a
+// consumer warpgroup's staging tile.  Falls back to vector stores when the shapes do not allow it.
+template <int NG, int T> static void setup_out_map(MainParams &P, CUtensorMap &omap)
+{
+    P.tma_store = 0;
+    P.boxR = 0;
+    P.nbox = 0;
+    const int TTw = T * P.Tw;
+    const int rows = 8 * NG * P.K;
+    const int nbox = (rows + 255) / 256;
+    if (rows % nbox) return;
+    const int boxR = rows / nbox;
+    if ((TTw * 2) % 16 || TTw > 256 || ((long long)P.Wo * 2) % 16 || ((long long)boxR * TTw * 2) % 128) return;
+    cuuint64_t dims[3] = {(cuuint64_t)P.Wo, (cuuint64_t)P.Ho, (cuuint64_t)P.BC * P.K};
+    cuuint64_t strides[2] = {(cuuint64_t)P.Wo * 2, (cuuint64_t)P.Ho * P.Wo * 2};
+    cuuint32_t box[3] = {(cuuint32_t)TTw, 1u, (cuuint32_t)boxR};
+    cuuint32_t estr[3] = {1u, 1u, 1u};
+    CUresult r = cuTensorMapEncodeTiled(&omap, CU_TENSOR_MAP_DATA_TYPE_FLOAT16, 3, (void *)P.out, dims, strides, box,
+                                        estr, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+                                        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+    if (r != CUDA_SUCCESS) return;
+    P.tma_store = 1;
+    P.boxR = boxR;
+    P.nbox = nbox;
+}
+
+template <int NG, int T> static bool prepare_main(MainParams &P, CUtensorMap &omap, uint32_t &smem)
 {
     constexpr int TT = 2 * T;
+    setup_out_map<NG, T>(P, omap);
+    // with TMA stores the epilogue can stage one box (a whole number of 8-channel groups) at a time
+    P.npass = (P.tma_store && P.nbox > 1 && (8 * NG) % (8 * P.nbox) == 0) ? P.nbox : 1;
+    P.stg_bytes = ((uint32_t)(8 * NG * P.K * T * P.Tw * 2 / P.npass) + 127u) & ~127u;
+    const uint32_t fixed = 2 * P.stg_bytes + SEGCAP * sizeof(Seg) + PIECECAP * sizeof(Piece) + STAGECAP * sizeof(StageD)
+        + 2 * MAXSTAGE * 8 + 64;
     if constexpr (NG == 4) {
-        if (P.G >= 100) {
-            P.ROWS = 501;
-            P.FJS = 192;
-        } else {
-            P.ROWS = 463;
-            P.FJS = 256;
-        }
+        // three large stages: the per-stage hand-off cost dominates for short-segment rows, so the input
+        // window budget takes whatever shared memory the fixed regions leave (odd row count, see below)
+        P.FJS = 320;
+        const long long per = (232448LL - fixed) / 3 - (long long)(4 * P.K * P.FJS) - (8 + 8 * KBMAX) - 384;
+        P.ROWS = (int)(per / (NG * 16));
+        if (P.ROWS > 2047) P.ROWS = 2047;
+        if ((P.ROWS & 1) == 0) P.ROWS -= 1;
     } else if constexpr (NG == 3) {
         P.ROWS = 743;
         P.FJS = 208;
@@ -1107,9 +1217,6 @@ template <int NG, int T> static bool prepare_main(MainParams &P, uint32_t &smem)
     const uint32_t ftb = (uint32_t)(4 * P.K * P.FJS); // [FJS][K] uint32 pairs
     P.tab_off = (P.ft_off + ftb + 15u) & ~15u;
     P.stage_bytes = (P.tab_off + 8 + 8 * KBMAX + 127u) & ~127u;
-    P.stg_bytes = ((uint32_t)(8 * NG * P.K * T * P.Tw * 2) + 127u) & ~127u;
-    const uint32_t fixed = 2 * P.stg_bytes + SEGCAP * sizeof(Seg) + PIECECAP * sizeof(Piece) + STAGECAP * sizeof(StageD)
-        + 2 * MAXSTAGE * 8 + 64;
     if (fixed + 2 * P.stage_bytes > 232448) return false;
     P.nstage = (int)((232448 - fixed) / P.stage_bytes);
     if (P.nstage > MAXSTAGE) P.nstage = MAXSTAGE;
@@ -1132,37 +1239,9 @@ static void launch_main_impl(const MainParams &P, const CUtensorMap &omap, uint3
     kern<<<grid, 384, smem, st>>>(P, omap);
 }
 
-// out viewed as [B*C*K][Ho][Wo]; one box = TTw longitudes x 1 latitude x boxR (channel, k) rows of a
-// consumer warpgroup's staging tile.  Falls back to vector stores when the shapes do not allow it.
-template <int NG, int T> static void setup_out_map(MainParams &P, CUtensorMap &omap)
+template <int NG, int T>
+static void launch_main(const MainParams &P, const CUtensorMap &omap, uint32_t smem, cudaStream_t st)
 {
-    P.tma_store = 0;
-    P.boxR = 0;
-    P.nbox = 0;
-    const int TTw = T * P.Tw;
-    const int rows = 8 * NG * P.K;
-    const int nbox = (rows + 255) / 256;
-    if (rows % nbox) return;
-    const int boxR = rows / nbox;
-    if ((TTw * 2) % 16 || TTw > 256 || ((long long)P.Wo * 2) % 16 || ((long long)boxR * TTw * 2) % 128) return;
-    cuuint64_t dims[3] = {(cuuint64_t)P.Wo, (cuuint64_t)P.Ho, (cuuint64_t)P.BC * P.K};
-    cuuint64_t strides[2] = {(cuuint64_t)P.Wo * 2, (cuuint64_t)P.Ho * P.Wo * 2};
-    cuuint32_t box[3] = {(cuuint32_t)TTw, 1u, (cuuint32_t)boxR};
-    cuuint32_t estr[3] = {1u, 1u, 1u};
-    CUresult r = cuTensorMapEncodeTiled(&omap, CU_TENSOR_MAP_DATA_TYPE_FLOAT16, 3, (void *)P.out, dims, strides, box,
-                                        estr, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
-                                        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-    if (r != CUDA_SUCCESS) return;
-    P.tma_store = 1;
-    P.boxR = boxR;
-    P.nbox = nbox;
-}
-
-template <int NG, int T> static void launch_main(MainParams P, uint32_t smem, cudaStream_t st)
-{
-    CUtensorMap omap;
-    memset(&omap, 0, sizeof(omap));
-    setup_out_map<NG, T>(P, omap);
     if (P.K == 9 && P.Tw == 7) {
         if (P.p == 1) return launch_main_impl<NG, T, 9, 1>(P, omap, smem, st);
     }
@@ -1178,6 +1257,13 @@ void Run(ffi::TensorView inp, ffi::TensorView pack_idx, ffi::TensorView pack_val
     const int Ho = (int)pack_offset.size(0) - 1;
     const int K = (int)kernel_size, Wo = (int)nlon_out;
     const int BC = B * C;
+    // pscale >= 2 with a few dozen channels or more: the Hankel formulation (8-longitude blocks of all
+    // channels in M, 9 basis x 8 shifts in N) amortises its staged windows best; below that the leader
+    // path's per-channel tiles win, and at pscale 1 the paths below are faster.
+    if (Wo > 0 && Wi % Wo == 0 && Wi / Wo >= 2 && BC >= 32 && hankel::supported(BC, Hi, Wi, Wo, Ho, K, KP, NNZ)) {
+        hankel::disco_run(inp, pack_idx, pack_val, pack_offset, kernel_size, nlon_out, out);
+        return;
+    }
     // Low channel counts: the (channel, longitude-block) M packing of leader_small wastes no channel
     // padding; from a few m64 tiles of channels on, the channel-N Toeplitz path below is faster.
     // (Upper bound on the channel count only; any pscale/K the leader path cannot take goes below.)
@@ -1222,11 +1308,13 @@ void Run(ffi::TensorView inp, ffi::TensorView pack_idx, ffi::TensorView pack_val
         const int NGsel = G < 4 ? G : 4;
         uint32_t smem = 0;
         bool ok = false;
+        CUtensorMap omap;
+        memset(&omap, 0, sizeof(omap));
         switch (NGsel) {
-        case 4: ok = prepare_main<4, 8>(P, smem); break;
-        case 3: ok = prepare_main<3, 8>(P, smem); break;
-        case 2: ok = prepare_main<2, 8>(P, smem); break;
-        default: ok = prepare_main<1, 8>(P, smem); break;
+        case 4: ok = prepare_main<4, 8>(P, omap, smem); break;
+        case 3: ok = prepare_main<3, 8>(P, omap, smem); break;
+        case 2: ok = prepare_main<2, 8>(P, omap, smem); break;
+        default: ok = prepare_main<1, 8>(P, omap, smem); break;
         }
         if (ok) {
             const long long totcol = ((NNZ + (long long)Ho * ((long long)SEGCAP * (2 * P.OFF + 16) + 8) + 7) & ~7LL) + 8;
@@ -1235,7 +1323,7 @@ void Run(ffi::TensorView inp, ffi::TensorView pack_idx, ffi::TensorView pack_val
             const size_t nseg_bytes = (size_t)Ho * sizeof(int);
             const size_t ft_bytes = (size_t)K * totcol * 4;
             auto al = [](size_t v) { return (v + 255) & ~(size_t)255; };
-            uint8_t *ws = (uint8_t *)ws_get(al(xt_bytes) + al(seg_bytes) + al(nseg_bytes) + al(ft_bytes), st);
+            uint8_t *ws = (uint8_t *)ws_get(al(xt_bytes) + al(seg_bytes) + al(nseg_bytes) + al(ft_bytes) + 256, st);
             if (ws) {
                 uint4 *xt = (uint4 *)ws;
                 Seg *segs = (Seg *)(ws + al(xt_bytes));
@@ -1245,6 +1333,7 @@ void Run(ffi::TensorView inp, ffi::TensorView pack_idx, ffi::TensorView pack_val
                 P.segs = segs;
                 P.xt = xt;
                 P.ftg = ftg;
+                P.counter = (int *)(ws + al(xt_bytes) + al(seg_bytes) + al(nseg_bytes) + al(ft_bytes));
                 P.totcol = totcol;
                 const long long HW = (long long)Hi * Wi;
                 dim3 tg((unsigned)((HW + 255) / 256), (unsigned)G);
@@ -1257,13 +1346,18 @@ void Run(ffi::TensorView inp, ffi::TensorView pack_idx, ffi::TensorView pack_val
                 F.KP = KP;
                 F.OFF = P.OFF;
                 F.segcap = SEGCAP;
-                seg_prep_kernel<<<Ho, PREP_THREADS, 0, st>>>(idx, off, segs, nseg, Hi, Wi, F);
+                // heavy rows (long runs, e.g. whole rings near the poles) go to the FFT path when its cost model
+                // beats the Toeplitz GEMM; cdir = SM cycles per K-dim column per channel of this path
+                const float cdir = 64.f * (float)((Wo + P.Tw - 1) / P.Tw) / 1190.f;
+                const int *fflag = fftp::run(x, idx, val, off, o, BC, Hi, Wi, Ho, Wo, K, KP, NNZ, (P.Tw - 1) * p, cdir,
+                                             g_num_sms, st);
+                seg_prep_kernel<<<Ho, PREP_THREADS, 0, st>>>(idx, off, segs, nseg, Hi, Wi, F, P.counter, fflag);
                 ft_fill_kernel<<<Ho * FILL_SPLIT, 256, 0, st>>>(off, segs, nseg, F);
                 switch (NGsel) {
-                case 4: launch_main<4, 8>(P, smem, st); break;
-                case 3: launch_main<3, 8>(P, smem, st); break;
-                case 2: launch_main<2, 8>(P, smem, st); break;
-                default: launch_main<1, 8>(P, smem, st); break;
+                case 4: launch_main<4, 8>(P, omap, smem, st); break;
+                case 3: launch_main<3, 8>(P, omap, smem, st); break;
+                case 2: launch_main<2, 8>(P, omap, smem, st); break;
+                default: launch_main<1, 8>(P, omap, smem, st); break;
                 }
                 generic_kernel<<<Ho, 256, 0, st>>>(x, idx, val, off, o, nseg, BC, Hi, Wi, Ho, Wo, K, KP, p);
                 launched = true;

@@ -8,9 +8,9 @@ with `performance/disco/disco_ab.py`. They are not integrated: they build only w
 
 | directory | operator | GPU | campaign | candidate | campaign speedup |
 | --- | --- | --- | --- | --- | --- |
-| `fwd_sm90` | forward (kpacked psi) | H100, sm_90a | disco-fwd-h100-v2 | `101252ed` | 7.14x |
+| `fwd_sm90` | forward (kpacked psi) | H100, sm_90a | disco-fwd-h100-v2 | `d32021ad` | 9.52x |
 | `fwd_sm100` | forward (kpacked psi) | B200, sm_100a | disco-fwd-b200-v2 | `91ed7617` | 18.8x |
-| `bwd_sm90` | arc scatter | H100, sm_90a | disco-bwd-h100-v2 | `3a79600d` | 8.15x |
+| `bwd_sm90` | arc scatter | H100, sm_90a | disco-bwd-h100-v2 | `a49d6c8c` | 8.98x |
 | `bwd_sm100` | arc scatter | B200, sm_100a | disco-bwd-b200-v2 | `aea62ac1` | 8.29x |
 
 Speedups are Kernel Factory's geometric mean over its four workloads (encoder, aux encoder,
