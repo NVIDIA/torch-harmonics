@@ -100,9 +100,21 @@ _OWNED = {}
 
 
 def register(*tensors: torch.Tensor) -> None:
-    """Route the operator calls that read these psi tensors to the Kernel Factory kernels."""
+    """
+    Route the operator calls that read these psi tensors to the Kernel Factory kernels.
+
+    Called on every forward of a regular-kf layer, so a tensor that is already registered
+    keeps its entry and with it the derived arrays cached for it (fp16 values, rebased arc
+    slices); only a new tensor gets a fresh one. Entries of tensors that have been freed are
+    dropped, so the caches do not outlive their layers.
+    """
+    for key in [k for k, (ref, _) in _OWNED.items() if ref() is None]:
+        del _OWNED[key]
     for t in tensors:
-        _OWNED[t.untyped_storage().data_ptr()] = (weakref.ref(t), {})
+        key = t.untyped_storage().data_ptr()
+        entry = _OWNED.get(key)
+        if entry is None or entry[0]() is not t:
+            _OWNED[key] = (weakref.ref(t), {})
 
 
 def _owner(t: torch.Tensor) -> Optional[dict]:
