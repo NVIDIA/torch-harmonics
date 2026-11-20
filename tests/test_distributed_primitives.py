@@ -670,13 +670,7 @@ class TestRingExchange(unittest.TestCase):
             # is the channel count, which is not what the ring is sizing.
             next_src = (az_rank + step + 1) % az_size
             next_nlon = kw_ref[next_src].shape[2]
-            recv_kw, recv_vw, reqs = _ring_kv(
-                kw_chunk,
-                vw_chunk,
-                az_group,
-                next_nlon,
-                next_nlon,
-            )
+            recv_kw, recv_vw, reqs = _ring_kv(kw_chunk, vw_chunk, az_group, next_nlon)
             for req in reqs:
                 req.wait()
             kw_chunk = recv_kw.clone()
