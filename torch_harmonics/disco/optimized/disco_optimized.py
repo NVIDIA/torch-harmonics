@@ -633,8 +633,9 @@ class _DiscoConvFn(torch.autograd.Function):
       state, and it is considered exactly when they are passed.
 
     The forward contraction is the kpacked tensor-core kernel when its layout is passed,
-    the arc gather otherwise; the backward is the arc scatter either way, and so is the
-    recompute.
+    the arc gather otherwise, and the recompute runs the same contraction, so it costs one
+    forward and reproduces the saved intermediate exactly. The backward is the arc scatter
+    either way.
 
     The backward calls the raw kernels, which autograd cannot see. Under
     ``create_graph=True`` it is built from the contraction ops and matmuls instead (see
@@ -670,7 +671,8 @@ class _DiscoConvFn(torch.autograd.Function):
 
         # the input as passed, not a contiguous copy made here: only the input carries its
         # graph into a create_graph backward. Saving it only keeps a reference.
-        ctx.save_for_backward(inp, None if recompute else x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker)
+        # the kpacked layout (or None) too, so the recompute runs the contraction this forward ran
+        ctx.save_for_backward(inp, None if recompute else x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker, pack_idx, pack_val, pack_offset)
         ctx.recompute = recompute
         ctx.kernel_size = kernel_size
         ctx.nlat_in = inp.shape[-2]
@@ -685,7 +687,7 @@ class _DiscoConvFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        inp, x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker = ctx.saved_tensors
+        inp, x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker, pack_idx, pack_val, pack_offset = ctx.saved_tensors
 
         itype = grad_output.dtype
         vals_c = vals.to(_compute_dtype(itype))
@@ -722,7 +724,9 @@ class _DiscoConvFn(torch.autograd.Function):
 
         if ctx.needs_input_grad[1]:
             if ctx.recompute:
-                x_expanded = disco_kernels.forward_regular.default(inp.contiguous(), row_ker, row_lat, seg_off, seg, val_off, vals_c, K, H, W)
+                # the forward's own contraction: the tensor-core kernel when the layer has the
+                # kpacked layout, not the arc gather, which is several times slower there
+                x_expanded = _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack_val, pack_offset, K, H, W)
             grad_weight = _weight_gradient(grad_output, x_expanded.to(itype), G)
 
         return (grad_inp, grad_weight) + nones
