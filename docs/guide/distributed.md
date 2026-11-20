@@ -283,9 +283,10 @@ Along the azimuth the distributed SHT uses **all-to-all transposes** that trade
 the longitudes for slices of the flattened leading axis `N = B * C`. This is why
 `N` must be at least as large as the azimuth group (if it is smaller, the
 module zero-pads it automatically and strips the padding on output). Along the
-polar axis there is no transpose: the Legendre sum is a distributed matrix
-product, which each rank evaluates partially over the latitudes it holds and a
-single reduce-scatter completes.
+polar axis there is, by default, no transpose: the Legendre sum is a distributed
+matrix product, which each rank evaluates partially over the latitudes it holds
+and a single reduce-scatter completes. Transposes are available there as well,
+see [Choosing the polar exchange](#choosing-the-polar-exchange).
 
 For the **forward** SHT (`DistributedRealSHT`), the sequence is:
 
@@ -310,6 +311,59 @@ size-2 component dimension is preserved throughout.
 On a **HEALPix** grid steps 1-3 collapse into one local step: every rank holds
 whole rings, so it runs the per-ring FFT on its band without any azimuth
 transpose. Steps 4 and 5 are unchanged. The inverse runs the same path backwards.
+
+### Choosing the polar exchange
+
+Steps 4 and 5 can also run as transposes, like the azimuth steps. Every
+distributed SHT takes `polar_exchange`:
+
+```python
+sht  = thd.DistributedRealSHT(grid, polar_exchange="transpose")
+isht = thd.DistributedInverseRealSHT(grid, polar_exchange="transpose")
+```
+
+With `"transpose"` the forward trades a slice of `N` for the remaining
+latitudes in a polar all-to-all, contracts over all of them, and trades the
+degrees `l` back for `N` in a second all-to-all. The inverse does the same with
+the degrees and then the latitudes. The output layout and the orders each rank
+holds are the same as with `"reduce-scatter"`, the default, so the two can be
+mixed freely, and results agree up to rounding.
+
+The two exchanges trade table memory against communication. Per rank, with `p`
+polar ranks and `m` the local orders:
+
+|                        | `"reduce-scatter"`          | `"transpose"`                     |
+| ---------------------- | --------------------------- | --------------------------------- |
+| Legendre tables        | split over the polar group  | replicated over the polar group   |
+| table size             | about `nlat * lmax * m / p` | about `nlat * lmax * m`           |
+| values exchanged       | about `lmax * m * N`        | about `(nlat + lmax) * m * N / p` |
+| collectives per call   | 1 reduce-scatter            | 2 all-to-alls                     |
+| `N` padded to at least | the azimuth group size      | the larger of the two group sizes |
+
+With `"reduce-scatter"`, each rank holds partial sums of every output row
+(every `l` in the forward, every latitude in the inverse), so the volume it
+sends does not shrink as the polar group grows. With `"transpose"`, each rank
+only sends its own rows, so the volume falls as `1/p`, but each rank keeps the
+tables of its orders over the whole contraction axis. The transpose moves less
+data once `p > 1 + nlat / lmax`: from 3 polar ranks on a Gauss grid with
+`lmax = nlat`, and from 4 on an equiangular grid with `lmax = nlat / 2`. The gap
+grows with `p`.
+
+As a rule of thumb:
+
+- Use `"reduce-scatter"` when the tables are what limits you: high resolutions
+  on GPUs, where the tables replicated over the polar group would not fit, and
+  small polar groups, where it moves about as much data as the transpose.
+- Use `"transpose"` when communication dominates and the tables fit: CPU runs
+  over gloo, polar groups spanning several nodes, and polar groups of more than
+  a few ranks. On 4 gloo ranks with one thread each, a T170 forward and inverse
+  (`nlat = 256`, `lmax = mmax = 171`, 240 channels, float64) took 1.8 s with
+  `"reduce-scatter"` and 0.55 s with `"transpose"`, while the tables of rank 0
+  grew from 12 to 67 MiB.
+
+The choice only affects the polar group. With a single polar rank both are the
+same local contraction, and the azimuth transposes are the same either way.
+`DistributedSpectralConvS2` builds its transforms with the default.
 
 ## 7. Clean-up
 

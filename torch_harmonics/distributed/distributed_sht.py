@@ -61,6 +61,7 @@ from torch_harmonics.truncation import _validate_forward_sht_degree, _warn_if_no
 from .primitives import (
     compute_split_shapes,
     distributed_transpose_azimuth,
+    distributed_transpose_polar,
     flatten_and_pad_leading_dims,
     reduce_from_scatter_to_polar_region,
     unpad_and_unflatten_leading_dims,
@@ -124,6 +125,66 @@ def _setup_shard(module: nn.Module) -> None:
         module.ring_fft = RingFFT(module.grid, module.mmax, rings=(module.lat_offset, module.lat_offset + module.nlat_local))
 
 
+_POLAR_EXCHANGES = ("reduce-scatter", "transpose")
+
+
+def _setup_polar_exchange(module: nn.Module, polar_exchange: str) -> None:
+    """
+    How the Legendre contraction over the polar group is completed.
+
+    ``"reduce-scatter"`` keeps the contraction axis (latitudes in the analysis, degrees in the
+    synthesis) split: each rank contracts the part it owns into a partial sum over every output
+    row, and a reduce-scatter completes the sums and splits the output rows. ``"transpose"``
+    trades the contraction axis for a slice of the leading axis ``N`` in an all-to-all, contracts
+    it whole, and trades the output rows back for ``N`` in a second one, as the azimuth
+    transposes do around the FFT. Either way the orders, and with them the table blocks, are
+    those of the azimuth split; only the extent of the tables along the contraction axis differs.
+    With a single polar rank both are the same local contraction.
+    """
+    if polar_exchange not in _POLAR_EXCHANGES:
+        raise ValueError(f"polar_exchange must be one of {_POLAR_EXCHANGES}, got {polar_exchange!r}")
+    module.polar_exchange = polar_exchange
+    module._polar_transpose = polar_exchange == "transpose" and module.comm_size_polar > 1
+
+
+def _min_leading_size(module: nn.Module) -> int:
+    """The size the leading axis is padded to: it is split over the azimuth group, and over the polar group when transposing."""
+    return max(module.comm_size_azimuth, module.comm_size_polar) if module._polar_transpose else module.comm_size_azimuth
+
+
+def _polar_gather(module: nn.Module, x: torch.Tensor, chan_dim: int, shapes) -> torch.Tensor:
+    """Under ``"transpose"``, make the contraction axis ``-2`` of ``x``, split by ``shapes``, whole by splitting ``chan_dim`` instead."""
+    if module._polar_transpose:
+        x = distributed_transpose_polar(x, (chan_dim, -2), shapes)
+    return x
+
+
+def _polar_complete(module: nn.Module, out: torch.Tensor, chan_dim: int, num_chans: int, shapes) -> torch.Tensor:
+    """
+    Complete the contraction ``out`` of real-view rows ``(..., rows, m, 2)`` and split its rows by ``shapes``.
+
+    Under ``"transpose"`` ``out`` holds every row of this rank's slice of the leading axis
+    ``chan_dim``, of global size ``num_chans``, and an all-to-all trades the rows for it back.
+    Under ``"reduce-scatter"`` it holds partial sums of every row and every channel.
+    """
+    if module._polar_transpose:
+        chan_shapes = compute_split_shapes(num_chans, module.comm_size_polar)
+        return distributed_transpose_polar(out, (-3, chan_dim), chan_shapes, shapes)
+    if module.comm_size_polar > 1:
+        return reduce_from_scatter_to_polar_region(out, -3, shapes)
+    return out
+
+
+def _analysis_rings(module: nn.Module) -> tuple:
+    """The latitudes ``[kmin, kmax)`` of this rank's analysis tables: its own, or every one under ``"transpose"``."""
+    return (0, module.nlat) if module._polar_transpose else (module.lat_offset, module.lat_offset + module.nlat_local)
+
+
+def _synthesis_degrees(module: nn.Module) -> tuple:
+    """The degrees ``[lmin, lmax)`` of this rank's synthesis tables: its own, or every one under ``"transpose"``."""
+    return (0, module.lmax) if module._polar_transpose else (module.lmax_offset, module.lmax_offset + module.lmax_local)
+
+
 def _validate_iter(iter: int) -> int:
     if isinstance(iter, bool) or not isinstance(iter, int) or iter < 0:
         raise ValueError(f"iter must be a non-negative integer, got {iter!r}")
@@ -142,7 +203,9 @@ def _setup_jacobi(module: nn.Module, grid: GridS2, inverse_cls: type) -> None:
     if module.iter > 0:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            module._synthesis = inverse_cls(grid, module.lmax, module.mmax, module.lmmax, norm=module.norm, csphase=module.csphase, block_size=module.block_size)
+            module._synthesis = inverse_cls(
+                grid, module.lmax, module.mmax, module.lmmax, norm=module.norm, csphase=module.csphase, block_size=module.block_size, polar_exchange=module.polar_exchange
+            )
 
 
 def _vector_radial_dims(module: nn.Module, spatial: bool) -> tuple:
@@ -200,6 +263,15 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
     are not bitwise identical to the serial transform. A leading axis ``N`` smaller
     than the group size is supported; it is zero-padded internally, which is exact.
 
+    **Polar exchange.** With ``polar_exchange="transpose"`` steps 4 and 5 become a polar
+    transpose (``N`` ↔ ``nlat``), which makes the latitudes local, a contraction over all of
+    them, and a polar transpose (``l`` ↔ ``N``) back. The weights are then replicated over
+    the polar group, by a factor of its size, but each rank exchanges about
+    ``(nlat + lmax) * mmax_local * N / p`` values instead of ``lmax * mmax_local * N``, which
+    does not shrink with the polar group size ``p``. The transpose moves less data once
+    ``p > 1 + nlat / lmax``; see the distributed guide for when to choose it. The output
+    layout is the same either way.
+
     **HEALPix.** On a :class:`~torch_harmonics.healpix.HealpixGrid` the input is flat,
     ``(B, C, npix_local)``: each polar rank holds a band of whole rings, cut so that every
     rank holds about the same number of pixels (see
@@ -234,6 +306,11 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         Number of orders per block of the stored Legendre tables, or ``None`` for one dense
         table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
         multiples of ``block_size``, so a rank holds the serial blocks of its orders.
+    polar_exchange : str
+        How the Legendre contraction is completed over the polar group, ``"reduce-scatter"``
+        (the default) or ``"transpose"``. The first keeps the tables split over the polar
+        group, the second replicates them over it and moves less data at larger polar groups,
+        see the class description and the distributed guide. Results agree up to rounding.
     iter : int
         Number of Jacobi iterations refining the analysis, by default 0, see
         :class:`~torch_harmonics.RealSHT`. Each one adds a distributed synthesis and analysis,
@@ -265,6 +342,7 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         csphase: Optional[bool] = True,
         block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
         iter: int = 0,
+        polar_exchange: str = "reduce-scatter",
     ):
 
         super().__init__()
@@ -274,6 +352,7 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         input_grid = grid
         grid, self.radial = split_radial(grid)
         _setup_grid(self, grid)
+        _setup_polar_exchange(self, polar_exchange)
         self.norm = norm
         self.csphase = csphase
         self.iter = _validate_iter(iter)
@@ -292,13 +371,15 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
 
         # build only the block this rank keeps: local orders, all degrees, local latitudes. The
         # contraction over k is a distributed matmul completed by a reduce-scatter in the forward,
-        # so only the local latitudes are needed; l is contracted in full. The block is shared
-        # with every transform of the same kind on this rank's block, see _analysis_weights.
+        # so only the local latitudes are needed; l is contracted in full. Under "transpose" the
+        # latitudes are made local before the contraction, so the block holds all of them. The
+        # block is shared with every transform of the same kind on this rank's block, see
+        # _analysis_weights.
         self._extended_folded = _extended_folded_analysis(self.grid, self._trunc)
         self.block_size = _resolve_block_size(block_size, self.mmax)
         mmin, mmax = self.mmax_offset, self.mmax_offset + self.mmax_local
         blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, 0, self.lmax)
-        tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, False, mmin, mmax, self.lat_offset, self.lat_offset + self.nlat_local, self.block_size)
+        tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, False, mmin, mmax, *_analysis_rings(self), self.block_size)
         _register_blocks(self, "weights", tables, blocks, 0)
 
         # the Jacobi iteration refines the analysis with the distributed synthesis, see RealSHT
@@ -306,7 +387,7 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
 
     @property
     def weights(self) -> torch.Tensor:
-        """This rank's dense analysis table ``(mmax_local, lmax, nlat_local)``, assembled from the blocks: a fresh tensor, for inspection."""
+        """This rank's dense analysis table ``(mmax_local, lmax, nlat_local)``, ``nlat`` under ``"transpose"``, assembled from the blocks: a fresh tensor, for inspection."""
         return _dense_table(self, -2, self.lmax)
 
     @property
@@ -360,9 +441,9 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
         # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
         # must be at least as large as the azimuth group. Flatten all leading dims into that
         # axis and zero-pad it if needed (linear transform, so padding stays zero); restore
-        # the original layout before returning. The polar group never touches this axis --
-        # the latitude contraction is a distributed matmul, not a transpose.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=len(self.shard.shape))
+        # the original layout before returning. The polar group touches this axis only under
+        # "transpose"; otherwise the latitude contraction is a distributed matmul.
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, _min_leading_size(self), num_trailing_dims=len(self.shard.shape))
         num_chans = x.shape[-1 - len(self.shard.shape)]
 
         if self.ring_fft is None:
@@ -383,21 +464,24 @@ class DistributedRealSHT(SharedBufferMixin, nn.Module):
             # (..., nrings_local, mmax) with every order on every rank
             x = self.ring_fft(x)
 
-        # transpose to put the contraction dim (nlat) on the fast axis. nlat stays split across
-        # the polar group: each rank contracts the latitudes it owns and the reduce-scatter
-        # below completes the sum.
+        # under "transpose", trade a slice of the channels for all latitudes; otherwise nlat
+        # stays split across the polar group: each rank contracts the latitudes it owns and the
+        # reduce-scatter below completes the sum.
+        x = _polar_gather(self, x, -3, self.lat_shapes)
+
+        # transpose to put the contraction dim (nlat) on the fast axis
         x = _real_and_imaginary(x.transpose(-1, -2))
 
-        # Legendre-Gauss quadrature: partial contraction over the local k=nlat chunk, block by block
+        # Legendre-Gauss quadrature: contraction over this rank's k=nlat chunk, block by block
         out = _analysis_contraction(x, [w.to(x.dtype) for w in _blocks(self)], self._layout, self.lmax)
         out_re, out_im = out[0], out[1]
 
-        # complete the quadrature sum and split l in a single collective. This runs on the real
-        # view: the reduce-scatter reduces in fp32, which would discard the imaginary part of a
-        # complex tensor, and NCCL has no complex reduction to begin with.
+        # complete the quadrature sum and split l, in a reduce-scatter or a transpose back to
+        # whole channels. This runs on the real view: the reduce-scatter reduces in fp32, which
+        # would discard the imaginary part of a complex tensor, and NCCL has no complex
+        # reduction to begin with.
         out = torch.stack((out_re, out_im), dim=-1)
-        if self.comm_size_polar > 1:
-            out = reduce_from_scatter_to_polar_region(out, -3, self.l_shapes)
+        out = _polar_complete(self, out, -4, num_chans, self.l_shapes)
         x = torch.view_as_complex(out.contiguous())
 
         # drop padding and restore the original leading dims
@@ -437,6 +521,11 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
     smaller than the group size is supported; it is zero-padded internally, which is
     exact.
 
+    **Polar exchange.** With ``polar_exchange="transpose"`` steps 1 and 2 become a polar
+    transpose (``N`` ↔ ``lmax``), which makes the degrees local, a synthesis from all of
+    them, and a polar transpose (``nlat`` ↔ ``N``) back, with the Legendre polynomials
+    replicated over the polar group. The trade-off is that of :class:`DistributedRealSHT`.
+
     **HEALPix.** On a :class:`~torch_harmonics.healpix.HealpixGrid` the reduce-scatter of
     step 2 leaves each polar rank its band of rings, split by pixel count rather than evenly,
     and steps 3 to 5 collapse into the inverse ring FFT of those rings. The output is flat,
@@ -469,6 +558,11 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         Number of orders per block of the stored Legendre tables, or ``None`` for one dense
         table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
         multiples of ``block_size``, so a rank holds the serial blocks of its orders.
+    polar_exchange : str
+        How the Legendre contraction is completed over the polar group, ``"reduce-scatter"``
+        (the default) or ``"transpose"``. The first keeps the tables split over the polar
+        group, the second replicates them over it and moves less data at larger polar groups,
+        see the class description and the distributed guide. Results agree up to rounding.
 
     Returns
     -------
@@ -495,6 +589,7 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
         block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
+        polar_exchange: str = "reduce-scatter",
     ):
 
         super().__init__()
@@ -503,6 +598,7 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         # more leading axis, flattened into the one the transposes split
         grid, self.radial = split_radial(grid)
         _setup_grid(self, grid)
+        _setup_polar_exchange(self, polar_exchange)
         self.norm = norm
         self.csphase = csphase
 
@@ -522,20 +618,22 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         # completed by a reduce-scatter in the forward, so only the local degrees are needed,
         # while all latitudes are produced. Both ranges need an explicit offset: the sectoral
         # seed couples orders and the three-term recurrence couples degrees, so each has to be
-        # walked from the start even though only the local window is stored.
+        # walked from the start even though only the local window is stored. Under "transpose"
+        # the degrees are made local before the contraction, so the block holds all of them.
         # stored as (mmax_local, nlat, lmax_local) so the contraction dim l is stride-1, and
         # shared with every transform of the same kind on this rank's block
         self.block_size = _resolve_block_size(block_size, self.mmax)
         mmin, mmax = self.mmax_offset, self.mmax_offset + self.mmax_local
-        lmin, lmax = self.lmax_offset, self.lmax_offset + self.lmax_local
+        lmin, lmax = _synthesis_degrees(self)
         blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, lmin, lmax)
         tables = _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, False, mmin, mmax, lmin, lmax, self.block_size)
         _register_blocks(self, "pct", tables, blocks, lmin)
 
     @property
     def pct(self) -> torch.Tensor:
-        """This rank's dense synthesis table ``(mmax_local, nlat, lmax_local)``, assembled from the blocks: a fresh tensor, for inspection."""
-        return _dense_table(self, -1, self.lmax_local)
+        """This rank's dense synthesis table ``(mmax_local, nlat, lmax_local)``, ``lmax`` under ``"transpose"``, assembled from the blocks: a fresh tensor, for inspection."""
+        lmin, lmax = _synthesis_degrees(self)
+        return _dense_table(self, -1, lmax - lmin)
 
     @property
     def lmax(self) -> int:
@@ -578,30 +676,31 @@ class DistributedInverseRealSHT(SharedBufferMixin, nn.Module):
         # the azimuth transposes below redistribute the leading (channel/batch) axis, so it
         # must be at least as large as the azimuth group. Flatten all leading dims into that
         # axis and zero-pad it if needed (linear transform, so padding stays zero); restore
-        # the original layout before returning. The polar group never touches this axis --
-        # the degree contraction is a distributed matmul, not a transpose.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth)
+        # the original layout before returning. The polar group touches this axis only under
+        # "transpose"; otherwise the degree contraction is a distributed matmul.
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, _min_leading_size(self))
+        num_chans = x.shape[-3]
 
-        # transpose to put the contraction dim (lmax) on the fast axis. l stays split across
-        # the polar group: each rank synthesizes from the degrees it owns and the
+        # under "transpose", trade a slice of the channels for all degrees; otherwise l stays
+        # split across the polar group: each rank synthesizes from the degrees it owns and the
         # reduce-scatter below completes the sum.
+        x = _polar_gather(self, x, -3, self.l_shapes)
+
+        # transpose to put the contraction dim (lmax) on the fast axis
         x = _real_and_imaginary(x.transpose(-1, -2))
 
-        # legendre transformation: partial contraction over the local l chunk, block by block
+        # legendre transformation: contraction over this rank's l chunk, block by block
         # pct blocks: (orders, nlat, local degrees)
         out = _synthesis_contraction(x, [p.to(x.dtype) for p in _blocks(self)], self._layout)
         out_re, out_im = out[0], out[1]
 
-        # complete the synthesis sum and split nlat in a single collective, on the real view
-        # (see DistributedRealSHT.forward for why the collective cannot take complex input).
+        # complete the synthesis sum and split nlat, on the real view (see
+        # DistributedRealSHT._analyze for why the collective cannot take complex input)
         out = torch.stack((out_re, out_im), dim=-1)
-        if self.comm_size_polar > 1:
-            out = reduce_from_scatter_to_polar_region(out, -3, self.lat_shapes)
+        out = _polar_complete(self, out, -4, num_chans, self.lat_shapes)
         x = torch.view_as_complex(out.contiguous())
 
         if self.ring_fft is None:
-            num_chans = x.shape[-3]
-
             # transpose: after this, channels are split and m is local
             if self.comm_size_azimuth > 1:
                 x = distributed_transpose_azimuth(x, (-3, -1), self.m_shapes)
@@ -667,6 +766,11 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         Number of orders per block of the stored Legendre tables, or ``None`` for one dense
         table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
         multiples of ``block_size``, so a rank holds the serial blocks of its orders.
+    polar_exchange : str
+        How the Legendre contraction is completed over the polar group, ``"reduce-scatter"``
+        (the default) or ``"transpose"``. The first keeps the tables split over the polar
+        group, the second replicates them over it and moves less data at larger polar groups,
+        see the class description and the distributed guide. Results agree up to rounding.
     iter : int
         Number of Jacobi iterations refining the analysis, by default 0, see
         :class:`~torch_harmonics.RealSHT`. Each one adds a distributed synthesis and analysis,
@@ -697,6 +801,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         csphase: Optional[bool] = True,
         block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
         iter: int = 0,
+        polar_exchange: str = "reduce-scatter",
     ):
 
         super().__init__()
@@ -706,6 +811,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         input_grid = grid
         grid, self.radial = split_radial(grid)
         _setup_grid(self, grid)
+        _setup_polar_exchange(self, polar_exchange)
         self.norm = norm
         self.csphase = csphase
         self.iter = _validate_iter(iter)
@@ -727,7 +833,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         self.block_size = _resolve_block_size(block_size, self.mmax)
         mmin, mmax = self.mmax_offset, self.mmax_offset + self.mmax_local
         blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, 0, self.lmax)
-        tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, True, mmin, mmax, self.lat_offset, self.lat_offset + self.nlat_local, self.block_size)
+        tables = _analysis_weights(self.grid, self._trunc, self.norm, self.csphase, True, mmin, mmax, *_analysis_rings(self), self.block_size)
         _register_blocks(self, "weights", tables, blocks, 0)
 
         # the Jacobi iteration refines the analysis with the distributed synthesis, see RealSHT
@@ -735,7 +841,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
 
     @property
     def weights(self) -> torch.Tensor:
-        """This rank's dense analysis tables ``(2, mmax_local, lmax, nlat_local)``, assembled from the blocks: a fresh tensor, for inspection."""
+        """This rank's dense analysis tables ``(2, mmax_local, lmax, nlat_local)``, ``nlat`` under ``"transpose"``, assembled from the blocks: a fresh tensor, for inspection."""
         return _dense_table(self, -2, self.lmax)
 
     @property
@@ -795,7 +901,7 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         # all leading dims into that axis -- keeping the trailing (2, *spatial) intact --
         # and zero-pad it if needed (linear transform, so padding stays zero); restore the
         # original layout before returning.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=1 + len(self.shard.shape))
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, _min_leading_size(self), num_trailing_dims=1 + len(self.shard.shape))
         num_chans = x.shape[-2 - len(self.shard.shape)]
 
         if self.ring_fft is None:
@@ -815,8 +921,10 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
             # HEALPix: the ring FFT of this rank's rings is local, see DistributedRealSHT
             x = self.ring_fft(x)
 
-        # transpose to put the contraction dim (nlat) on the fast axis. nlat stays split across
-        # the polar group, see DistributedRealSHT.forward.
+        # make the latitudes local under "transpose", see DistributedRealSHT._analyze
+        x = _polar_gather(self, x, -4, self.lat_shapes)
+
+        # transpose to put the contraction dim (nlat) on the fast axis
         x = _real_and_imaginary(x.transpose(-1, -2))
 
         # one contraction per block and derivative table; xc_* holds component c contracted
@@ -837,11 +945,10 @@ class DistributedRealVectorSHT(SharedBufferMixin, nn.Module):
         out_re = torch.stack((s_re, t_re), dim=-3)
         out_im = torch.stack((s_im, t_im), dim=-3)
 
-        # complete the quadrature sum and split l in a single collective, on the real view
-        # (see DistributedRealSHT.forward for why the collective cannot take complex input).
+        # complete the quadrature sum and split l, on the real view (see
+        # DistributedRealSHT._analyze for why the collective cannot take complex input)
         out = torch.stack((out_re, out_im), dim=-1)
-        if self.comm_size_polar > 1:
-            out = reduce_from_scatter_to_polar_region(out, -3, self.l_shapes)
+        out = _polar_complete(self, out, -5, num_chans, self.l_shapes)
         x = torch.view_as_complex(out.contiguous())
 
         # drop padding and restore the original leading dims
@@ -892,6 +999,11 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         Number of orders per block of the stored Legendre tables, or ``None`` for one dense
         table, see :class:`~torch_harmonics.RealSHT`. The blocks are cut at the global
         multiples of ``block_size``, so a rank holds the serial blocks of its orders.
+    polar_exchange : str
+        How the Legendre contraction is completed over the polar group, ``"reduce-scatter"``
+        (the default) or ``"transpose"``. The first keeps the tables split over the polar
+        group, the second replicates them over it and moves less data at larger polar groups,
+        see the class description and the distributed guide. Results agree up to rounding.
 
     Returns
     -------
@@ -918,6 +1030,7 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         norm: Optional[str] = "ortho",
         csphase: Optional[bool] = True,
         block_size: Optional[int] = BLOCK_SIZE_FROM_ENVIRONMENT,
+        polar_exchange: str = "reduce-scatter",
     ):
 
         super().__init__()
@@ -926,6 +1039,7 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         # more leading axis, flattened into the one the transposes split
         grid, self.radial = split_radial(grid)
         _setup_grid(self, grid)
+        _setup_polar_exchange(self, polar_exchange)
         self.norm = norm
         self.csphase = csphase
 
@@ -947,15 +1061,16 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         # and shared with every transform of the same kind on this rank's block
         self.block_size = _resolve_block_size(block_size, self.mmax)
         mmin, mmax = self.mmax_offset, self.mmax_offset + self.mmax_local
-        lmin, lmax = self.lmax_offset, self.lmax_offset + self.lmax_local
+        lmin, lmax = _synthesis_degrees(self)
         blocks = _sht_blocks(self._trunc, self.block_size, mmin, mmax, lmin, lmax)
         tables = _synthesis_table(self.grid, self._trunc, self.norm, self.csphase, True, mmin, mmax, lmin, lmax, self.block_size)
         _register_blocks(self, "dpct", tables, blocks, lmin)
 
     @property
     def dpct(self) -> torch.Tensor:
-        """This rank's dense synthesis tables ``(2, mmax_local, nlat, lmax_local)``, assembled from the blocks: a fresh tensor, for inspection."""
-        return _dense_table(self, -1, self.lmax_local)
+        """This rank's dense synthesis tables ``(2, mmax_local, nlat, lmax_local)``, ``lmax`` under ``"transpose"``, assembled from the blocks: a fresh tensor, for inspection."""
+        lmin, lmax = _synthesis_degrees(self)
+        return _dense_table(self, -1, lmax - lmin)
 
     @property
     def lmax(self) -> int:
@@ -1006,10 +1121,13 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         # all leading dims into that axis -- keeping the trailing (2, lmax, mmax) intact --
         # and zero-pad it if needed (linear transform, so padding stays zero); restore the
         # original layout before returning.
-        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, self.comm_size_azimuth, num_trailing_dims=3)
+        x, lead_shape, lead_size = flatten_and_pad_leading_dims(x, _min_leading_size(self), num_trailing_dims=3)
+        num_chans = x.shape[-4]
 
-        # transpose to put the contraction dim (lmax) on the fast axis. l stays split across
-        # the polar group, see DistributedInverseRealSHT.forward.
+        # make the degrees local under "transpose", see DistributedInverseRealSHT.forward
+        x = _polar_gather(self, x, -4, self.l_shapes)
+
+        # transpose to put the contraction dim (lmax) on the fast axis
         x = _real_and_imaginary(x.transpose(-1, -2))
 
         # dpct blocks: (2, orders, nlat, local degrees) -- contract over l (stride-1 in both
@@ -1031,16 +1149,13 @@ class DistributedInverseRealVectorSHT(SharedBufferMixin, nn.Module):
         out_re = torch.stack((srl, trl), dim=-3)
         out_im = torch.stack((sim, tim), dim=-3)
 
-        # complete the synthesis sum and split nlat in a single collective, on the real view
-        # (see DistributedRealSHT.forward for why the collective cannot take complex input).
+        # complete the synthesis sum and split nlat, on the real view (see
+        # DistributedRealSHT._analyze for why the collective cannot take complex input)
         out = torch.stack((out_re, out_im), dim=-1)
-        if self.comm_size_polar > 1:
-            out = reduce_from_scatter_to_polar_region(out, -3, self.lat_shapes)
+        out = _polar_complete(self, out, -5, num_chans, self.lat_shapes)
         x = torch.view_as_complex(out.contiguous())
 
         if self.ring_fft is None:
-            num_chans = x.shape[-4]
-
             # transpose: after this, channels are split and m is local
             if self.comm_size_azimuth > 1:
                 x = distributed_transpose_azimuth(x, (-4, -1), self.m_shapes)
