@@ -127,7 +127,8 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
     @parameterized.expand(
         [
-            (geometry, vector, dtype, lmax, mmax, lmmax)
+            (geometry, vector, dtype, lmax, mmax, lmmax, polar_exchange)
+            for polar_exchange in ("reduce-scatter", "transpose")
             for geometry, cases in [
                 ("equiangular", [(16, 16, None), (15, 7, None), (15, 9, None), (15, 7, 8), (15, 15, 5), (16, 1, None), (16, 0, None)]),
                 ("fejer1", [(17, 17, None), (17, 17, 5), (16, 9, None)]),
@@ -138,20 +139,24 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
         ],
         skip_on_empty=True,
     )
-    def test_extended_folded(self, geometry, vector, dtype, lmax, mmax, lmmax):
-        """Uneven shards, padded channels and masked high-bandlimit analysis."""
+    def test_extended_folded(self, geometry, vector, dtype, lmax, mmax, lmmax, polar_exchange):
+        """Uneven shards, padded channels and masked high-bandlimit analysis, with either polar exchange."""
         grid = th.as_grid(geometry, nlat=17, nlon=33)
         serial = (th.RealVectorSHT if vector else th.RealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device, dtype)
         if mmax < self.grid_size_w:
             # Existing distributed partitions require a nonempty order shard.
             with self.assertRaises(RuntimeError):
-                (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax)
+                (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, polar_exchange=polar_exchange)
             return
-        distributed = (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax).to(self.device, dtype)
+        distributed = (thd.DistributedRealVectorSHT if vector else thd.DistributedRealSHT)(grid, lmax=lmax, mmax=mmax, lmmax=lmmax, polar_exchange=polar_exchange).to(
+            self.device, dtype
+        )
         self.assertTrue(distributed._extended_folded)
-        block = serial.weights[
-            ..., distributed.mmax_offset : distributed.mmax_offset + distributed.mmax_local, :, distributed.lat_offset : distributed.lat_offset + distributed.nlat_local
-        ]
+        # the folded projection of this rank's orders, on its own latitudes, or on all of them
+        # when they are transposed in
+        transposed = polar_exchange == "transpose" and self.grid_size_h > 1
+        kmin, kmax = (0, grid.nlat) if transposed else (distributed.lat_offset, distributed.lat_offset + distributed.nlat_local)
+        block = serial.weights[..., distributed.mmax_offset : distributed.mmax_offset + distributed.mmax_local, :, kmin:kmax]
         # a rank's blocks cover fewer orders than the serial ones, which changes the roundoff of
         # the folded projection at the level of float64; in float32 that can flip the rounding of
         # an entry, by one ulp, or by about 1e-17 at entries that are themselves roundoff
@@ -175,15 +180,17 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
 
         import torch_harmonics.distributed.distributed_sht as implementation
 
-        # Instrument the complete forward: exactly the existing two azimuth
-        # redistributions and one polar reduction, with no latitude gather.
+        # Instrument the complete forward: exactly the existing two azimuth redistributions,
+        # and either one polar reduction or two polar transposes, with no latitude gather.
         with (
             patch.object(implementation, "distributed_transpose_azimuth", wraps=implementation.distributed_transpose_azimuth) as transpose,
+            patch.object(implementation, "distributed_transpose_polar", wraps=implementation.distributed_transpose_polar) as polar_transpose,
             patch.object(implementation, "reduce_from_scatter_to_polar_region", wraps=implementation.reduce_from_scatter_to_polar_region) as reduction,
         ):
             local = distributed(self._split_helper(spatial))
             self.assertEqual(transpose.call_count, 2 if self.grid_size_w > 1 else 0)
-            self.assertEqual(reduction.call_count, 1 if self.grid_size_h > 1 else 0)
+            self.assertEqual(polar_transpose.call_count, 2 if transposed else 0)
+            self.assertEqual(reduction.call_count, 1 if self.grid_size_h > 1 and not transposed else 0)
         actual = self._gather_helper_fwd(local, distributed)
         expected = torch.zeros_like(actual)
         if mmax and (lmmax is None or l < lmmax):
@@ -655,24 +662,39 @@ class TestDistributedSphericalHarmonicTransform(unittest.TestCase):
             getattr(thd, cls_name)(grid, lmax=lmax, mmax=mmax)
 
     @parameterized.expand(
-        [["DistributedRealSHT", "weights"], ["DistributedInverseRealSHT", "pct"], ["DistributedRealVectorSHT", "weights"], ["DistributedInverseRealVectorSHT", "dpct"]]
+        [
+            [cls_name, buffer, polar_exchange]
+            for polar_exchange in ("reduce-scatter", "transpose")
+            for cls_name, buffer in [
+                ("DistributedRealSHT", "weights"),
+                ("DistributedInverseRealSHT", "pct"),
+                ("DistributedRealVectorSHT", "weights"),
+                ("DistributedInverseRealVectorSHT", "dpct"),
+            ]
+        ]
     )
-    def test_identical_transforms_share_their_block(self, cls_name, buffer):
+    def test_identical_transforms_share_their_block(self, cls_name, buffer, polar_exchange):
         """
         Two identical distributed transforms hold one copy of this rank's block, and it is
         the block a transform of different bounds does not get; see torch_harmonics.cache.
+        A transform with the other polar exchange shares it only where the two blocks are the
+        same, on a single polar rank: otherwise one spans the polar axis and the other does not.
         """
         grid = th.as_grid("legendre-gauss", nlat=16, nlon=32)
         cls = getattr(thd, cls_name)
-        a = cls(grid, block_size=3).to(self.device)
-        b = cls(grid, block_size=3).to(self.device)
-        other = cls(grid, lmax=10, mmax=10, block_size=3).to(self.device)
+        a = cls(grid, block_size=3, polar_exchange=polar_exchange).to(self.device)
+        b = cls(grid, block_size=3, polar_exchange=polar_exchange).to(self.device)
+        other = cls(grid, lmax=10, mmax=10, block_size=3, polar_exchange=polar_exchange).to(self.device)
         tables = [getattr(a, name) for name in a._block_names]
         self.assertEqual([name.rsplit("_", 1)[0] for name in a._block_names], [buffer] * len(tables))
         self.assertGreater(len(tables), 1)
         for name, table in zip(a._block_names, tables):
             self.assertIs(getattr(b, name), table)
         self.assertFalse(any(getattr(other, name) is table for name in other._block_names for table in tables))
+
+        crossed = cls(grid, block_size=3, polar_exchange="transpose" if polar_exchange == "reduce-scatter" else "reduce-scatter").to(self.device)
+        shared = [getattr(crossed, name) is table for name, table in zip(crossed._block_names, tables)]
+        self.assertEqual(shared, [self.grid_size_h == 1] * len(tables))
 
     @parameterized.expand(
         [
