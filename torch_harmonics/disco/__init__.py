@@ -42,6 +42,12 @@ if optimized_kernels_is_available():
     from . import _C
 else:
     disco_kernels = None
-    warnings.warn("No optimized kernels are available. Please compile the extension first setting BUILD_CPP and BUILD_CUDA to 1.")
+    warnings.warn(
+        "No optimized DISCO kernels are available, falling back to the PyTorch reference implementation. "
+        "The extension is built whenever PyTorch can be imported at build time, so rebuild with "
+        "`pip install --no-build-isolation .`, and again after every PyTorch upgrade; set "
+        "TORCH_HARMONICS_BUILD_CUDA_EXTENSION=1 to build the CUDA kernels where no GPU is visible. "
+        "See https://nvidia.github.io/torch-harmonics/install.html#building-from-source"
+    )
 
 from .convolution import DiscreteContinuousConvS2, DiscreteContinuousConvTransposeS2
