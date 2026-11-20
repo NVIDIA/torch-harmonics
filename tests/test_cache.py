@@ -35,6 +35,7 @@ import time
 import unittest
 import weakref
 from copy import deepcopy
+from functools import partial
 
 import torch
 from parameterized import parameterized, parameterized_class
@@ -699,7 +700,25 @@ def _attention(kind, **kwargs):
     return th.NeighborhoodAttentionS2(g_in, g_out, 8, num_heads=2, **kwargs)
 
 
-_BACKEND_LAYERS = [[name, build, kind] for name, build in (("disco", _disco), ("disco-transpose", _disco_transpose), ("attention", _attention)) for kind in ("regular", "ragged")]
+# every layer on both backends: the reference backends keep different state (a sparse psi for
+# DISCO), and the layers only pick them when the kernels are missing, so without the explicit
+# rows they would go untested wherever the kernels are built
+_BACKEND_LAYERS = [
+    [f"{name}_{backend}", partial(build, optimized_kernel=backend == "optimized"), kind]
+    for name, build in (("disco", _disco), ("disco-transpose", _disco_transpose), ("attention", _attention))
+    for backend in ("optimized", "reference")
+    for kind in ("regular", "ragged")
+]
+
+
+def _same_tensor(a, b):
+    """Whether ``a`` and ``b`` hold the same values in the same layout; a sparse COO tensor by its coalesced indices and values, which torch.equal rejects."""
+    if a.layout != b.layout or a.shape != b.shape:
+        return False
+    if a.is_sparse:
+        a, b = a.coalesce(), b.coalesce()
+        return torch.equal(a.indices(), b.indices()) and torch.equal(a.values(), b.values())
+    return torch.equal(a, b)
 
 
 @parameterized_class(("device"), _devices)
@@ -731,7 +750,7 @@ class TestSharedBackendState(unittest.TestCase):
         fresh = type(b.backend)().prepare(b, b.device)
         self.assertEqual(set(fresh), set(b._backend_state))
         for name, tensor in fresh.items():
-            self.assertTrue(torch.equal(getattr(b, name), tensor), msg=name)
+            self.assertTrue(_same_tensor(getattr(b, name), tensor), msg=name)
         self._assert_shared(a, b)
 
     @parameterized.expand(_BACKEND_LAYERS)
