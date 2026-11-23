@@ -1538,23 +1538,50 @@ class TestDiscoPlan(unittest.TestCase):
     @parameterized.expand([[False], [True]])
     @requires_torch_compile
     def test_keyed_plan_compiles(self, fused):
-        """With its call state bound before the node, a keyed plan's conv traces as a whole, building on the first compiled call."""
+        """
+        A keyed plan's conv traces as a whole. A compiled call that misses the cache builds its
+        call state for itself without caching it; once an eager call has cached it, compiled
+        calls use the cache.
+        """
         conv, _ = self._pair(8, 2, fused, backend=_KeyedBackend)
         compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
         x = torch.randn(2, 8, 16, 32, device=self.device)
+        grad = None
+        results = []
+        # compiled before any eager call, then eager, then compiled again
+        for run in (compiled, conv, compiled):
+            xi = x.clone().requires_grad_(True)
+            out = run(xi)
+            if grad is None:
+                grad = torch.randn_like(out)
+            out.backward(grad)
+            results.append((out.detach(), xi.grad, conv.weight.grad.clone()))
+            conv.weight.grad = None
+            if run is compiled and len(results) == 1:
+                self.assertEqual(len(conv.backend.plan._call_states), 0, "a compiled call must not fill the cache")
+        self.assertEqual(len(conv.backend.plan._call_states), 2)
+        for (out, gx, gw), name in zip(results[1:], ("eager", "compiled after eager")):
+            self.assertTrue(compare_tensors(f"output, {name}", out, results[0][0], atol=1e-6, rtol=1e-6))
+            self.assertTrue(compare_tensors(f"input grad, {name}", gx, results[0][1], atol=1e-6, rtol=1e-6))
+            self.assertTrue(compare_tensors(f"weight grad, {name}", gw, results[0][2], atol=1e-6, rtol=1e-6))
+
+    @requires_torch_compile
+    def test_compiled_inference_does_not_poison_training(self):
+        """Call state a compiled call builds under inference mode is not cached, so a later training call builds and trains."""
+        conv, conv_arc = self._pair(4, 4, False, backend=_KeyedBackend)
+        compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
+        x = torch.randn(2, 4, 16, 32, device=self.device)
+        with torch.inference_mode():
+            compiled(x)
+        self.assertEqual(len(conv.backend.plan._call_states), 0)
+
         x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
-        out_compiled = compiled(x2)
-        out = conv(x1)
+        out, out_arc = conv(x1), conv_arc(x2)
         grad = torch.randn_like(out)
         out.backward(grad)
-        weight_grad = conv.weight.grad.clone()
-        conv.weight.grad = None
-        out_compiled.backward(grad)
-        self.assertTrue(compare_tensors("output", out_compiled, out, atol=1e-6, rtol=1e-6))
-        self.assertTrue(compare_tensors("input grad", x2.grad, x1.grad, atol=1e-6, rtol=1e-6))
-        self.assertTrue(compare_tensors("weight grad", conv.weight.grad, weight_grad, atol=1e-6, rtol=1e-6))
-        # one build per key, whether the compiled or the eager call came first
-        self.assertEqual(len(_KeyedPlan.built), len(set(_KeyedPlan.built)))
+        out_arc.backward(grad)
+        self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
+        self.assertFalse(any(s.is_inference() for state in conv.backend.plan._call_states.values() for s in state))
 
     @parameterized.expand([[False], [True]])
     @requires_torch_compile

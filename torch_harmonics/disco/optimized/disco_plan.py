@@ -188,7 +188,15 @@ class DiscoPlanS2:
 
         Returns the layout and the flat tuple of tensors a node takes (see ``call_slice``).
         Builds what is not cached yet; raises if that would happen during CUDA graph capture.
+
+        Only eager calls fill the cache. A compiled call that misses builds the state for itself
+        and leaves the cache alone: its tensors would carry the mode it runs in -- inference
+        tensors under ``torch.inference_mode()``, which a later training call could not save
+        for backward -- and Dynamo cannot query that mode. Once an eager call has built a key,
+        compiled calls use it, so run the layer once eagerly per shape, as before CUDA graph
+        capture.
         """
+        compiling = torch.compiler.is_compiling()
         if not self.has_call_state:
             return tuple((op, 0, 0) for op, _ in ops), ()
 
@@ -198,8 +206,12 @@ class DiscoPlanS2:
                 raise ValueError(f"unknown plan operation {op!r}; known: {PLAN_OPS}")
             key = (op, int(bc), dtype)
             state = self._call_states.get(key)
-            if state is None:
-                if not torch.compiler.is_compiling() and torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+            if state is None and compiling:
+                # built for this call only, see above
+                with torch.no_grad():
+                    state = tuple(self.call_state(op, int(bc), dtype, t))
+            elif state is None:
+                if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
                     raise RuntimeError(
                         f"{type(self).__name__} would build the call state of {op} for {bc} planes of {dtype} during CUDA graph capture; "
                         "run the layer once eagerly with the shapes to be captured first"
@@ -208,7 +220,7 @@ class DiscoPlanS2:
                 self._call_states[key] = state
                 while len(self._call_states) > self.max_call_states:
                     self._call_states.popitem(last=False)
-            else:
+            elif not compiling:
                 self._call_states.move_to_end(key)
             layout.append((op, len(tc), len(tc) + len(state)))
             tc.extend(state)
@@ -216,15 +228,14 @@ class DiscoPlanS2:
 
     def _build_call_state(self, op: str, bc: int, dtype: torch.dtype, t: Tensors) -> Tensors:
         """
-        ``call_state``, built so that every later call can use it.
+        ``call_state``, built in an eager call so that every later call can use it.
 
         The state is cached across calls, so it must not depend on the mode of the call that
         happens to build it: without autograd (it never needs gradients), and outside
         inference mode, whose tensors a later training call could not save for backward.
-        Dynamo cannot trace the inference-mode query; a compiled call builds in its own mode.
         """
         with torch.no_grad():
-            if not torch.compiler.is_compiling() and torch.is_inference_mode_enabled():
+            if torch.is_inference_mode_enabled():
                 with torch.inference_mode(False):
                     return tuple(self.call_state(op, bc, dtype, t))
             return tuple(self.call_state(op, bc, dtype, t))
