@@ -1689,7 +1689,7 @@ def _sm100_here():
 
 @unittest.skipUnless(_sm100_here(), "the sm_100a frequency-space scatter needs a 10.0 GPU and a build with 10.0a in TORCH_CUDA_ARCH_LIST")
 class TestSm100Scatter(unittest.TestCase):
-    """The experimental regular-sm100 backend: the kpacked forward with the frequency-space arc scatter for fp16."""
+    """The experimental regular-sm100 backend: the kpacked forward with the frequency-space arc scatter for fp16 and bf16."""
 
     device = torch.device("cuda")
 
@@ -1716,8 +1716,8 @@ class TestSm100Scatter(unittest.TestCase):
         self.assertEqual(convs[1].backend.name, "regular-kpacked")
         return convs
 
-    def _check_conv(self, conv, conv_ref, batch, in_shape):
-        x = torch.randn(batch, conv.groupsize * conv.groups, *in_shape, device=self.device, dtype=torch.float16)
+    def _check_conv(self, conv, conv_ref, batch, in_shape, dtype=torch.float16):
+        x = torch.randn(batch, conv.groupsize * conv.groups, *in_shape, device=self.device, dtype=dtype)
         x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
         out, out_ref = conv(x1), conv_ref(x2)
         grad = torch.randn_like(out)
@@ -1726,27 +1726,34 @@ class TestSm100Scatter(unittest.TestCase):
         # the forward and the weight gradient run the same kernels in both
         self.assertTrue(torch.equal(out, out_ref))
         self.assertTrue(torch.equal(conv.weight.grad, conv_ref.weight.grad))
-        # the input gradient: frequency space (fp32 FFTs, fp16 result) against the arc scatter
-        self.assertTrue(compare_tensors("input grad", x1.grad.float(), x2.grad.float(), atol=2e-2, rtol=2e-2))
+        # the input gradient: frequency space (fp32 FFTs, rounded once to the dtype) against the arc scatter; bf16
+        # keeps 8 mantissa bits to fp16's 11
+        tol = 2e-2 if dtype == torch.float16 else 8e-2
+        self.assertTrue(compare_tensors("input grad", x1.grad.float(), x2.grad.float(), atol=tol, rtol=tol))
         conv.weight.grad = conv_ref.weight.grad = None
 
     @parameterized.expand(
         [
-            # in_channels, out_channels, in_shape, out_shape, fused: pscale 1 and 2, weight-first and spatial-first
-            [4, 4, (32, 64), (32, 64), False],
-            [4, 4, (32, 64), (16, 32), False],
-            [4, 4, (32, 64), (16, 32), True],
-            [8, 2, (32, 64), (16, 32), False],
-            [8, 2, (32, 64), (32, 64), True],
-            [2, 16, (64, 128), (32, 64), False],
+            # in_channels, out_channels, in_shape, out_shape, fused, dtype: pscale 1 and 2, weight-first and
+            # spatial-first, fp16 and bf16
+            [in_ch, out_ch, in_shape, out_shape, fused, dtype]
+            for in_ch, out_ch, in_shape, out_shape, fused in (
+                (4, 4, (32, 64), (32, 64), False),
+                (4, 4, (32, 64), (16, 32), False),
+                (4, 4, (32, 64), (16, 32), True),
+                (8, 2, (32, 64), (16, 32), False),
+                (8, 2, (32, 64), (32, 64), True),
+                (2, 16, (64, 128), (32, 64), False),
+            )
+            for dtype in (torch.float16, torch.bfloat16)
         ]
     )
-    def test_matches_the_arc_scatter(self, in_channels, out_channels, in_shape, out_shape, fused):
+    def test_matches_the_arc_scatter(self, in_channels, out_channels, in_shape, out_shape, fused, dtype):
         conv, conv_ref = self._pair(in_channels, out_channels, in_shape, out_shape, fused)
         # batch sizes across the scatter's channel-group and tile thresholds
         for batch in (1, 2, 3, 8):
             with self.subTest(batch=batch):
-                self._check_conv(conv, conv_ref, batch, in_shape)
+                self._check_conv(conv, conv_ref, batch, in_shape, dtype)
 
     def test_plans_are_built_once_per_shape(self):
         """The scatter's plan is call state: built once per number of planes and input shape, then reused."""
@@ -1758,23 +1765,32 @@ class TestSm100Scatter(unittest.TestCase):
         self.assertEqual(keys, [("gather", 8), ("gather", 12), ("scatter", 8), ("scatter", 12)])
         self.assertTrue(all(len(state) == 1 for (op, *_), state in conv.backend.plan._call_states.items() if op == "scatter"))
 
-    def test_other_dtypes_take_the_arc_scatter(self):
-        """bf16 gradients take the arc scatter: no plan is built and the result is the kpacked backend's."""
+    def test_bf16_plans_are_their_own(self):
+        """fp16 and bf16 gradients of the same shape get plans of their own: the call state is keyed by dtype."""
         conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
-        conv, conv_ref = conv.to(torch.bfloat16), conv_ref.to(torch.bfloat16)
-        x = torch.randn(2, 4, 32, 64, device=self.device, dtype=torch.bfloat16)
+        for dtype in (torch.float16, torch.bfloat16, torch.float16):
+            self._check_conv(conv, conv_ref, 2, (32, 64), dtype)
+        scatter_keys = sorted(str(dtype) for op, _, dtype, _ in conv.backend.plan._call_states if op == "scatter")
+        self.assertEqual(scatter_keys, ["torch.bfloat16", "torch.float16"])
+
+    def test_other_dtypes_take_the_arc_scatter(self):
+        """fp32 gradients take the arc scatter: no plan is built and the result is the kpacked backend's."""
+        conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
+        x = torch.randn(2, 4, 32, 64, device=self.device, dtype=torch.float32)
         x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
         out, out_ref = conv(x1), conv_ref(x2)
         out.backward(torch.ones_like(out))
         out_ref.backward(torch.ones_like(out_ref))
-        self.assertTrue(torch.equal(x1.grad, x2.grad))
+        # the same arc scatter in both; its fp32 atomics need not sum in the same order
+        self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
         self.assertFalse(any(state for state in conv.backend.plan._call_states.values()))
 
-    def test_cuda_graph_replay(self):
+    @parameterized.expand([[torch.float16], [torch.bfloat16]])
+    def test_cuda_graph_replay(self, dtype):
         """After an eager warmup, forward and backward capture into a CUDA graph and replay correctly on new inputs."""
         conv, conv_ref = self._pair(8, 2, (32, 64), (16, 32))
-        static_x = torch.randn(2, 8, 32, 64, device=self.device, dtype=torch.float16, requires_grad=True)
-        static_grad = torch.randn(2, 2, 16, 32, device=self.device, dtype=torch.float16)
+        static_x = torch.randn(2, 8, 32, 64, device=self.device, dtype=dtype, requires_grad=True)
+        static_grad = torch.randn(2, 2, 16, 32, device=self.device, dtype=dtype)
 
         side = torch.cuda.Stream()
         side.wait_stream(torch.cuda.current_stream())
@@ -1801,7 +1817,8 @@ class TestSm100Scatter(unittest.TestCase):
             out_ref = conv_ref(x_ref)
             out_ref.backward(grad)
             self.assertTrue(torch.equal(static_out, out_ref))
-            self.assertTrue(compare_tensors("input grad", static_x.grad.float(), x_ref.grad.float(), atol=2e-2, rtol=2e-2))
+            tol = 2e-2 if dtype == torch.float16 else 8e-2
+            self.assertTrue(compare_tensors("input grad", static_x.grad.float(), x_ref.grad.float(), atol=tol, rtol=tol))
 
     @requires_torch_compile
     def test_compiles_after_warmup(self):

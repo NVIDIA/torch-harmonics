@@ -339,7 +339,7 @@ class RegularSm100Backend(RegularKpackedBackend):
     Experimental: the kpacked forward with the frequency-space arc scatter of sm_100a (B200 / GB200).
 
     The scatter is a Kernel Factory candidate (``kernels_cuda/regular/disco_cuda_bwd_fft_sm100.cu``)
-    and runs for fp16 gradients; see ``Sm100PlanS2``. Available where the kpacked backend is, on a
+    and runs for fp16 and bf16 gradients; see ``Sm100PlanS2``. Available where the kpacked backend is, on a
     compute capability 10.0 device with the extension ``torch_harmonics.disco._C_sm100`` built
     (10.0a in ``TORCH_CUDA_ARCH_LIST``), and when the input longitudes are a multiple of the output
     longitudes, which the scatter requires.

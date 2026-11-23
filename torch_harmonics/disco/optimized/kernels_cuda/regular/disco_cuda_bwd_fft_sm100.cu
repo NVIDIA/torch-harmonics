@@ -29,7 +29,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // =====================================================================================================================
-// The DISCO arc scatter in frequency space, for sm_100a (B200 / GB200), float16 activations, fp32 psi.
+// The DISCO arc scatter in frequency space, for sm_100a (B200 / GB200), float16 or bfloat16 activations, fp32 psi.
 //
 // Provenance: Kernel Factory campaign disco-bwd-b200-v2 (dpar3kk2t54g96gx2vt1qpdckg), delivered candidate 8e15cd9c
 // (14.93x the shipped arc scatter, geometric mean over its four workloads). The device code below is the candidate's
@@ -69,9 +69,33 @@
 #undef __CUDA_NO_HALF2_OPERATORS__
 
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <stdint.h>
 #include <limits.h>
+
+// torch-harmonics: the activations' element type E, fp16 or bf16. The candidate read and wrote fp16 only; the kernels
+// that load the input rows or store the result take E as a template parameter and convert through these, everything
+// between them is fp32. A bf16 pair is the same 32-bit word as an fp16 one, so the staging buffers and bulk copies are
+// unchanged.
+template <typename E> struct ElemT;
+template <> struct ElemT<__half> {
+    using E2 = __half2;
+    static __device__ __forceinline__ float2 to_float2(const E2 v) { return __half22float2(v); }
+    static __device__ __forceinline__ E2 from_floats(const float a, const float b) { return __floats2half2_rn(a, b); }
+    static __device__ __forceinline__ float to_float(const __half v) { return __half2float(v); }
+    static __device__ __forceinline__ __half from_float(const float a) { return __float2half_rn(a); }
+};
+template <> struct ElemT<__nv_bfloat16> {
+    using E2 = __nv_bfloat162;
+    static __device__ __forceinline__ float2 to_float2(const E2 v) { return __bfloat1622float2(v); }
+    static __device__ __forceinline__ E2 from_floats(const float a, const float b)
+    {
+        return __floats2bfloat162_rn(a, b);
+    }
+    static __device__ __forceinline__ float to_float(const __nv_bfloat16 v) { return __bfloat162float(v); }
+    static __device__ __forceinline__ __nv_bfloat16 from_float(const float a) { return __float2bfloat16_rn(a); }
+};
 
 // ---------------------------------------------------------------- packed fp32x2 (sm_100) and complex helpers
 __device__ __forceinline__ float2 add2(float2 a, float2 b)
@@ -655,9 +679,9 @@ static inline int stage_words(int n)
 // Block = one channel octet of group cg x input row kh. Thread t owns channel row r = t & 7 and FFT column t >> 3, and
 // every shared array is row-interleaved (8 channels of one point contiguous), so warps touch 256 contiguous bytes.
 // The fp16 rows arrive by bulk copy; spectra leave as contiguous octet slices of the X tiles.
-template <int CAP, int MAXT, int MINB>
+template <typename E, int CAP, int MAXT, int MINB>
 __global__ void __launch_bounds__(MAXT, MINB)
-    fwdx3_kernel(const __half *__restrict__ x, float2 *__restrict__ X, int BC, int KH, Plan2 pl,
+    fwdx3_kernel(const E *__restrict__ x, float2 *__restrict__ X, int BC, int KH, Plan2 pl,
                  const float2 *__restrict__ T, int LC, int MPi, int mbs, int SW, int xoffw, int pair, bool pdl)
 {
     extern __shared__ float4 smem_f4[];
@@ -686,7 +710,7 @@ __global__ void __launch_bounds__(MAXT, MINB)
     const int row_shift = __ffs(row_count) - 1;
     const int r = compact ? (row_pow2 ? (t & (row_count - 1)) : t % row_count) : r8;
     const int col = compact ? (row_pow2 ? (t >> row_shift) : t / row_count) : col8;
-    const __half *xr0 = x + ((size_t)bc0 * KH + kh) * (size_t)(2 * n);
+    const E *xr0 = x + ((size_t)bc0 * KH + kh) * (size_t)(2 * n);
     const size_t rs = (size_t)KH * (size_t)(2 * n); // halves between channels
     if ((n & 3) == 0) {
         const uint32_t bar = smem_u32(&s_bar);
@@ -718,7 +742,7 @@ __global__ void __launch_bounds__(MAXT, MINB)
                         const uint32_t *xr = xin + r * SW + col;
 #pragma unroll
                         for (int j1 = 0; j1 < R1; ++j1)
-                            v[j1] = __half22float2(*reinterpret_cast<const __half2 *>(xr + R2 * j1));
+                            v[j1] = ElemT<E>::to_float2(*reinterpret_cast<const typename ElemT<E>::E2 *>(xr + R2 * j1));
                     }
                     if (xoffw == 0) __syncthreads(); // S aliases the staged rows
                     float2 *Sp = S + col * 8 + r;
@@ -758,7 +782,8 @@ __global__ void __launch_bounds__(MAXT, MINB)
                 if (act) {
 #pragma unroll
                     for (int j1 = 0; j1 < R; ++j1)
-                        v[j1] = __half22float2(*reinterpret_cast<const __half2 *>(xin + r * SW + N2 * j1 + col));
+                        v[j1] = ElemT<E>::to_float2(
+                            *reinterpret_cast<const typename ElemT<E>::E2 *>(xin + r * SW + N2 * j1 + col));
                 }
                 if (xoffw == 0) __syncthreads(); // S aliases the staged rows
                 if (act) passA_dft_put<R>(v, col, n, T, [&](int k, float2 u) { S[(k * LD + col) * 8 + r] = u; });
@@ -828,11 +853,10 @@ __global__ void __launch_bounds__(MAXT, MINB)
 // Quartet variant for a single channel group whose last physical octet has width four. Keeping this separate from
 // fwdx3_kernel preserves the octet kernel's compact partial-row path and generated code. The quartet may trigger the
 // unchanged full-octet grid so both grids can overlap and join through their final PDL waits.
-template <int CAP, int MAXT, int MINB>
+template <typename E, int CAP, int MAXT, int MINB>
 __global__ void __launch_bounds__(MAXT, MINB)
-    fwdx4q_kernel(const __half *__restrict__ x, float2 *__restrict__ X, int BC, int KH, Plan2 pl,
-                  const float2 *__restrict__ T, int LC, int MPi, int mbs, int SW, int xoffw, int pair, int octoff,
-                  bool pdl, bool trig)
+    fwdx4q_kernel(const E *__restrict__ x, float2 *__restrict__ X, int BC, int KH, Plan2 pl, const float2 *__restrict__ T,
+                  int LC, int MPi, int mbs, int SW, int xoffw, int pair, int octoff, bool pdl, bool trig)
 {
     extern __shared__ float4 smem_f4[];
     float2 *S = reinterpret_cast<float2 *>(smem_f4);
@@ -854,7 +878,7 @@ __global__ void __launch_bounds__(MAXT, MINB)
         if (pdl) asm volatile("griddepcontrol.wait;" ::: "memory");
         return;
     }
-    const __half *xr0 = x + ((size_t)bc0 * KH + kh) * (size_t)(2 * n);
+    const E *xr0 = x + ((size_t)bc0 * KH + kh) * (size_t)(2 * n);
     const size_t rs = (size_t)KH * (size_t)(2 * n);
     if ((n & 3) == 0) {
         const uint32_t bar = smem_u32(&s_bar);
@@ -886,7 +910,7 @@ __global__ void __launch_bounds__(MAXT, MINB)
                         const uint32_t *xr = xin + r * SW + col;
 #pragma unroll
                         for (int j1 = 0; j1 < R1; ++j1)
-                            v[j1] = __half22float2(*reinterpret_cast<const __half2 *>(xr + R2 * j1));
+                            v[j1] = ElemT<E>::to_float2(*reinterpret_cast<const typename ElemT<E>::E2 *>(xr + R2 * j1));
                     }
                     if (xoffw == 0) __syncthreads();
                     float2 *Sp = S + col * CH + r;
@@ -926,7 +950,8 @@ __global__ void __launch_bounds__(MAXT, MINB)
                 if (act) {
 #pragma unroll
                     for (int j1 = 0; j1 < R; ++j1)
-                        v[j1] = __half22float2(*reinterpret_cast<const __half2 *>(xin + r * SW + N2 * j1 + col));
+                        v[j1] = ElemT<E>::to_float2(
+                            *reinterpret_cast<const typename ElemT<E>::E2 *>(xin + r * SW + N2 * j1 + col));
                 }
                 if (xoffw == 0) __syncthreads();
                 if (act) passA_dft_put<R>(v, col, n, T, [&](int k, float2 u) { S[(k * LD + col) * CH + r] = u; });
@@ -1385,9 +1410,9 @@ __global__ void __launch_bounds__(32 * PSIW_WARPS, MINB)
 // out[bc, h, :] = irfft(OUT[h, :, bc]). Block = channel octet x output ring h; thread t owns channel row
 // r = t & 7 and FFT column t >> 3 (row-interleaved shared arrays). The octet's spectra arrive with one bulk copy; the
 // fp16 rows are staged in shared memory and leave by bulk copy.
-template <int CAP, int MAXT, int MINB, bool PACKED = false>
+template <typename E, int CAP, int MAXT, int MINB, bool PACKED = false>
 __global__ void __launch_bounds__(MAXT, MINB)
-    inv3_kernel(const float2 *__restrict__ OUT, __half *__restrict__ out, int BC, int BCp, int Ho, Plan2 pl,
+    inv3_kernel(const float2 *__restrict__ OUT, E *__restrict__ out, int BC, int BCp, int Ho, Plan2 pl,
                 const float2 *__restrict__ T, int SW)
 {
     // Allow this dependent grid to be scheduled while the contraction drains, but do not consume OUT early.
@@ -1501,7 +1526,7 @@ __global__ void __launch_bounds__(MAXT, MINB)
                         if (act) {
 #pragma unroll
                             for (int k2 = 0; k2 < R2; ++k2) {
-                                const __half2 hv = __floats2half2_rn(u[k2].x * sc, -u[k2].y * sc);
+                                const typename ElemT<E>::E2 hv = ElemT<E>::from_floats(u[k2].x * sc, -u[k2].y * sc);
                                 stg[r * SW + col + R1 * k2] = *reinterpret_cast<const uint32_t *>(&hv);
                             }
                         }
@@ -1538,14 +1563,14 @@ __global__ void __launch_bounds__(MAXT, MINB)
                     if (act) {
 #pragma unroll
                         for (int k2 = 0; k2 < R; ++k2) {
-                            const __half2 hv = __floats2half2_rn(u[k2].x * sc, -u[k2].y * sc);
+                            const typename ElemT<E>::E2 hv = ElemT<E>::from_floats(u[k2].x * sc, -u[k2].y * sc);
                             stg[r * SW + col + N1 * k2] = *reinterpret_cast<const uint32_t *>(&hv);
                         }
                     }
                 });
             }
         }
-        __half *ob = out + ((size_t)bc0 * Ho + h) * (size_t)(2 * n);
+        E *ob = out + ((size_t)bc0 * Ho + h) * (size_t)(2 * n);
         const size_t os = (size_t)Ho * (size_t)(2 * n); // halves between channels
         if ((n & 3) == 0) {
             fence_proxy_async();
@@ -1566,9 +1591,9 @@ __global__ void __launch_bounds__(MAXT, MINB)
 
 // Packed inverse variant with four channels per block. It is used only for an underfilled Tier-N grid; halving the
 // shared footprint and thread count permits twice as many resident blocks to overlap spectrum loads and transforms.
-template <int CAP, int MAXT, int MINB>
+template <typename E, int CAP, int MAXT, int MINB>
 __global__ void __launch_bounds__(MAXT, MINB)
-    inv4q_kernel(const float2 *__restrict__ OUT, __half *__restrict__ out, int BC, int BCp, int Ho, Plan2 pl,
+    inv4q_kernel(const float2 *__restrict__ OUT, E *__restrict__ out, int BC, int BCp, int Ho, Plan2 pl,
                  const float2 *__restrict__ T, int SW, float sc)
 {
     asm volatile("griddepcontrol.wait;" ::: "memory");
@@ -1626,14 +1651,14 @@ __global__ void __launch_bounds__(MAXT, MINB)
                 if (act) {
 #pragma unroll
                     for (int k2 = 0; k2 < R2; ++k2) {
-                        const __half2 hv = __floats2half2_rn(u[k2].x * sc, -u[k2].y * sc);
+                        const typename ElemT<E>::E2 hv = ElemT<E>::from_floats(u[k2].x * sc, -u[k2].y * sc);
                         stg[r * SW + col + R1 * k2] = *reinterpret_cast<const uint32_t *>(&hv);
                     }
                 }
             }
         });
     });
-    __half *ob = out + ((size_t)c0 * Ho + h) * (size_t)(2 * n);
+    E *ob = out + ((size_t)c0 * Ho + h) * (size_t)(2 * n);
     const size_t os = (size_t)Ho * (size_t)(2 * n);
     if ((n & 3) == 0) {
         fence_proxy_async();
@@ -1709,7 +1734,8 @@ __device__ float2 *block_fft(float2 *A, float2 *B, int ld, int nb, const float2 
 }
 
 // rows: (kh, bc) for bc in [0, BCp), row = bc * KH + kh ... flattened as blockIdx-strided groups of NB
-__global__ void fwdxm_kernel(const __half *__restrict__ x, float2 *__restrict__ X, int BC, int BCp, int KH, PlanM p,
+template <typename E>
+__global__ void fwdxm_kernel(const E *__restrict__ x, float2 *__restrict__ X, int BC, int BCp, int KH, PlanM p,
                              const float2 *__restrict__ T, int NB, int LC, int MPi, int MB)
 {
     extern __shared__ float4 smem_f4[];
@@ -1725,7 +1751,7 @@ __global__ void fwdxm_kernel(const __half *__restrict__ x, float2 *__restrict__ 
         const long row = row0 + a;
         const long bc = row / KH, kh = row - bc * KH;
         A[a * n + k] = bc < BC ?
-            __half22float2(reinterpret_cast<const __half2 *>(x + (bc * KH + kh) * (long)(2 * n))[k]) :
+            ElemT<E>::to_float2(reinterpret_cast<const typename ElemT<E>::E2 *>(x + (bc * KH + kh) * (long)(2 * n))[k]) :
             make_float2(0.f, 0.f);
     }
     __syncthreads();
@@ -1791,7 +1817,8 @@ __global__ void fwdpsim_kernel(const int *__restrict__ seg, const int64_t *__res
     }
 }
 
-__global__ void invm_kernel(const float2 *__restrict__ OUT, __half *__restrict__ out, int BC, int BCp, int Ho, PlanM p,
+template <typename E>
+__global__ void invm_kernel(const float2 *__restrict__ OUT, E *__restrict__ out, int BC, int BCp, int Ho, PlanM p,
                             const float2 *__restrict__ T, int NB)
 {
     extern __shared__ float4 smem_f4[];
@@ -1819,16 +1846,18 @@ __global__ void invm_kernel(const float2 *__restrict__ OUT, __half *__restrict__
     for (int w = tid; w < nb * n; w += bd) {
         const int a = w / n, k = w - a * n;
         const float2 r = Rz[a * n + k];
-        reinterpret_cast<__half2 *>(out + (row0 + a) * (long)(2 * n))[k] = __floats2half2_rn(r.x * sc, -r.y * sc);
+        reinterpret_cast<typename ElemT<E>::E2 *>(out + (row0 + a) * (long)(2 * n))[k]
+            = ElemT<E>::from_floats(r.x * sc, -r.y * sc);
     }
 }
 
 // ---------------------------------------------------------------- general direct path
 // Fully 64-bit output-owned fallback for shapes or offsets outside optimized 32-bit metadata.
-__global__ void direct64_kernel(const __half *__restrict__ x, const int *__restrict__ row_ker,
+template <typename E>
+__global__ void direct64_kernel(const E *__restrict__ x, const int *__restrict__ row_ker,
                                 const int *__restrict__ row_lat, const int64_t *__restrict__ seg_off,
                                 const int *__restrict__ seg, const int64_t *__restrict__ val_off,
-                                const float *__restrict__ vals, __half *__restrict__ out, int64_t nrows, int64_t Wi,
+                                const float *__restrict__ vals, E *__restrict__ out, int64_t nrows, int64_t Wi,
                                 int64_t Hi, int64_t Ho, int64_t Wo, int64_t KH, int64_t nout_rows)
 {
     const int64_t ps = Wo / Wi;
@@ -1841,7 +1870,7 @@ __global__ void direct64_kernel(const __half *__restrict__ x, const int *__restr
             float acc = 0.f;
             for (int64_t r = 0; r < nrows; ++r) {
                 const int64_t kh = (int64_t)row_ker[r] * Hi + (int64_t)row_lat[r];
-                const __half *xr = x + (bc * KH + kh) * Wi;
+                const E *xr = x + (bc * KH + kh) * Wi;
                 int64_t v = val_off[r];
                 for (int64_t s = seg_off[r]; s < seg_off[r + 1]; ++s) {
                     const int *a = seg + 3 * s;
@@ -1859,7 +1888,7 @@ __global__ void direct64_kernel(const __half *__restrict__ x, const int *__restr
                         if (q < 0) q += Wi;
                         for (;;) {
                             if (j >= len) break;
-                            acc = fmaf(vals[v + j], __half2float(xr[q]), acc);
+                            acc = fmaf(vals[v + j], ElemT<E>::to_float(xr[q]), acc);
                             q = q == 0 ? Wi - 1 : q - 1;
                             if (ps >= len - j) break;
                             j += ps;
@@ -1868,7 +1897,7 @@ __global__ void direct64_kernel(const __half *__restrict__ x, const int *__restr
                     v += len;
                 }
             }
-            out[oh * Wo + w] = __float2half_rn(acc);
+            out[oh * Wo + w] = ElemT<E>::from_float(acc);
             if (w_step >= Wo - w) break;
             w += w_step;
         }
@@ -1879,11 +1908,11 @@ __global__ void direct64_kernel(const __half *__restrict__ x, const int *__restr
 
 // Block per output row (bc, h), grid-stride. For widths that fit, the accumulator and input row live in shared
 // memory; otherwise every thread owns output longitudes in registers and reads the input row from global memory.
-template <bool SM>
-__global__ void direct_kernel(const __half *__restrict__ x, const int4 *__restrict__ entries,
-                              const int *__restrict__ boff, const int *__restrict__ seg,
-                              const int64_t *__restrict__ segval, const float *__restrict__ vals,
-                              __half *__restrict__ out, int Wi, int Ho, int Wo, int KH, long nrow)
+template <typename E, bool SM>
+__global__ void direct_kernel(const E *__restrict__ x, const int4 *__restrict__ entries, const int *__restrict__ boff,
+                              const int *__restrict__ seg, const int64_t *__restrict__ segval,
+                              const float *__restrict__ vals, E *__restrict__ out, int Wi, int Ho, int Wo, int KH,
+                              long nrow)
 {
     extern __shared__ float dsm[];
     float *acc = dsm;
@@ -1894,15 +1923,15 @@ __global__ void direct_kernel(const __half *__restrict__ x, const int4 *__restri
         const long bc = row / Ho;
         const int h = (int)(row - bc * Ho);
         const int e0 = boff[h], e1 = boff[h + 1];
-        __half *o = out + row * (long)Wo;
+        E *o = out + row * (long)Wo;
         if (SM) {
             __syncthreads();
             for (int w = tid; w < Wo; w += bd) acc[w] = 0.f;
             for (int e = e0; e < e1; ++e) {
                 const int4 en = entries[e];
-                const __half *xr = x + (bc * KH + en.x) * (long)Wi;
+                const E *xr = x + (bc * KH + en.x) * (long)Wi;
                 __syncthreads();
-                for (int q = tid; q < Wi; q += bd) xs[q] = __half2float(xr[q]);
+                for (int q = tid; q < Wi; q += bd) xs[q] = ElemT<E>::to_float(xr[q]);
                 __syncthreads();
                 for (int s = en.y; s < en.z; ++s) {
                     int start = seg[3 * s + 1] % Wo;
@@ -1924,7 +1953,7 @@ __global__ void direct_kernel(const __half *__restrict__ x, const int4 *__restri
                 }
             }
             __syncthreads();
-            for (int w = tid; w < Wo; w += bd) o[w] = __float2half_rn(acc[w]);
+            for (int w = tid; w < Wo; w += bd) o[w] = ElemT<E>::from_float(acc[w]);
         } else {
             for (int w0 = 0; w0 < Wo; w0 += bd) {
                 const int w = w0 + tid;
@@ -1932,7 +1961,7 @@ __global__ void direct_kernel(const __half *__restrict__ x, const int4 *__restri
                 float a = 0.f;
                 for (int e = e0; e < e1; ++e) {
                     const int4 en = entries[e];
-                    const __half *xr = x + (bc * KH + en.x) * (long)Wi;
+                    const E *xr = x + (bc * KH + en.x) * (long)Wi;
                     for (int s = en.y; s < en.z; ++s) {
                         int start = seg[3 * s + 1] % Wo;
                         if (start < 0) start += Wo;
@@ -1944,13 +1973,13 @@ __global__ void direct_kernel(const __half *__restrict__ x, const int4 *__restri
                         int q = (int)((((long)d - j0) / ps % Wi + Wi) % Wi);
                         float sum = 0.f;
                         for (int64_t j = j0; j < (int64_t)len; j += ps) {
-                            sum = fmaf(v[j], __half2float(xr[q]), sum);
+                            sum = fmaf(v[j], ElemT<E>::to_float(xr[q]), sum);
                             q = (q == 0) ? Wi - 1 : q - 1;
                         }
                         a += sum;
                     }
                 }
-                o[w] = __float2half_rn(a);
+                o[w] = ElemT<E>::from_float(a);
             }
         }
     }
@@ -2684,14 +2713,14 @@ static inline bool mul_i64(int64_t a, int64_t b, int64_t &out)
     return true;
 }
 
-static void launch_direct64(cudaStream_t st, const __half *x, const int *row_ker, const int *row_lat,
-                            const int64_t *seg_off, const int *seg, const int64_t *val_off, const float *vals,
-                            __half *out, int64_t nrows, int64_t Wi, int64_t Hi, int64_t Ho, int64_t Wo, int64_t KH,
-                            int64_t nout_rows)
+template <typename E>
+static void launch_direct64(cudaStream_t st, const E *x, const int *row_ker, const int *row_lat, const int64_t *seg_off,
+                            const int *seg, const int64_t *val_off, const float *vals, E *out, int64_t nrows,
+                            int64_t Wi, int64_t Hi, int64_t Ho, int64_t Wo, int64_t KH, int64_t nout_rows)
 {
     const unsigned nblk = (unsigned)min(nout_rows, (int64_t)(1 << 20));
-    direct64_kernel<<<nblk, 256, 0, st>>>(x, row_ker, row_lat, seg_off, seg, val_off, vals, out, nrows, Wi, Hi, Ho, Wo,
-                                          KH, nout_rows);
+    direct64_kernel<E><<<nblk, 256, 0, st>>>(x, row_ker, row_lat, seg_off, seg, val_off, vals, out, nrows, Wi, Hi, Ho,
+                                             Wo, KH, nout_rows);
 }
 
 // =====================================================================================================================
@@ -3083,33 +3112,15 @@ namespace disco_kernels
 
     // The scatter of the contiguous fp16 (B, C, K, Hi, Wi) inp onto (B, C, Ho, Wo) through psi in arc form, with the
     // plan scatter_fft_sm100_plan built for B * C.
-    at::Tensor scatter_fft_sm100_run(at::Tensor inp, at::Tensor plan, at::Tensor row_ker, at::Tensor row_lat,
-                                     at::Tensor seg_off, at::Tensor seg, at::Tensor val_off, at::Tensor vals,
-                                     int64_t Ho64, int64_t Wo64)
+    // The scatter through the plan, for activations of element type E (__half or __nv_bfloat16).
+    template <typename E>
+    void scatter_run_impl(const ScatterFftConfig &c, const at::Tensor &inp, const at::Tensor &plan, at::Tensor &out,
+                          const at::Tensor &row_ker, const at::Tensor &row_lat, const at::Tensor &seg_off,
+                          const at::Tensor &seg, const at::Tensor &val_off, const at::Tensor &vals)
     {
-        check_arcs(row_ker, row_lat, seg_off, seg, val_off, vals);
-        TORCH_CHECK(inp.device() == row_ker.device(), "scatter_fft_sm100: inp is on ", inp.device(), ", psi on ",
-                    row_ker.device());
-        TORCH_CHECK(inp.scalar_type() == at::kHalf, "scatter_fft_sm100: inp must be float16, got ", inp.scalar_type());
-        TORCH_CHECK(inp.dim() == 5 && inp.is_contiguous(),
-                    "scatter_fft_sm100: inp must be a contiguous (B, C, K, H, W) tensor");
-        TORCH_CHECK(plan.scalar_type() == at::kByte && plan.device() == inp.device() && plan.is_contiguous(),
-                    "scatter_fft_sm100: plan must be a contiguous uint8 tensor on the device of inp");
-        const c10::cuda::CUDAGuard guard(inp.device());
-
-        const int64_t B64 = inp.size(0), C64 = inp.size(1);
-        auto out = at::empty({B64, C64, Ho64, Wo64}, inp.options());
-        if (inp.numel() == 0 || out.numel() == 0) return out.zero_();
-
-        const ScatterFftConfig c
-            = config_for(B64 * C64, inp.size(2), inp.size(3), inp.size(4), Ho64, Wo64, row_ker, seg, vals);
-        TORCH_CHECK((size_t)plan.numel() == c.plan_bytes, "scatter_fft_sm100: the plan has ", plan.numel(),
-                    " bytes, a plan for these shapes and B * C = ", B64 * C64, " has ", c.plan_bytes,
-                    "; it was built for other shapes");
-
         cudaStream_t st = at::cuda::getCurrentCUDAStream();
-        const __half *xp = reinterpret_cast<const __half *>(inp.data_ptr<at::Half>());
-        __half *op = reinterpret_cast<__half *>(out.data_ptr<at::Half>());
+        const E *xp = reinterpret_cast<const E *>(inp.data_ptr());
+        E *op = reinterpret_cast<E *>(out.data_ptr());
         const int *rk = row_ker.data_ptr<int>();
         const int *rl = row_lat.data_ptr<int>();
         const int64_t *so = seg_off.data_ptr<int64_t>();
@@ -3121,7 +3132,7 @@ namespace disco_kernels
             launch_direct64(st, xp, rk, rl, so, sg, vo, vp, op, c.nrows64, c.Wi64, c.Hi64, c.Ho64, c.Wo64, c.KH64,
                             c.nout_rows64);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
-            return out;
+            return;
         }
 
         const char *base = static_cast<const char *>(plan.data_ptr());
@@ -3136,14 +3147,14 @@ namespace disco_kernels
             const size_t smem = sizeof(float) * ((size_t)Wo + (size_t)max(Wi, 1));
             if (smem <= 160 * 1024) {
                 if (smem > 48 * 1024)
-                    C10_CUDA_CHECK(cudaFuncSetAttribute(direct_kernel<true>,
+                    C10_CUDA_CHECK(cudaFuncSetAttribute(direct_kernel<E, true>,
                                                         cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
-                direct_kernel<true><<<nblk, 256, smem, st>>>(xp, ent, boff, sg, segval, vp, op, Wi, Ho, Wo, KH, nrow);
+                direct_kernel<E, true><<<nblk, 256, smem, st>>>(xp, ent, boff, sg, segval, vp, op, Wi, Ho, Wo, KH, nrow);
             } else {
-                direct_kernel<false><<<nblk, 256, 0, st>>>(xp, ent, boff, sg, segval, vp, op, Wi, Ho, Wo, KH, nrow);
+                direct_kernel<E, false><<<nblk, 256, 0, st>>>(xp, ent, boff, sg, segval, vp, op, Wi, Ho, Wo, KH, nrow);
             }
             C10_CUDA_KERNEL_LAUNCH_CHECK();
-            return out;
+            return;
         }
 
         const float2 *Ti = reinterpret_cast<const float2 *>(base + c.o_ti);
@@ -3183,14 +3194,14 @@ namespace disco_kernels
             if (in_tier_m(pi2.N1) && in_tier_m(pi2.N2)) {
                 const bool qsplit = BC <= 32 && NCG == 1 && LC % 8 == 4;
                 if (BC >= 256)
-                    go(fwdx3_kernel<TIER_M, 160, 7>, 7);
+                    go(fwdx3_kernel<E, TIER_M, 160, 7>, 7);
                 else if (qsplit) {
                     const int nfull = LC / 8;
                     const size_t sb4 = max(sizeof(float2) * 4 * (size_t)pi2.N1 * pi2.LD, sizeof(float2) * 4 * (size_t)ni);
                     const size_t xb4 = sizeof(uint32_t) * 4 * (size_t)SW;
                     const bool sep4 = (sb4 + xb4 + 1024) * 12 <= 227 * 1024;
                     const size_t smem4 = sep4 ? sb4 + xb4 : max(sb4, xb4);
-                    auto qkern = fwdx4q_kernel<TIER_M, 80, 12>;
+                    auto qkern = fwdx4q_kernel<E, TIER_M, 80, 12>;
                     if (smem4 > 48 * 1024)
                         C10_CUDA_CHECK(
                             cudaFuncSetAttribute(qkern, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem4));
@@ -3207,7 +3218,7 @@ namespace disco_kernels
                     if (nfull > 0) {
                         const bool sep8 = (sb + xb + 1024) * 8 <= 227 * 1024;
                         const size_t smem8 = sep8 ? sb + xb : max(sb, xb);
-                        auto fullkern = fwdx3_kernel<TIER_M, 160, 8>;
+                        auto fullkern = fwdx3_kernel<E, TIER_M, 160, 8>;
                         if (smem8 > 48 * 1024)
                             C10_CUDA_CHECK(cudaFuncSetAttribute(fullkern, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                                                 (int)smem8));
@@ -3225,28 +3236,29 @@ namespace disco_kernels
                                                           sep8 ? (int)(sb / 4) : 0, pair ? 1 : 0, true));
                     }
                 } else
-                    go(fwdx3_kernel<TIER_M, 160, 8>, 8);
+                    go(fwdx3_kernel<E, TIER_M, 160, 8>, 8);
             } else if (in_tier_s(pi2.N1) && in_tier_s(pi2.N2)) {
                 if (BC >= 256)
-                    go(fwdx3_kernel<TIER_S, 160, 7>, 7);
+                    go(fwdx3_kernel<E, TIER_S, 160, 7>, 7);
                 else
-                    go(fwdx3_kernel<TIER_S, 160, 8>, 8);
+                    go(fwdx3_kernel<E, TIER_S, 160, 8>, 8);
             } else if (in_tier_n(pi2.N1) && in_tier_n(pi2.N2))
-                go(fwdx3_kernel<TIER_N, 240, 4>, 4);
+                go(fwdx3_kernel<E, TIER_N, 240, 4>, 4);
             else if (in_tier_l(pi2.N1) && in_tier_l(pi2.N2))
-                go(fwdx3_kernel<TIER_L, 240, 4>, 4);
+                go(fwdx3_kernel<E, TIER_L, 240, 4>, 4);
             else if (max(pi2.N1, pi2.N2) <= 20)
-                go(fwdx3_kernel<20, 160, 6>, 6);
+                go(fwdx3_kernel<E, 20, 160, 6>, 6);
             else if (max(pi2.N1, pi2.N2) <= 30)
-                go(fwdx3_kernel<30, 240, 4>, 4);
+                go(fwdx3_kernel<E, 30, 240, 4>, 4);
             else
-                go(fwdx3_kernel<32, 256, 3>, 3);
+                go(fwdx3_kernel<E, 32, 256, 3>, 3);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         } else {
             const int NB = pick_nb(ni);
             const size_t smem = sizeof(float2) * 2 * (size_t)NB * ni;
             if (smem > 48 * 1024)
-                C10_CUDA_CHECK(cudaFuncSetAttribute(fwdxm_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
+                C10_CUDA_CHECK(
+                    cudaFuncSetAttribute(fwdxm_kernel<E>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
             const long nxr = (long)BCp * KH;
             fwdxm_kernel<<<(unsigned)((nxr + NB - 1) / NB), 256, smem, st>>>(xp, X, BC, BCp, KH, pim, Ti, NB, LC, MPi,
                                                                              MBX);
@@ -3320,18 +3332,18 @@ namespace disco_kernels
             };
             if (in_tier_m(po2.N1) && in_tier_m(po2.N2)) {
                 if (pack)
-                    go(inv3_kernel<TIER_M, 160, 7, true>);
+                    go(inv3_kernel<E, TIER_M, 160, 7, true>);
                 else
-                    go(inv3_kernel<TIER_M, 160, 7>);
+                    go(inv3_kernel<E, TIER_M, 160, 7>);
             } else if (in_tier_s(po2.N1) && in_tier_s(po2.N2)) {
                 if (pack)
-                    go(inv3_kernel<TIER_S, 160, 7, true>);
+                    go(inv3_kernel<E, TIER_S, 160, 7, true>);
                 else
-                    go(inv3_kernel<TIER_S, 160, 7>);
+                    go(inv3_kernel<E, TIER_S, 160, 7>);
             } else if (in_tier_n(po2.N1) && in_tier_n(po2.N2)) {
                 const bool quartets = pack && (int64_t)((BCp + 7) / 8) * Ho < (int64_t)3 * 4 * c.nsm;
                 if (pack && quartets) {
-                    auto kern = inv4q_kernel<TIER_N, 120, 8>;
+                    auto kern = inv4q_kernel<E, TIER_N, 120, 8>;
                     const size_t smem4
                         = max(max(sizeof(float2) * 4 * (size_t)po2.N1 * po2.LD, sizeof(float2) * 4 * (size_t)no),
                               sizeof(uint32_t) * 4 * (size_t)SW);
@@ -3342,41 +3354,73 @@ namespace disco_kernels
                     launch_pdl(kern, dim3((BCp + 7) / 8 * 2, Ho), dim3(4 * max(po2.N1, po2.N2)), smem4, st,
                                (const float2 *)OUT, op, BC, BCp, Ho, po2, (const float2 *)To, SW, sc);
                 } else if (pack) {
-                    go(inv3_kernel<TIER_N, 240, 4, true>);
+                    go(inv3_kernel<E, TIER_N, 240, 4, true>);
                 } else {
-                    go(inv3_kernel<TIER_N, 240, 4>);
+                    go(inv3_kernel<E, TIER_N, 240, 4>);
                 }
             } else if (in_tier_l(po2.N1) && in_tier_l(po2.N2)) {
                 if (pack)
-                    go(inv3_kernel<TIER_L, 240, 4, true>);
+                    go(inv3_kernel<E, TIER_L, 240, 4, true>);
                 else
-                    go(inv3_kernel<TIER_L, 240, 4>);
+                    go(inv3_kernel<E, TIER_L, 240, 4>);
             } else if (max(po2.N1, po2.N2) <= 20) {
                 if (pack)
-                    go(inv3_kernel<20, 160, 6, true>);
+                    go(inv3_kernel<E, 20, 160, 6, true>);
                 else
-                    go(inv3_kernel<20, 160, 6>);
+                    go(inv3_kernel<E, 20, 160, 6>);
             } else if (max(po2.N1, po2.N2) <= 30) {
                 if (pack)
-                    go(inv3_kernel<30, 240, 4, true>);
+                    go(inv3_kernel<E, 30, 240, 4, true>);
                 else
-                    go(inv3_kernel<30, 240, 4>);
+                    go(inv3_kernel<E, 30, 240, 4>);
             } else {
                 if (pack)
-                    go(inv3_kernel<32, 256, 3, true>);
+                    go(inv3_kernel<E, 32, 256, 3, true>);
                 else
-                    go(inv3_kernel<32, 256, 3>);
+                    go(inv3_kernel<E, 32, 256, 3>);
             }
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         } else {
             const int NB = pick_nb(no);
             const size_t smem = sizeof(float2) * 2 * (size_t)NB * no;
             if (smem > 48 * 1024)
-                C10_CUDA_CHECK(cudaFuncSetAttribute(invm_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
+                C10_CUDA_CHECK(
+                    cudaFuncSetAttribute(invm_kernel<E>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem));
             const long nout = (long)BC * Ho;
             invm_kernel<<<(unsigned)((nout + NB - 1) / NB), 256, smem, st>>>(OUT, op, BC, BCp, Ho, pom, To, NB);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
+    }
+
+    at::Tensor scatter_fft_sm100_run(at::Tensor inp, at::Tensor plan, at::Tensor row_ker, at::Tensor row_lat,
+                                     at::Tensor seg_off, at::Tensor seg, at::Tensor val_off, at::Tensor vals,
+                                     int64_t Ho64, int64_t Wo64)
+    {
+        check_arcs(row_ker, row_lat, seg_off, seg, val_off, vals);
+        TORCH_CHECK(inp.device() == row_ker.device(), "scatter_fft_sm100: inp is on ", inp.device(), ", psi on ",
+                    row_ker.device());
+        TORCH_CHECK(inp.scalar_type() == at::kHalf || inp.scalar_type() == at::kBFloat16,
+                    "scatter_fft_sm100: inp must be float16 or bfloat16, got ", inp.scalar_type());
+        TORCH_CHECK(inp.dim() == 5 && inp.is_contiguous(),
+                    "scatter_fft_sm100: inp must be a contiguous (B, C, K, H, W) tensor");
+        TORCH_CHECK(plan.scalar_type() == at::kByte && plan.device() == inp.device() && plan.is_contiguous(),
+                    "scatter_fft_sm100: plan must be a contiguous uint8 tensor on the device of inp");
+        const c10::cuda::CUDAGuard guard(inp.device());
+
+        const int64_t B64 = inp.size(0), C64 = inp.size(1);
+        auto out = at::empty({B64, C64, Ho64, Wo64}, inp.options());
+        if (inp.numel() == 0 || out.numel() == 0) return out.zero_();
+
+        const ScatterFftConfig c
+            = config_for(B64 * C64, inp.size(2), inp.size(3), inp.size(4), Ho64, Wo64, row_ker, seg, vals);
+        TORCH_CHECK((size_t)plan.numel() == c.plan_bytes, "scatter_fft_sm100: the plan has ", plan.numel(),
+                    " bytes, a plan for these shapes and B * C = ", B64 * C64, " has ", c.plan_bytes,
+                    "; it was built for other shapes");
+
+        if (inp.scalar_type() == at::kHalf)
+            scatter_run_impl<__half>(c, inp, plan, out, row_ker, row_lat, seg_off, seg, val_off, vals);
+        else
+            scatter_run_impl<__nv_bfloat16>(c, inp, plan, out, row_ker, row_lat, seg_off, seg, val_off, vals);
         return out;
     }
 

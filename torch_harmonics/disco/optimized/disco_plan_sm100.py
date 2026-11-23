@@ -35,7 +35,7 @@ Kernels:
 
 * gather: the shipped tcgen05 kpacked forward for fp16/bf16 (as ``KpackedPlanS2``);
 * scatter: the arc scatter in frequency space of ``kernels_cuda/regular/disco_cuda_bwd_fft_sm100.cu``
-  for fp16, the shipped arc scatter otherwise.
+  for fp16 and bf16, the shipped arc scatter for fp32 / fp64.
 
 The frequency-space scatter runs in two ops of the arch-specific extension
 ``torch_harmonics.disco._C_sm100`` (see ``disco_arch``), selected on compute capability 10.0
@@ -46,7 +46,7 @@ devices whose image the build holds (10.0a in ``TORCH_CUDA_ARCH_LIST``), the one
     for a number of planes B * C and an input shape. This is the plan's call state, built once per
     key and kept.
 ``scatter_fft_sm100_run``
-    The scatter of fp16 activations through such a plan.
+    The scatter of fp16 or bf16 activations through such a plan.
 
 The spatial-first input gradient scatters each basis function on its own. The kernel needs those rows
 as arcs of their own (offsets from 0, values of their own): on slices of the full arrays it would
@@ -59,6 +59,9 @@ import torch
 
 from . import disco_arch
 from .disco_plan import ARC_STATE, KpackedPlanS2, Tensors
+
+#: the gradient dtypes the frequency-space scatter takes: it reads and writes them, and computes in fp32
+SM100_SCATTER_DTYPES = (torch.float16, torch.bfloat16)
 
 #: the fp32 values the frequency-space scatter reads (psi's own dtype may differ)
 SM100_VALS = "psi_sm100_vals"
@@ -136,10 +139,10 @@ def build_sm100_state(state: dict, split_row_offsets: Optional[Tuple[int, ...]])
 
 class Sm100PlanS2(KpackedPlanS2):
     """
-    The kpacked forward, and the frequency-space arc scatter for fp16 gradients.
+    The kpacked forward, and the frequency-space arc scatter for fp16 and bf16 gradients.
 
     The scatter's call state is its plan, a byte buffer from ``scatter_fft_sm100_plan`` per number of
-    planes and input shape; for the spatial-first input gradient one per basis function. bf16, fp32 and
+    planes, dtype and input shape; for the spatial-first input gradient one per basis function. fp32 and
     fp64 gradients take the arc scatter.
     """
 
@@ -162,10 +165,10 @@ class Sm100PlanS2(KpackedPlanS2):
         return tuple(self._get(t, _split_name(k, field)) for field in SM100_SPLIT_FIELDS)
 
     def has_scatter(self, dtype):
-        return dtype == torch.float16
+        return dtype in SM100_SCATTER_DTYPES
 
     def call_state(self, op, bc, dtype, in_shape, t):
-        if dtype != torch.float16 or op == "gather":
+        if dtype not in SM100_SCATTER_DTYPES or op == "gather":
             return ()
         nlat_in, nlon_in = in_shape
         plan = torch.ops.disco_kernels.scatter_fft_sm100_plan
@@ -175,12 +178,12 @@ class Sm100PlanS2(KpackedPlanS2):
         return tuple(plan(*self._split_arcs(t, k), bc, 1, self.nlat_out, self.nlon_out, nlat_in, nlon_in) for k in range(self.kernel_size))
 
     def scatter(self, g, t, tc, nlat_in, nlon_in):
-        if g.dtype != torch.float16 or not tc:
+        if g.dtype not in SM100_SCATTER_DTYPES or not tc:
             return super().scatter(g, t, tc, nlat_in, nlon_in)
         return torch.ops.disco_kernels.scatter_fft_sm100_run(g.contiguous(), tc[0], *self._arcs32(t), nlat_in, nlon_in)
 
     def scatter_split(self, g, t, tc, nlat_in, nlon_in):
-        if g.dtype != torch.float16 or not tc:
+        if g.dtype not in SM100_SCATTER_DTYPES or not tc:
             return super().scatter_split(g, t, tc, nlat_in, nlon_in)
         g = g.contiguous()
         run = torch.ops.disco_kernels.scatter_fft_sm100_run
