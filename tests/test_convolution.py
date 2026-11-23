@@ -1465,6 +1465,26 @@ class TestDiscoPlan(unittest.TestCase):
         self.assertEqual(sum(op == "gather" for op, _, _ in _KeyedPlan.used), gathers)
         self.assertEqual(sum(op == dgrad_op for op, _, _ in _KeyedPlan.used), 4)
 
+    def test_call_state_built_under_inference_serves_training(self):
+        """Call state first built under inference mode is ordinary state: a later training call reuses it and runs backward."""
+        conv, conv_arc = self._pair(4, 4, False, backend=_KeyedBackend)
+        x = torch.randn(2, 4, 16, 32, device=self.device)
+        with torch.inference_mode():
+            conv(x)
+        self.assertEqual(_KeyedPlan.built, [("gather", 8, torch.float32)])
+        state = conv.backend.plan._call_states[("gather", 8, torch.float32)]
+        self.assertFalse(any(s.is_inference() or s.requires_grad for s in state))
+
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        out, out_arc = conv(x1), conv_arc(x2)
+        grad = torch.randn_like(out)
+        out.backward(grad)
+        out_arc.backward(grad)
+        # the gather's state was reused, the scatter's built now
+        self.assertEqual(_KeyedPlan.built, [("gather", 8, torch.float32), ("scatter", 8, torch.float32)])
+        self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad, conv_arc.weight.grad, atol=1e-6, rtol=1e-6))
+
     def test_call_state_cache_is_bounded(self):
         """The least recently used call state goes once the plan holds max_call_states."""
         conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)

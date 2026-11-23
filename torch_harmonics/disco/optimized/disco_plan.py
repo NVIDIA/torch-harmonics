@@ -204,7 +204,7 @@ class DiscoPlanS2:
                         f"{type(self).__name__} would build the call state of {op} for {bc} planes of {dtype} during CUDA graph capture; "
                         "run the layer once eagerly with the shapes to be captured first"
                     )
-                state = tuple(self.call_state(op, int(bc), dtype, t))
+                state = self._build_call_state(op, int(bc), dtype, t)
                 self._call_states[key] = state
                 while len(self._call_states) > self.max_call_states:
                     self._call_states.popitem(last=False)
@@ -213,6 +213,21 @@ class DiscoPlanS2:
             layout.append((op, len(tc), len(tc) + len(state)))
             tc.extend(state)
         return tuple(layout), tuple(tc)
+
+    def _build_call_state(self, op: str, bc: int, dtype: torch.dtype, t: Tensors) -> Tensors:
+        """
+        ``call_state``, built so that every later call can use it.
+
+        The state is cached across calls, so it must not depend on the mode of the call that
+        happens to build it: without autograd (it never needs gradients), and outside
+        inference mode, whose tensors a later training call could not save for backward.
+        Dynamo cannot trace the inference-mode query; a compiled call builds in its own mode.
+        """
+        with torch.no_grad():
+            if not torch.compiler.is_compiling() and torch.is_inference_mode_enabled():
+                with torch.inference_mode(False):
+                    return tuple(self.call_state(op, bc, dtype, t))
+            return tuple(self.call_state(op, bc, dtype, t))
 
     # ------------------------------------------------------------------ operations
 
