@@ -1770,17 +1770,17 @@ class TestKpackedPath(unittest.TestCase):
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_contraction_double_backward(self):
-        """The kpacked contraction's backward is the transpose op, so it is differentiable: its derivative is the arc contraction."""
-        from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_kpacked, _disco_s2_contraction_regular_optimized
+        """The kpacked contraction's backward is the transpose op under create_graph, so it is differentiable: its derivative is the arc contraction."""
+        from torch_harmonics.disco.optimized.disco_optimized import _disco_s2_contraction_regular_optimized
 
         set_seed(7)
         conv = self._make_conv(1, 8, (16, 32))
         self.assertEqual(conv.backend.name, "regular-kpacked")
         arcs = _arc_state(conv)
-        kpacked = (conv.psi_kpacked_idx, conv.psi_kpacked_vals, conv.psi_kpacked_offset)
 
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device, requires_grad=True)
-        out = _disco_s2_contraction_kpacked(inp, kpacked, arcs, conv.kernel_size, conv.nlat_out, conv.nlon_out)
+        # the backend's contraction: the kpacked plan's gather through the planned node
+        out = conv.backend.contract(conv, inp)
         grad = torch.randn_like(out, requires_grad=True)
         grad_inp = torch.autograd.grad(out, inp, grad, create_graph=True)[0]
 
