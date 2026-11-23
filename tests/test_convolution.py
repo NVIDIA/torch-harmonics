@@ -1563,6 +1563,47 @@ class TestDiscoPlan(unittest.TestCase):
         self.assertIn(captured, plan._call_states)
         self.assertEqual(len(plan._call_states), plan.max_call_states)
 
+    def test_empty_call_state_takes_no_slot(self):
+        """An operation without call state is remembered outside the cache: no slot, no rebuild, no miss under capture."""
+        conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
+        plan = conv.backend.plan
+        t = plan.state(conv)
+        with mock.patch.object(_KeyedPlan, "call_state", return_value=()) as build:
+            for bc in range(1, plan.max_call_states + 5):
+                plan.bind((("gather", bc),), torch.float32, (16, 32), t)
+            plan.bind((("gather", 1),), torch.float32, (16, 32), t)
+            with mock.patch.object(torch.cuda, "is_available", return_value=True), mock.patch.object(torch.cuda, "is_current_stream_capturing", return_value=True):
+                layout, tc = plan.bind((("gather", 2),), torch.float32, (16, 32), t)
+        self.assertEqual(build.call_count, plan.max_call_states + 4)
+        self.assertEqual((layout, tc), ((("gather", 0, 0),), ()))
+        self.assertEqual(len(plan._call_states), 0)
+        self.assertEqual(len(plan._empty), plan.max_call_states + 4)
+
+    def test_capture_after_the_cache_is_pinned_full(self):
+        """With every slot pinned by earlier captures, a new shape's warmup keeps its state and its capture finds it."""
+        if self.device.type != "cuda":
+            raise unittest.SkipTest("CUDA graphs are CUDA only")
+        conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
+        plan = conv.backend.plan
+        t = plan.state(conv)
+
+        def warm_and_capture(bc):
+            plan.bind((("gather", bc),), torch.float32, (16, 32), t)
+            with mock.patch.object(torch.cuda, "is_current_stream_capturing", return_value=True):
+                plan.bind((("gather", bc),), torch.float32, (16, 32), t)
+
+        for bc in range(1, plan.max_call_states + 1):
+            warm_and_capture(bc)
+        # the next shape: its warmup must not evict what it just built, so the capture does not raise
+        warm_and_capture(plan.max_call_states + 1)
+        self.assertEqual(len(plan._call_states), plan.max_call_states + 1)
+        self.assertEqual(len(plan._pinned), plan.max_call_states + 1)
+        # unpinned state still goes first once the cache is over its size
+        plan.bind((("gather", 1000),), torch.float32, (16, 32), t)
+        plan.bind((("gather", 1001),), torch.float32, (16, 32), t)
+        self.assertNotIn(("gather", 1000, torch.float32, (16, 32)), plan._call_states)
+        self.assertIn(("gather", 1001, torch.float32, (16, 32)), plan._call_states)
+
     def test_contraction_binds_its_operations(self):
         """``contract`` binds the gather's call state over the input's planes, and the scatter's only when the gradient is needed."""
         conv, conv_arc = self._pair(4, 4, False, backend=_KeyedBackend)
@@ -1838,10 +1879,12 @@ class TestSm100Scatter(unittest.TestCase):
         conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
         for batch in (2, 2, 3, 2):
             self._check_conv(conv, conv_ref, batch, (32, 64))
-        keys = sorted((op, bc) for op, bc, _, _ in conv.backend.plan._call_states)
-        # the kpacked gather has no call state; the scatter one per batch size
-        self.assertEqual(keys, [("gather", 8), ("gather", 12), ("scatter", 8), ("scatter", 12)])
-        self.assertTrue(all(len(state) == 1 for (op, *_), state in conv.backend.plan._call_states.items() if op == "scatter"))
+        plan = conv.backend.plan
+        # the scatter has a plan per batch size; the kpacked gather has no call state, which is remembered but takes
+        # no slot of the cache
+        self.assertEqual(sorted((op, bc) for op, bc, _, _ in plan._call_states), [("scatter", 8), ("scatter", 12)])
+        self.assertTrue(all(len(state) == 1 for state in plan._call_states.values()))
+        self.assertEqual(sorted((op, bc) for op, bc, _, _ in plan._empty), [("gather", 8), ("gather", 12)])
 
     def test_bf16_plans_are_their_own(self):
         """fp16 and bf16 gradients of the same shape get plans of their own: the call state is keyed by dtype."""

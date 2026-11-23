@@ -137,8 +137,10 @@ class DiscoPlanS2:
     #: whether the kernels read call state (see :meth:`call_state`); without it ``bind`` is free
     has_call_state = False
 
-    #: call states kept per plan, least recently used dropped first (except those a captured CUDA
-    #: graph uses): a training run needs one per operation, varying batch sizes one per size
+    #: call states kept per plan, least recently used dropped first: a training run needs one per
+    #: operation, varying batch sizes one per size. Empty call states (operations whose kernels
+    #: have none) do not count. State a captured CUDA graph uses is never dropped, and may take
+    #: the cache beyond this (see ``_evict``)
     max_call_states = 16
 
     def __init__(self, state_names: Sequence[str], kernel_size: int, contract_shape: Tuple[int, int], split_row_offsets: Optional[Tuple[int, ...]] = None):
@@ -152,6 +154,9 @@ class DiscoPlanS2:
         self._call_ready: Dict[Tuple[str, int, torch.dtype, Tuple[int, int]], Tuple["torch.cuda.Event", "torch.cuda.Stream"]] = {}
         # keys a captured CUDA graph uses: never evicted, the graph replays their memory
         self._pinned: set = set()
+        # keys whose call state is empty (an operation running on kernels without any): remembered, so they are neither
+        # rebuilt nor taken for a miss during capture, but outside the cache, so they take none of its slots
+        self._empty: set = set()
         missing = [name for name in ARC_STATE + (("psi_split_ker",) if self.has_split else ()) if name not in self._index]
         if missing:
             raise ValueError(f"{type(self).__name__} needs the state {missing}")
@@ -219,7 +224,7 @@ class DiscoPlanS2:
             if op not in PLAN_OPS:
                 raise ValueError(f"unknown plan operation {op!r}; known: {PLAN_OPS}")
             key = (op, int(bc), dtype, in_shape)
-            state = self._call_states.get(key)
+            state = () if key in self._empty else self._call_states.get(key)
             if state is None and compiling:
                 # built for this call only, see above
                 with torch.no_grad():
@@ -231,10 +236,13 @@ class DiscoPlanS2:
                         "run the layer once eagerly with the shapes to be captured first"
                     )
                 state = self._build_call_state(op, int(bc), dtype, in_shape, t)
-                self._call_states[key] = state
-                self._record_built(key, state)
-                self._evict()
-            elif not compiling:
+                if state:
+                    self._call_states[key] = state
+                    self._record_built(key, state)
+                    self._evict(keep=key)
+                else:
+                    self._empty.add(key)
+            elif state and not compiling:
                 self._call_states.move_to_end(key)
                 self._ready_on_current_stream(key, state)
             layout.append((op, len(tc), len(tc) + len(state)))
@@ -267,9 +275,17 @@ class DiscoPlanS2:
                 if x.is_cuda:
                     x.record_stream(current)
 
-    def _evict(self) -> None:
-        """Drop the least recently used unpinned call states beyond ``max_call_states``."""
-        for key in [k for k in self._call_states if k not in self._pinned][: max(0, len(self._call_states) - self.max_call_states)]:
+    def _evict(self, keep) -> None:
+        """
+        Drop the least recently used call states beyond ``max_call_states``, but not ``keep``, just built, nor pinned ones.
+
+        Without enough of the others the cache grows beyond ``max_call_states`` instead: evicting the state just built
+        would leave its call -- typically the warmup before a capture -- without it. Pinned state lives as long as the
+        plan, i.e. the layer's backend selection, since nothing tells when the graphs that captured it are discarded;
+        it is bounded by the shapes ever captured.
+        """
+        candidates = [k for k in self._call_states if k not in self._pinned and k != keep]
+        for key in candidates[: max(0, len(self._call_states) - self.max_call_states)]:
             del self._call_states[key]
             self._call_ready.pop(key, None)
 
