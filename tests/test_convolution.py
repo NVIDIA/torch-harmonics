@@ -47,8 +47,8 @@ from torch_harmonics.disco.backends import RaggedOptimizedBackend, RaggedReferen
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
-from torch_harmonics.disco.optimized import disco_optimized
-from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad, _kpacked_supported_on_device
+from torch_harmonics.disco.optimized import disco_arch
+from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad
 from torch_harmonics.disco.optimized.disco_plan import ArcPlanS2
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import RegularGridS2
@@ -1187,8 +1187,8 @@ class TestDiscreteContinuousConvolution(unittest.TestCase):
 
 
 # A supported device is not sufficient: the kpacked buffers are only built when
-# this build actually contains the matching kernel (BUILD_KPACKED_SM90 / SM100 / SM103,
-# set from TORCH_CUDA_ARCH_LIST). A build targeting an architecture newer than
+# this build actually contains the matching kernel (an arch-specific extension holding
+# the image of the device's target, see disco_arch). A build targeting an architecture newer than
 # the ones with kpacked kernels reports e.g. major == 10 while carrying no
 # sm_100a cubin, so a device-only guard runs these tests against buffers that
 # were deliberately never constructed. Ask the same question the library asks.
@@ -1206,7 +1206,7 @@ def _kpacked_runnable_here():
     """Defer to the library, so the tests and the dispatch cannot disagree."""
     if not torch.cuda.is_available():
         return False
-    return _kpacked_supported_on_device(torch.cuda.current_device())
+    return disco_arch.kpacked_supported_on_device(torch.cuda.current_device())
 
 
 def _is_kpacked_supported():
@@ -1672,29 +1672,17 @@ class TestWeightContraction(unittest.TestCase):
 
 class TestKpackedDeviceGate(unittest.TestCase):
     """
-    The kpacked cubins are arch-conditional, not forward compatible: each device needs its
-    own build target, and a 10.0a-only build must not select kpacked on a 10.3 device, where
-    the forward silently returns zeros (#337). The build flags and the device capability are
-    mocked, so this runs without the hardware, and on every CI runner.
+    The kpacked images are arch-specific, not forward compatible: each device needs its own
+    build target, and a 10.0a-only build must not select kpacked on a 10.3 device, which cannot
+    load an sm_100a image (#337). The targets the extensions report and the device capability
+    are mocked, so this runs without the hardware, and on every CI runner.
     """
 
     _TARGETS = {"9.0a": (9, 0), "10.0a": (10, 0), "10.3a": (10, 3)}
-    # the build flag behind each target, as the extension reports it
-    _FLAG_TARGET = {
-        disco_optimized.kpacked_sm90_kernels_is_available: "9.0a",
-        disco_optimized.kpacked_sm100_kernels_is_available: "10.0a",
-        disco_optimized.kpacked_sm103_kernels_is_available: "10.3a",
-    }
-
-    def _flags(self, built):
-        # mock the flags, not the table: each entry keeps the flag the library assigns it, so a
-        # device keyed on the wrong target (10.3 on the 10.0a flag, #337) is caught
-        table = disco_optimized._KPACKED_BUILT_FOR
-        return {capability: (lambda on=(self._FLAG_TARGET[flag] in built): on) for capability, flag in table.items()}
 
     def _supported(self, built, capability):
-        with mock.patch.dict(disco_optimized._KPACKED_BUILT_FOR, self._flags(built)), mock.patch("torch.cuda.get_device_capability", return_value=capability):
-            return _kpacked_supported_on_device(0)
+        with mock.patch.object(disco_arch, "built_targets", return_value=frozenset(built)), mock.patch("torch.cuda.get_device_capability", return_value=capability):
+            return disco_arch.kpacked_supported_on_device(0)
 
     @parameterized.expand(
         [
@@ -1719,14 +1707,29 @@ class TestKpackedDeviceGate(unittest.TestCase):
         self.assertEqual(self._supported(built, capability), expected)
 
     def test_the_table_covers_every_kpacked_target(self):
-        self.assertEqual(set(disco_optimized._KPACKED_BUILT_FOR), set(self._TARGETS.values()))
+        self.assertEqual({target: capability for capability, (_, target) in disco_arch.DEVICE_TARGETS.items()}, self._TARGETS)
+        # every family a device maps to has a kpacked forward and an extension
+        self.assertTrue(all(family in disco_arch.KPACKED_OPS and family in disco_arch.EXTENSIONS for family, _ in disco_arch.DEVICE_TARGETS.values()))
 
     def test_any_target_builds_the_kpacked_buffers(self):
         # construction cannot know the device yet, so any built target is enough there
-        build_available = disco_optimized._kpacked_build_available.__wrapped__
         for built in ((), ("9.0a",), ("10.0a",), ("10.3a",), ("9.0a", "10.0a", "10.3a")):
-            with self.subTest(built=built), mock.patch.dict(disco_optimized._KPACKED_BUILT_FOR, self._flags(built)):
-                self.assertEqual(build_available(), bool(built))
+            with self.subTest(built=built), mock.patch.object(disco_arch, "built_targets", return_value=frozenset(built)):
+                self.assertEqual(disco_arch.kpacked_build_available(), bool(built))
+
+    def test_the_device_gets_its_own_op(self):
+        """The op a device is handed is that of the extension holding its target."""
+        built = frozenset(self._TARGETS)
+        for capability, (family, _) in disco_arch.DEVICE_TARGETS.items():
+            with (
+                self.subTest(capability=capability),
+                mock.patch.object(disco_arch, "built_targets", return_value=built),
+                mock.patch("torch.cuda.get_device_capability", return_value=capability),
+            ):
+                self.assertEqual(disco_arch.device_family(0), family)
+        with mock.patch.object(disco_arch, "built_targets", return_value=frozenset()), mock.patch("torch.cuda.get_device_capability", return_value=(10, 0)):
+            with self.assertRaisesRegex(RuntimeError, "no kpacked kernel"):
+                disco_arch.kpacked_op(0)
 
 
 def _arc_state(conv):
@@ -1770,7 +1773,7 @@ class TestKpackedPath(unittest.TestCase):
 
     @unittest.skipUnless(_kpacked_built_for_sm90(), "kpacked forward requires SM_90a (Hopper) and an sm_90a build")
     def test_kpacked_forward_activates_on_sm90(self):
-        """forward_kpacked is chosen for bf16/fp16 on Hopper."""
+        """forward_kpacked_sm90 is chosen for bf16/fp16 on Hopper."""
         conv = self._make_conv(1, 8, (16, 32))
         self.assertEqual(conv.backend.name, "regular-kpacked", "the harmonic basis should select the kpacked backend")
         self.assertIn(conv.psi_kpacked_vals.shape[1], (8, 16), "K_pad must be 8 or 16 for the WGMMA kernel")
@@ -1940,7 +1943,7 @@ class TestKpackedPath(unittest.TestCase):
 
     @unittest.skipUnless(_is_kpacked_supported(), "kpacked forward requires SM_90a, SM_100a or SM_103a")
     def test_kpacked_opcheck(self):
-        """forward_kpacked op satisfies the PT2 opcheck contract."""
+        """The kpacked op of this device's extension satisfies the PT2 opcheck contract."""
         conv = self._make_conv(1, 8, (16, 32))
         inp = torch.randn(1, 8, 16, 32, dtype=torch.bfloat16, device=self.device)
         test_inputs = (
@@ -1952,7 +1955,7 @@ class TestKpackedPath(unittest.TestCase):
             conv.nlat_out,
             conv.nlon_out,
         )
-        opcheck(torch.ops.disco_kernels.forward_kpacked, test_inputs)
+        opcheck(disco_arch.kpacked_op(torch.cuda.current_device()), test_inputs)
 
 
 # ---------------------------------------------------------------------------

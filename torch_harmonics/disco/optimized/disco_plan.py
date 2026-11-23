@@ -305,10 +305,14 @@ class ArcPlanS2(DiscoPlanS2):
 
 class KpackedPlanS2(ArcPlanS2):
     """
-    The tensor-core forward (WGMMA on sm_90a, tcgen05 on sm_100a) for fp16/bf16, on the kpacked layout.
+    The tensor-core forward (WGMMA on sm_90a, tcgen05 on sm_100a / sm_103a) for fp16/bf16, on the kpacked layout.
 
-    Everything else is the arc plan's: the scatter, and the gather of fp32/fp64.
+    Everything else is the arc plan's: the scatter, and the gather of fp32/fp64. The forward is the op of the
+    arch-specific extension for the plan's device, ``kpacked_op``, which the backend sets (see ``disco_arch``).
     """
+
+    #: the kpacked forward for the plan's device, e.g. ``torch.ops.disco_kernels.forward_kpacked_sm90.default``
+    kpacked_op = None
 
     def __init__(self, state_names, kernel_size, contract_shape, split_row_offsets=None):
         super().__init__(state_names, kernel_size, contract_shape, split_row_offsets)
@@ -323,4 +327,4 @@ class KpackedPlanS2(ArcPlanS2):
         if x.dtype not in _HALF_DTYPES:
             return super().gather(x, t, tc)
         pack_idx, pack_val, pack_offset = (self._get(t, name) for name in KPACKED_STATE)
-        return disco_kernels.forward_kpacked.default(x, pack_idx, pack_val, pack_offset, self.kernel_size, self.nlat_out, self.nlon_out)
+        return self.kpacked_op(x, pack_idx, pack_val, pack_offset, self.kernel_size, self.nlat_out, self.nlon_out)

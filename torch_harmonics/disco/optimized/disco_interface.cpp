@@ -81,11 +81,9 @@ namespace disco_kernels
         m.def("backward_ragged(Tensor inp, Tensor row_ker, Tensor row_pt, Tensor seg_off, Tensor seg, Tensor val_off, "
               "Tensor vals, Tensor ring_base, Tensor ring_size, int kernel_size, int npoints_out) -> Tensor",
               {at::Tag::pt2_compliant_tag});
-        // The tensor-core forward for fp16/bf16 (WGMMA on SM_90a, tcgen05 on SM_100a), with
-        // psi in the blocked layout of _psi.build_kpacked
-        m.def("forward_kpacked(Tensor inp, Tensor pack_idx, Tensor pack_val, Tensor pack_offset, "
-              "int kernel_size, int nlat_out, int nlon_out) -> Tensor",
-              {at::Tag::pt2_compliant_tag});
+        // The kernels that need an arch-specific target (the tensor-core kpacked forward) are in extensions of
+        // their own, one per target family, which add their operators to this namespace: disco_interface_sm90.cpp
+        // and disco_interface_sm100.cpp.
     }
 
 } // namespace disco_kernels
