@@ -97,6 +97,7 @@ new kernels supplies a plan and its state and inherits the forward, the fused re
 and both orders of the input gradient.
 """
 
+import os
 from typing import TYPE_CHECKING
 
 import torch
@@ -116,6 +117,7 @@ from .optimized.disco_optimized import (
     _kpacked_k_pad,
 )
 from .optimized.disco_plan import ARC_STATE, KPACKED_STATE, ArcPlanS2, KpackedPlanS2
+from .optimized.disco_plan_sm100 import Sm100PlanS2, build_sm100_state, sm100_scatter_available
 
 if optimized_kernels_is_available():
     from .optimized.disco_optimized import (
@@ -308,6 +310,20 @@ class RegularKpackedBackend(RegularOptimizedBackend):
         )
 
     def prepare(self, layer, device):
+        state = self._kpacked_state(layer, device)
+        if state is None:
+            return None
+        self.plan = self._kpacked_plan(layer, state, device)
+        return state
+
+    def _kpacked_plan(self, layer, state, device):
+        """The plan over ``state``, with the kpacked forward of the arch-specific extension for ``device``."""
+        plan = self._make_plan(layer, state)
+        plan.kpacked_op = disco_arch.kpacked_op(_device_index(device))
+        return plan
+
+    def _kpacked_state(self, layer, device):
+        """The arc arrays and the kpacked layout, or None if the basis functions do not share one support."""
         kpacked = build_kpacked(*layer._psi_coo(), layer.kernel_size, _kpacked_k_pad(layer.kernel_size), layer._contract_shape[0], layer._psi_nlon)
         if kpacked is None:
             return None
@@ -315,9 +331,36 @@ class RegularKpackedBackend(RegularOptimizedBackend):
         state = self._arc_state(layer, device)
         for name, t in zip(KPACKED_STATE, kpacked):
             state[name] = t.to(device)
-        self.plan = self._make_plan(layer, state)
-        # the forward of the arch-specific extension for this device
-        self.plan.kpacked_op = disco_arch.kpacked_op(_device_index(device))
+        return state
+
+
+class RegularSm100Backend(RegularKpackedBackend):
+    """
+    Experimental: the kpacked forward with the frequency-space arc scatter of sm_100a (B200 / GB200).
+
+    The scatter is a Kernel Factory candidate (``kernels_cuda/regular/disco_cuda_bwd_fft_sm100.cu``)
+    and runs for fp16 gradients; see ``Sm100PlanS2``. Available where the kpacked backend is, on a
+    compute capability 10.0 device with the extension ``torch_harmonics.disco._C_sm100`` built
+    (10.0a in ``TORCH_CUDA_ARCH_LIST``), and when the input longitudes are a multiple of the output
+    longitudes, which the scatter requires.
+
+    Not in ``BACKENDS`` yet: layers select it only when ``EXPERIMENTAL_BACKENDS`` are enabled (see there).
+    """
+
+    name = "regular-sm100"
+
+    plan_class = Sm100PlanS2
+
+    @classmethod
+    def available(cls, layer, device):
+        return super().available(layer, device) and sm100_scatter_available(device) and layer._psi_nlon % layer.nlon_out == 0
+
+    def prepare(self, layer, device):
+        state = self._kpacked_state(layer, device)
+        if state is None:
+            return None
+        state.update(build_sm100_state(state, self.split_row_offsets))
+        self.plan = self._kpacked_plan(layer, state, device)
         return state
 
 
@@ -404,6 +447,12 @@ class RaggedReferenceBackend(DiscoBackendS2):
 #: and a ragged backend never both accept a layer, so the two families are ordered only
 #: among themselves, as in :data:`torch_harmonics.attention.backends.BACKENDS`. The
 #: transpose layers use the same list: the kpacked backend declines them itself.
+#: backends with kernels still being validated, most specific first. Layers do not select them unless
+#: ``TORCH_HARMONICS_DISCO_EXPERIMENTAL_BACKENDS=1`` is set when torch_harmonics is imported, which puts
+#: them ahead of the others in ``BACKENDS``; a layer can also opt in on its own by setting its
+#: ``_backends`` to ``EXPERIMENTAL_BACKENDS + BACKENDS`` and calling ``_select_backend()``.
+EXPERIMENTAL_BACKENDS = (RegularSm100Backend,)
+
 BACKENDS = (
     RaggedOptimizedBackend,
     RaggedReferenceBackend,
@@ -411,3 +460,6 @@ BACKENDS = (
     RegularOptimizedBackend,
     RegularReferenceBackend,
 )
+
+if os.getenv("TORCH_HARMONICS_DISCO_EXPERIMENTAL_BACKENDS", "0") == "1":
+    BACKENDS = EXPERIMENTAL_BACKENDS + BACKENDS
