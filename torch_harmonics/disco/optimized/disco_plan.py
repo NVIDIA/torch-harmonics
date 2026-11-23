@@ -137,8 +137,8 @@ class DiscoPlanS2:
     #: whether the kernels read call state (see :meth:`call_state`); without it ``bind`` is free
     has_call_state = False
 
-    #: call states kept per plan, least recently used dropped first: a training run needs one
-    #: per operation, varying batch sizes one per size
+    #: call states kept per plan, least recently used dropped first (except those a captured CUDA
+    #: graph uses): a training run needs one per operation, varying batch sizes one per size
     max_call_states = 16
 
     def __init__(self, state_names: Sequence[str], kernel_size: int, contract_shape: Tuple[int, int], split_row_offsets: Optional[Tuple[int, ...]] = None):
@@ -148,6 +148,10 @@ class DiscoPlanS2:
         self.split_row_offsets = split_row_offsets
         self._index: Dict[str, int] = {name: i for i, name in enumerate(self.state_names)}
         self._call_states: "OrderedDict[Tuple[str, int, torch.dtype, Tuple[int, int]], Tensors]" = OrderedDict()
+        # key -> (event recorded after the build, the stream that built it), for state on a CUDA device
+        self._call_ready: Dict[Tuple[str, int, torch.dtype, Tuple[int, int]], Tuple["torch.cuda.Event", "torch.cuda.Stream"]] = {}
+        # keys a captured CUDA graph uses: never evicted, the graph replays their memory
+        self._pinned: set = set()
         missing = [name for name in ARC_STATE + (("psi_split_ker",) if self.has_split else ()) if name not in self._index]
         if missing:
             raise ValueError(f"{type(self).__name__} needs the state {missing}")
@@ -197,6 +201,13 @@ class DiscoPlanS2:
         for backward -- and Dynamo cannot query that mode. Once an eager call has built a key,
         compiled calls use it, so run the layer once eagerly per shape, as before CUDA graph
         capture.
+
+        Cached state may be used on another stream than the one that built it: such a call
+        waits for the build and marks the tensors in use on its stream. A key used during CUDA
+        graph capture is pinned in the cache, since the graph replays its memory; the build
+        is complete by then, as ``torch.cuda.graph`` synchronizes the device when capture
+        begins. Compiled calls do neither, as Dynamo traces no stream handling: share a
+        compiled layer across streams only after an eager call on each.
         """
         compiling = torch.compiler.is_compiling()
         if not self.has_call_state:
@@ -221,13 +232,46 @@ class DiscoPlanS2:
                     )
                 state = self._build_call_state(op, int(bc), dtype, in_shape, t)
                 self._call_states[key] = state
-                while len(self._call_states) > self.max_call_states:
-                    self._call_states.popitem(last=False)
+                self._record_built(key, state)
+                self._evict()
             elif not compiling:
                 self._call_states.move_to_end(key)
+                self._ready_on_current_stream(key, state)
             layout.append((op, len(tc), len(tc) + len(state)))
             tc.extend(state)
         return tuple(layout), tuple(tc)
+
+    def _record_built(self, key, state: Tensors) -> None:
+        """Remember when the build of ``state`` completes on the stream that built it."""
+        device = next((x.device for x in state if x.is_cuda), None)
+        if device is None:
+            return
+        stream = torch.cuda.current_stream(device)
+        event = torch.cuda.Event()
+        event.record(stream)
+        self._call_ready[key] = (event, stream)
+
+    def _ready_on_current_stream(self, key, state: Tensors) -> None:
+        """Make cached ``state`` safe to use on the current stream (see ``bind``)."""
+        ready = self._call_ready.get(key)
+        if ready is None:
+            return
+        event, stream = ready
+        if torch.cuda.is_current_stream_capturing():
+            self._pinned.add(key)
+            return
+        current = torch.cuda.current_stream(stream.device)
+        if current != stream:
+            current.wait_event(event)
+            for x in state:
+                if x.is_cuda:
+                    x.record_stream(current)
+
+    def _evict(self) -> None:
+        """Drop the least recently used unpinned call states beyond ``max_call_states``."""
+        for key in [k for k in self._call_states if k not in self._pinned][: max(0, len(self._call_states) - self.max_call_states)]:
+            del self._call_states[key]
+            self._call_ready.pop(key, None)
 
     def _build_call_state(self, op: str, bc: int, dtype: torch.dtype, in_shape: Tuple[int, int], t: Tensors) -> Tensors:
         """

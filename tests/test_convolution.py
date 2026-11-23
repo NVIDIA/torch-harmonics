@@ -30,6 +30,7 @@
 #
 
 import math
+import os
 import types
 import unittest
 from unittest import mock
@@ -1524,6 +1525,44 @@ class TestDiscoPlan(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "during CUDA graph capture"):
                 plan.bind((("gather", 16),), torch.float32, (16, 32), t)
 
+    def test_call_state_waits_on_another_stream(self):
+        """Call state cached on one stream is waited for on another, and not on its own."""
+        if self.device.type != "cuda":
+            raise unittest.SkipTest("streams are CUDA only")
+        conv, conv_arc = self._pair(4, 4, False, backend=_KeyedBackend)
+        x = torch.randn(2, 4, 16, 32, device=self.device)
+        built_on, other = torch.cuda.Stream(), torch.cuda.Stream()
+        built_on.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(built_on):
+            conv(x)
+        other.wait_stream(built_on)
+        wait_event = torch.cuda.Stream.wait_event
+        with mock.patch.object(torch.cuda.Stream, "wait_event", autospec=True, side_effect=wait_event) as waits:
+            with torch.cuda.stream(built_on):
+                conv(x)
+            self.assertEqual(waits.call_count, 0, "the building stream need not wait for itself")
+            with torch.cuda.stream(other):
+                out = conv(x)
+            self.assertEqual(waits.call_count, 1)
+        torch.cuda.synchronize()
+        self.assertTrue(compare_tensors("output", out, conv_arc(x), atol=1e-6, rtol=1e-6))
+
+    def test_call_state_captured_by_a_graph_is_kept(self):
+        """Call state a CUDA graph capture uses is pinned: the cache does not evict memory a graph replays."""
+        if self.device.type != "cuda":
+            raise unittest.SkipTest("CUDA graphs are CUDA only")
+        conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
+        plan = conv.backend.plan
+        t = plan.state(conv)
+        captured = ("gather", 8, torch.float32, (16, 32))
+        plan.bind((("gather", 8),), torch.float32, (16, 32), t)
+        with mock.patch.object(torch.cuda, "is_current_stream_capturing", return_value=True):
+            plan.bind((("gather", 8),), torch.float32, (16, 32), t)
+        for bc in range(100, 100 + plan.max_call_states + 2):
+            plan.bind((("gather", bc),), torch.float32, (16, 32), t)
+        self.assertIn(captured, plan._call_states)
+        self.assertEqual(len(plan._call_states), plan.max_call_states)
+
     def test_contraction_binds_its_operations(self):
         """``contract`` binds the gather's call state over the input's planes, and the scatter's only when the gradient is needed."""
         conv, conv_arc = self._pair(4, 4, False, backend=_KeyedBackend)
@@ -1683,6 +1722,10 @@ class TestWeightContraction(unittest.TestCase):
             self.assertEqual(_weight_expansion(torch.randn(2, 2 * Og, 4, 8, device=self.device), w).dtype, torch.float16)
 
 
+# Opt-in gate for expensive cases, as in test_distributed_convolution.py
+_run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
+
+
 def _sm100_here():
     return torch.cuda.is_available() and sm100_scatter_available(torch.device("cuda"))
 
@@ -1754,6 +1797,41 @@ class TestSm100Scatter(unittest.TestCase):
         for batch in (1, 2, 3, 8):
             with self.subTest(batch=batch):
                 self._check_conv(conv, conv_ref, batch, in_shape, dtype)
+
+    @parameterized.expand(
+        [
+            # name, in_shape, out_shape, expected (mode, fast, input transform, output transform) with None for "any",
+            # slow, dtype. mode 1: direct gather; 2: frequency space. transforms 1: two-pass, 2: multi-pass FFT
+            [name, in_shape, out_shape, expected, slow, dtype]
+            for name, in_shape, out_shape, expected, slow in (
+                # 56 longitudes: n = 28 = 4 * 7 has no FFT plan
+                ("direct gather", (16, 56), (16, 56), (1, 0, 0, 0), False),
+                # pscale 4 and 3: the generic contraction
+                ("generic contraction, pscale 4", (16, 128), (8, 32), (2, 0, 1, 1), False),
+                ("generic contraction, pscale 3", (24, 96), (8, 32), (2, 0, 1, 1), False),
+                # the multi-pass transform needs n smooth but not a product of two radices up to 32, which first happens
+                # at 1000 longitudes and more; slow, gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
+                # n = 500 splits into two radices, n = 1000 only in passes
+                ("two-pass and multi-pass", (16, 2000), (8, 1000), (2, None, 1, 2), True),
+                # n = 972 on both sides
+                ("multi-pass", (8, 1944), (8, 1944), (2, None, 2, 2), True),
+            )
+            for dtype in (torch.float16, torch.bfloat16)
+        ]
+    )
+    def test_fallback_paths(self, name, in_shape, out_shape, expected, slow, dtype):
+        """The paths besides the fast one -- direct gather, generic contraction, multi-pass transforms -- match the arc scatter."""
+        if slow and not _run_slow_tests:
+            raise unittest.SkipTest(f"{name}: large grid, set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
+        conv, conv_ref = self._pair(4, 4, in_shape, out_shape)
+        batch = 2
+        path = torch.ops.disco_kernels.scatter_fft_sm100_config(
+            batch * 4, conv.kernel_size, *out_shape, *in_shape, conv.psi_row_ker.numel(), conv.psi_seg.shape[0], conv.psi_vals.numel()
+        )
+        for got, want, what in zip(path, expected, ("mode", "fast contraction", "input transform", "output transform")):
+            if want is not None:
+                self.assertEqual(got, want, f"{name}: {what}")
+        self._check_conv(conv, conv_ref, batch, in_shape, dtype)
 
     def test_plans_are_built_once_per_shape(self):
         """The scatter's plan is call state: built once per number of planes and input shape, then reused."""

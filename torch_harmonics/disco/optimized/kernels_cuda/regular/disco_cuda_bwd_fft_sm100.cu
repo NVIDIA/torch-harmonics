@@ -3424,15 +3424,34 @@ namespace disco_kernels
         return out;
     }
 
+    // Which path the scatter takes for these sizes, from the same configuration plan and run use: {mode (0: the 64-bit
+    // direct kernel, 1: the direct gather, 2: frequency space), fast contraction, input transform, output transform}, a
+    // transform being 0 (none), 1 (two-pass register FFT) or 2 (multi-pass shared-memory FFT). For tests.
+    std::vector<int64_t> scatter_fft_sm100_config(int64_t BC, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo,
+                                                  int64_t nrows, int64_t nseg, int64_t nnz)
+    {
+        TORCH_CHECK(Wi > 0 && Wo % Wi == 0, "scatter_fft_sm100: the output longitudes (", Wo,
+                    ") must be a multiple of the input longitudes (", Wi, ")");
+        const ScatterFftConfig c = make_config(BC, K, Hi, Wi, Ho, Wo, nrows, nseg, nnz, sm_count());
+        const int64_t in_t = c.mode != MODE_FFT ? 0 : (c.i2 ? 1 : 2);
+        const int64_t out_t = c.mode != MODE_FFT ? 0 : (c.o2 ? 1 : 2);
+        return {(int64_t)c.mode, (int64_t)c.fast, in_t, out_t};
+    }
+
     TORCH_LIBRARY_FRAGMENT(disco_kernels, m)
     {
         // the plan of scatter_fft_sm100_run for B * C = bc planes of (K, nlat_in, nlon_in) onto (nlat_out, nlon_out)
         m.def("scatter_fft_sm100_plan(Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor seg, Tensor val_off, "
               "Tensor vals, int bc, int kernel_size, int nlat_in, int nlon_in, int nlat_out, int nlon_out) -> Tensor");
-        // the arc scatter (B, C, K, nlat_in, nlon_in) -> (B, C, nlat_out, nlon_out), float16, through that plan
+        // the arc scatter (B, C, K, nlat_in, nlon_in) -> (B, C, nlat_out, nlon_out), float16 or bfloat16, through that
+        // plan
         m.def("scatter_fft_sm100_run(Tensor inp, Tensor plan, Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor "
               "seg, "
               "Tensor val_off, Tensor vals, int nlat_out, int nlon_out) -> Tensor");
+        // the path scatter_fft_sm100_run takes for these sizes (for tests)
+        m.def("scatter_fft_sm100_config(int bc, int kernel_size, int nlat_in, int nlon_in, int nlat_out, int nlon_out, "
+              "int nrows, int nseg, int nnz) -> int[]",
+              &scatter_fft_sm100_config);
     }
 
     TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m)
