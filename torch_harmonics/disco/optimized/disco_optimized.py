@@ -575,7 +575,7 @@ def _disco_s2_contraction_planned(inp, plan, t):
     """
     bc = inp.shape[0] * inp.shape[1]
     ops = (("gather", bc), ("scatter", bc)) if _needs_input_grad(inp) else (("gather", bc),)
-    layout, tc = plan.bind(ops, inp.dtype, t)
+    layout, tc = plan.bind(ops, inp.dtype, inp.shape[-2:], t)
     return _DiscoContractFn.apply(inp, plan, layout, len(t), *t, *tc)
 
 
@@ -722,7 +722,7 @@ def _disco_s2_conv_optimized(inp, weight, plan, t, groups, groupsize, recompute=
     ops = (("gather", B * C),)
     if _needs_input_grad(inp):
         ops += (("scatter_split", B * groups * out_per_group) if spatial_first else ("scatter", B * C),)
-    layout, tc = plan.bind(ops, inp.dtype, t)
+    layout, tc = plan.bind(ops, inp.dtype, inp.shape[-2:], t)
     return _DiscoConvFn.apply(inp, weight, plan, groups, groupsize, recompute, spatial_first, layout, len(t), *t, *tc)
 
 

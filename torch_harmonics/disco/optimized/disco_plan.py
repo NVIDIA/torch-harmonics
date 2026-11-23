@@ -60,8 +60,8 @@ The state comes in two levels.
     What also depends on the call: the launch configuration a kernel picks from the
     number of planes it contracts (B * C) and from the dtype, and whatever it derives from
     psi under that configuration (tile schedules, psi laid out for those tiles). Built by
-    :meth:`DiscoPlanS2.call_state` for a key ``(op, bc, dtype)`` and cached on the plan, so
-    it is built once per batch size, not once per call. A plan without it (the default,
+    :meth:`DiscoPlanS2.call_state` for a key ``(op, bc, dtype, in_shape)`` and cached on the
+    plan, so it is built once per batch size, not once per call. A plan without it (the default,
     ``has_call_state = False``) costs nothing here.
 
 The backend binds the call state before the autograd node (:meth:`DiscoPlanS2.bind`), for
@@ -147,7 +147,7 @@ class DiscoPlanS2:
         self.nlat_out, self.nlon_out = contract_shape
         self.split_row_offsets = split_row_offsets
         self._index: Dict[str, int] = {name: i for i, name in enumerate(self.state_names)}
-        self._call_states: "OrderedDict[Tuple[str, int, torch.dtype], Tensors]" = OrderedDict()
+        self._call_states: "OrderedDict[Tuple[str, int, torch.dtype, Tuple[int, int]], Tensors]" = OrderedDict()
         missing = [name for name in ARC_STATE + (("psi_split_ker",) if self.has_split else ()) if name not in self._index]
         if missing:
             raise ValueError(f"{type(self).__name__} needs the state {missing}")
@@ -170,21 +170,23 @@ class DiscoPlanS2:
 
     # ------------------------------------------------------------------ call state
 
-    def call_state(self, op: str, bc: int, dtype: torch.dtype, t: Tensors) -> Tensors:
+    def call_state(self, op: str, bc: int, dtype: torch.dtype, in_shape: Tuple[int, int], t: Tensors) -> Tensors:
         """
         The call state of ``op`` (one of ``PLAN_OPS``) over ``bc`` planes of ``dtype``.
 
-        Called once per key, outside the autograd nodes and outside CUDA graph capture, with
-        the static state ``t``; the result is cached and passed back to ``op`` as ``tc``.
-        Allocate through torch. For ``scatter_split`` the planes are those of the output
-        gradient, B * C_out, and the state covers every basis function. Only consulted when
-        ``has_call_state``.
+        ``in_shape`` is ``(nlat, nlon)`` of the contraction's input -- the gather's input, the
+        scatters' output: on a distributed layer the rank's block as it is contracted, which
+        the layer's own attributes need not describe. Called once per key, outside the
+        autograd nodes and outside CUDA graph capture, with the static state ``t``; the result
+        is cached and passed back to ``op`` as ``tc``. Allocate through torch. For
+        ``scatter_split`` the planes are those of the output gradient, B * C_out, and the
+        state covers every basis function. Only consulted when ``has_call_state``.
         """
         return ()
 
-    def bind(self, ops: Sequence[Tuple[str, int]], dtype: torch.dtype, t: Tensors) -> Tuple[CallLayout, Tensors]:
+    def bind(self, ops: Sequence[Tuple[str, int]], dtype: torch.dtype, in_shape: Tuple[int, int], t: Tensors) -> Tuple[CallLayout, Tensors]:
         """
-        The call state of the operations ``ops`` -- ``(op, bc)`` pairs -- for activations of ``dtype``.
+        The call state of the operations ``ops`` -- ``(op, bc)`` pairs -- for activations of ``dtype`` on an input of ``in_shape``.
 
         Returns the layout and the flat tuple of tensors a node takes (see ``call_slice``).
         Builds what is not cached yet; raises if that would happen during CUDA graph capture.
@@ -200,23 +202,24 @@ class DiscoPlanS2:
         if not self.has_call_state:
             return tuple((op, 0, 0) for op, _ in ops), ()
 
+        in_shape = (int(in_shape[0]), int(in_shape[1]))
         layout, tc = [], []
         for op, bc in ops:
             if op not in PLAN_OPS:
                 raise ValueError(f"unknown plan operation {op!r}; known: {PLAN_OPS}")
-            key = (op, int(bc), dtype)
+            key = (op, int(bc), dtype, in_shape)
             state = self._call_states.get(key)
             if state is None and compiling:
                 # built for this call only, see above
                 with torch.no_grad():
-                    state = tuple(self.call_state(op, int(bc), dtype, t))
+                    state = tuple(self.call_state(op, int(bc), dtype, in_shape, t))
             elif state is None:
                 if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
                     raise RuntimeError(
-                        f"{type(self).__name__} would build the call state of {op} for {bc} planes of {dtype} during CUDA graph capture; "
+                        f"{type(self).__name__} would build the call state of {op} for {bc} planes of {dtype} on {in_shape} during CUDA graph capture; "
                         "run the layer once eagerly with the shapes to be captured first"
                     )
-                state = self._build_call_state(op, int(bc), dtype, t)
+                state = self._build_call_state(op, int(bc), dtype, in_shape, t)
                 self._call_states[key] = state
                 while len(self._call_states) > self.max_call_states:
                     self._call_states.popitem(last=False)
@@ -226,7 +229,7 @@ class DiscoPlanS2:
             tc.extend(state)
         return tuple(layout), tuple(tc)
 
-    def _build_call_state(self, op: str, bc: int, dtype: torch.dtype, t: Tensors) -> Tensors:
+    def _build_call_state(self, op: str, bc: int, dtype: torch.dtype, in_shape: Tuple[int, int], t: Tensors) -> Tensors:
         """
         ``call_state``, built in an eager call so that every later call can use it.
 
@@ -237,8 +240,8 @@ class DiscoPlanS2:
         with torch.no_grad():
             if torch.is_inference_mode_enabled():
                 with torch.inference_mode(False):
-                    return tuple(self.call_state(op, bc, dtype, t))
-            return tuple(self.call_state(op, bc, dtype, t))
+                    return tuple(self.call_state(op, bc, dtype, in_shape, t))
+            return tuple(self.call_state(op, bc, dtype, in_shape, t))
 
     # ------------------------------------------------------------------ operations
 

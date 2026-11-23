@@ -1265,13 +1265,15 @@ class _KeyedPlan(ArcPlanS2):
 
     has_call_state = True
     built = None
+    shapes = None
     used = None
 
     def has_gather(self, dtype):
         return True
 
-    def call_state(self, op, bc, dtype, t):
+    def call_state(self, op, bc, dtype, in_shape, t):
         type(self).built.append((op, bc, dtype))
+        type(self).shapes.append(in_shape)
         # the values, and the key they were built for
         return (self.arcs(t)[-1].clone(), torch.tensor([bc], device=t[0].device))
 
@@ -1320,7 +1322,7 @@ class TestDiscoPlan(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
         _CountingPlan.calls = {"gather": 0, "scatter": 0, "scatter_split": 0}
-        _KeyedPlan.built, _KeyedPlan.used = [], []
+        _KeyedPlan.built, _KeyedPlan.shapes, _KeyedPlan.used = [], [], []
 
     def _pair(self, in_channels, out_channels, fused, backend=None):
         """The same layer twice, with the counting (or the given) backend and with the arc backend."""
@@ -1459,6 +1461,8 @@ class TestDiscoPlan(unittest.TestCase):
         dgrad_channels = out_channels if spatial_first else in_channels
         expected = [(op, b * c, torch.float32) for b in (2, 3) for op, c in (("gather", in_channels), (dgrad_op, dgrad_channels))]
         self.assertEqual(_KeyedPlan.built, expected)
+        # with the shape of the contraction's input, the gather's and the scatters' alike
+        self.assertEqual(set(_KeyedPlan.shapes), {(16, 32)})
         # every operation ran with the state built for the planes it contracted
         for op, bc_built, bc_seen in _KeyedPlan.used:
             self.assertEqual(bc_built, bc_seen, f"{op} ran with the call state of another key")
@@ -1473,7 +1477,7 @@ class TestDiscoPlan(unittest.TestCase):
         with torch.inference_mode():
             conv(x)
         self.assertEqual(_KeyedPlan.built, [("gather", 8, torch.float32)])
-        state = conv.backend.plan._call_states[("gather", 8, torch.float32)]
+        state = conv.backend.plan._call_states[("gather", 8, torch.float32, (16, 32))]
         self.assertFalse(any(s.is_inference() or s.requires_grad for s in state))
 
         x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
@@ -1492,13 +1496,13 @@ class TestDiscoPlan(unittest.TestCase):
         plan = conv.backend.plan
         t = plan.state(conv)
         for bc in range(1, plan.max_call_states + 2):
-            plan.bind((("gather", bc),), torch.float32, t)
+            plan.bind((("gather", bc),), torch.float32, (16, 32), t)
         self.assertEqual(len(plan._call_states), plan.max_call_states)
-        self.assertNotIn(("gather", 1, torch.float32), plan._call_states)
+        self.assertNotIn(("gather", 1, torch.float32, (16, 32)), plan._call_states)
         # a hit refreshes, a miss rebuilds
-        plan.bind((("gather", 2),), torch.float32, t)
-        plan.bind((("gather", 1),), torch.float32, t)
-        self.assertIn(("gather", 2, torch.float32), plan._call_states)
+        plan.bind((("gather", 2),), torch.float32, (16, 32), t)
+        plan.bind((("gather", 1),), torch.float32, (16, 32), t)
+        self.assertIn(("gather", 2, torch.float32, (16, 32)), plan._call_states)
         self.assertEqual(_KeyedPlan.built.count(("gather", 1, torch.float32)), 2)
 
     def test_call_state_is_not_built_during_capture(self):
@@ -1506,11 +1510,11 @@ class TestDiscoPlan(unittest.TestCase):
         conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
         plan = conv.backend.plan
         t = plan.state(conv)
-        plan.bind((("gather", 8),), torch.float32, t)
+        plan.bind((("gather", 8),), torch.float32, (16, 32), t)
         with mock.patch.object(torch.cuda, "is_available", return_value=True), mock.patch.object(torch.cuda, "is_current_stream_capturing", return_value=True):
-            plan.bind((("gather", 8),), torch.float32, t)
+            plan.bind((("gather", 8),), torch.float32, (16, 32), t)
             with self.assertRaisesRegex(RuntimeError, "during CUDA graph capture"):
-                plan.bind((("gather", 16),), torch.float32, t)
+                plan.bind((("gather", 16),), torch.float32, (16, 32), t)
 
     def test_contraction_binds_its_operations(self):
         """``contract`` binds the gather's call state over the input's planes, and the scatter's only when the gradient is needed."""
