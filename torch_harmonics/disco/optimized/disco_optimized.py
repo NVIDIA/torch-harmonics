@@ -33,7 +33,8 @@
 # contraction and its transpose as custom ops with autograd, and the autograd node that
 # fuses the contraction with the weight contraction. psi reaches them in the layouts
 # built by torch_harmonics.disco._psi_layouts; which ones a layer holds is its backend's
-# choice.
+# choice. On regular grids the nodes run the kernels of the backend's plan (disco_plan.py)
+# rather than particular ones.
 
 import functools
 from typing import Optional
@@ -50,6 +51,7 @@ from torch_harmonics.utils import check
 
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype, _weight_contraction, _weight_expansion, _weight_gradient
+from .disco_plan import call_slice
 
 
 @functools.lru_cache(maxsize=None)
@@ -119,28 +121,15 @@ def _use_spatial_first_dgrad(out_per_group: int, in_per_group: int, kernel_size:
     return kernel_size > 1 and out_per_group * 2 <= in_per_group
 
 
-def _spatial_first_dgrad(grad_output_r, weight, row_lat, seg_off, seg, val_off, vals, split_ker, kernel_size, nlat_in, nlon_in, row_offsets):
+def _spatial_first_dgrad(grad_output_r, weight, plan, t, tc, nlat_in, nlon_in):
     """
-    Input gradient with the sparse transpose first, one scatter per basis function.
-
-    Basis function k's rows are ``row_offsets[k]:row_offsets[k + 1]``. Their arc and value
-    offsets are absolute, so each call reads slices of the same arrays and needs only
-    ``split_ker``, zeros, in place of row_ker for a K = 1 call. See build_split.
+    Input gradient with the sparse transpose first: the plan's per-basis-function scatter of
+    the output gradient, then the weight contraction.
     """
     B, G, Og, H, W = grad_output_r.shape
     grad_small = grad_output_r.reshape(B, G * Og, 1, H, W).contiguous()
-
-    parts = []
-    for k in range(kernel_size):
-        r0, r1 = row_offsets[k], row_offsets[k + 1]
-        if r1 == r0:
-            parts.append(grad_output_r.new_zeros((B, G, Og, nlat_in, nlon_in)))
-            continue
-        part = disco_kernels.backward_regular.default(grad_small, split_ker[: r1 - r0], row_lat[r0:r1], seg_off[r0 : r1 + 1], seg, val_off[r0 : r1 + 1], vals, 1, nlat_in, nlon_in)
-        parts.append(part.reshape(B, G, Og, nlat_in, nlon_in))
-
-    # (B, G, Og, K, H, W) contracted over Og and K: the weight with its channel axes swapped
-    grad_spatial = torch.stack(parts, dim=3).reshape(B, G * Og, kernel_size, nlat_in, nlon_in)
+    # (B, G * Og, K, H, W) contracted over Og and K: the weight with its channel axes swapped
+    grad_spatial = plan.scatter_split(grad_small, t, tc, nlat_in, nlon_in)
     return _weight_contraction(grad_spatial, weight.transpose(1, 2))
 
 
@@ -574,47 +563,66 @@ if optimized_kernels_is_available():
     _register_autocast("disco_kernels::_disco_s2_transpose_contraction_ragged_optimized", ("cuda", "cpu"))
 
 
-def _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out):
-    """The raw forward contraction: tensor-core kpacked when its layout is given, the arc gather otherwise."""
-    inp = inp.contiguous()
-    if pack_idx is not None:
-        return disco_kernels.forward_kpacked.default(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
-    itype = inp.dtype
-    out = disco_kernels.forward_regular.default(inp, row_ker, row_lat, seg_off, seg, val_off, vals.to(_compute_dtype(itype)), kernel_size, nlat_out, nlon_out)
-    return out.to(itype)
-
-
-class _DiscoKpackedFn(torch.autograd.Function):
+class _DiscoContractFn(torch.autograd.Function):
     """
-    Kpacked forward contraction, arc scatter backward.
+    The contraction through a plan: its gather forward, its scatter backward.
 
-    The backward stays on the scatter kernel: it is input-pixel-parallel with no cross-CTA
-    atomics, the right algorithm for overlapping support sets (the reason cuDNN uses an
-    implicit GEMM rather than col2im for strided convolutions).
+    For the activations a plan has kernels of its own for (see ``DiscoPlanS2.has_gather``
+    and ``has_scatter``), e.g. the tensor-core forward on fp16/bf16; whichever of the two the
+    plan does not have runs on the arc kernels, the plan's defaults. The scatter is the
+    right backward: input-pixel-parallel with no cross-CTA atomics, the algorithm for
+    overlapping support sets (the reason cuDNN uses an implicit GEMM rather than col2im for
+    strided convolutions).
+
+    The backward calls the raw kernels, which autograd cannot see. Under
+    ``create_graph=True`` it runs the transpose contraction op on the plan's arcs instead,
+    which has autograd, so double backward works.
     """
 
     @staticmethod
-    def forward(ctx, inp, pack_idx, pack_val, pack_offset, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out):
-        ctx.save_for_backward(row_ker, row_lat, seg_off, seg, val_off, vals)
-        ctx.kernel_size = kernel_size
+    def forward(ctx, inp, plan, layout, n_static, *tensors):
+        t, tc = tensors[:n_static], tensors[n_static:]
+        ctx.plan = plan
+        ctx.layout = layout
+        ctx.n_static = n_static
+        ctx.save_for_backward(*tensors)
         ctx.nlat_in = inp.shape[-2]
         ctx.nlon_in = inp.shape[-1]
-        return _contract(inp, None, None, None, None, None, None, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
+        return plan.gather(inp.contiguous(), t, call_slice(layout, tc, "gather"))
 
     @staticmethod
     def backward(ctx, grad_output):
+        tensors = ctx.saved_tensors
+        t, tc = tuple(tensors[: ctx.n_static]), tuple(tensors[ctx.n_static :])
+        plan = ctx.plan
         grad_input = None
         if ctx.needs_input_grad[0]:
-            # the transpose contraction op rather than the raw scatter kernel: the op has
-            # autograd, so this backward is itself differentiable (double backward works)
-            grad_input = _disco_s2_transpose_contraction_regular_optimized(grad_output, *ctx.saved_tensors, ctx.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        # inp, pack_idx, pack_val, pack_offset, the six arc arrays, kernel_size, nlat_out, nlon_out
-        return (grad_input,) + (None,) * 12
+            if torch.is_grad_enabled() and not torch.compiler.is_compiling():
+                # create_graph=True: the transpose contraction op, which has autograd
+                grad_input = _disco_s2_transpose_contraction_regular_optimized(grad_output, *plan.arcs(t), plan.kernel_size, ctx.nlat_in, ctx.nlon_in)
+            else:
+                grad_input = plan.scatter(grad_output.contiguous(), t, call_slice(ctx.layout, tc, "scatter"), ctx.nlat_in, ctx.nlon_in).to(grad_output.dtype)
+        # inp, plan, layout, n_static, then the tensors
+        return (grad_input, None, None, None) + (None,) * len(tensors)
 
 
-def _disco_s2_contraction_kpacked(inp, kpacked, arcs, kernel_size, nlat_out, nlon_out):
-    """Kpacked forward through :class:`_DiscoKpackedFn`; ``kpacked`` is (pack_idx, pack_val, pack_offset), ``arcs`` the six arc arrays."""
-    return _DiscoKpackedFn.apply(inp, *kpacked, *arcs, kernel_size, nlat_out, nlon_out)
+def _needs_input_grad(inp: torch.Tensor) -> bool:
+    """Whether a node over ``inp`` will be asked for its gradient: what the backward's call state is bound for."""
+    return torch.is_grad_enabled() and inp.requires_grad
+
+
+def _disco_s2_contraction_planned(inp, plan, t):
+    """
+    The contraction of ``inp`` through ``plan`` (see :class:`_DiscoContractFn`).
+
+    ``t`` is the plan's static state. The call state is bound here, before the node: the
+    gather's over the input's planes, and, if the input's gradient will be needed, the
+    scatter's over the same planes.
+    """
+    bc = inp.shape[0] * inp.shape[1]
+    ops = (("gather", bc), ("scatter", bc)) if _needs_input_grad(inp) else (("gather", bc),)
+    layout, tc = plan.bind(ops, inp.dtype, t)
+    return _DiscoContractFn.apply(inp, plan, layout, len(t), *t, *tc)
 
 
 class _DiscoConvFn(torch.autograd.Function):
@@ -629,104 +637,79 @@ class _DiscoConvFn(torch.autograd.Function):
       one extra contraction. This is the layer's ``fused=True``.
     * the input gradient can run the sparse transpose before the weight contraction
       (spatial-first, see :func:`_use_spatial_first_dgrad`), which it can only choose when
-      it sees the weight. ``split_ker`` and ``split_row_offsets`` (see build_split) are its
-      state, and it is considered exactly when they are passed.
+      it sees the weight. It is considered when the plan holds the per-basis-function row
+      ranges (``plan.has_split``).
 
-    The forward contraction is the kpacked tensor-core kernel when its layout is passed,
-    the arc gather otherwise, and the recompute runs the same contraction, so it costs one
-    forward and reproduces the saved intermediate exactly. The backward is the arc scatter
-    either way.
+    The kernels are the plan's (see :mod:`.disco_plan`): its gather for the forward
+    contraction, and for the recompute, which so reproduces the saved intermediate exactly;
+    its scatter for the input gradient. The node receives the plan's static state and the
+    call state bound for this call (``layout`` says which operation's is where), and which
+    order the input gradient takes, decided when the call state was bound.
 
     The backward calls the raw kernels, which autograd cannot see. Under
-    ``create_graph=True`` it is built from the contraction ops and matmuls instead (see
-    :func:`_conv_backward_differentiable`), so double backward works. That needs the input
-    itself, which is why it is saved even when the K-expanded intermediate is.
+    ``create_graph=True`` it is built from the contraction ops on the plan's arcs and matmuls
+    instead (see :func:`_conv_backward_differentiable`), so double backward works. That needs
+    the input itself, which is why it is saved even when the K-expanded intermediate is.
     """
 
     @staticmethod
-    def forward(
-        ctx,
-        inp,
-        weight,
-        row_ker,
-        row_lat,
-        seg_off,
-        seg,
-        val_off,
-        vals,
-        pack_idx,
-        pack_val,
-        pack_offset,
-        split_ker,
-        kernel_size,
-        nlat_out,
-        nlon_out,
-        groups,
-        groupsize,
-        recompute,
-        split_row_offsets,
-    ):
+    def forward(ctx, inp, weight, plan, groups, groupsize, recompute, spatial_first, layout, n_static, *tensors):
         itype = inp.dtype
-        x_expanded = _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
+        t, tc = tensors[:n_static], tensors[n_static:]
+        x_expanded = plan.gather(inp.contiguous(), t, call_slice(layout, tc, "gather"))
 
         # the input as passed, not a contiguous copy made here: only the input carries its
         # graph into a create_graph backward. Saving it only keeps a reference.
-        # the kpacked layout (or None) too, so the recompute runs the contraction this forward ran
-        ctx.save_for_backward(inp, None if recompute else x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker, pack_idx, pack_val, pack_offset)
+        ctx.save_for_backward(inp, None if recompute else x_expanded, weight, *tensors)
+        ctx.plan = plan
+        ctx.n_static = n_static
+        ctx.layout = layout
+        ctx.spatial_first = spatial_first
         ctx.recompute = recompute
-        ctx.kernel_size = kernel_size
         ctx.nlat_in = inp.shape[-2]
         ctx.nlon_in = inp.shape[-1]
-        ctx.nlat_out = nlat_out
-        ctx.nlon_out = nlon_out
         ctx.groups = groups
-        ctx.groupsize = groupsize
-        ctx.split_row_offsets = split_row_offsets
 
         return _weight_contraction(x_expanded, weight.to(itype))
 
     @staticmethod
     def backward(ctx, grad_output):
-        inp, x_expanded, weight, row_ker, row_lat, seg_off, seg, val_off, vals, split_ker, pack_idx, pack_val, pack_offset = ctx.saved_tensors
+        inp, x_expanded, weight, *tensors = ctx.saved_tensors
+        t, tc = tuple(tensors[: ctx.n_static]), tuple(tensors[ctx.n_static :])
+        plan, layout = ctx.plan, ctx.layout
 
         itype = grad_output.dtype
-        vals_c = vals.to(_compute_dtype(itype))
-
-        K = ctx.kernel_size
-        G, Cg = ctx.groups, ctx.groupsize
-        H, W = ctx.nlat_out, ctx.nlon_out
+        G = ctx.groups
+        H, W = plan.nlat_out, plan.nlon_out
         Og = weight.shape[1]
         B = grad_output.shape[0]
         grad_output_r = grad_output.reshape(B, G, Og, H, W)
 
-        # inp, weight, then the six arc arrays, the three kpacked ones, split_ker,
-        # kernel_size, nlat_out, nlon_out, groups, groupsize, recompute, split_row_offsets
-        nones = (None,) * 17
+        # inp, weight, plan, groups, groupsize, recompute, spatial_first, layout, n_static,
+        # then the tensors
+        nones = (None,) * (7 + len(tensors))
 
         # create_graph=True: the gradients must be differentiable themselves. Eager only, a
         # compiled backward rejects create_graph by itself.
         if torch.is_grad_enabled() and not torch.compiler.is_compiling():
-            arcs = (row_ker, row_lat, seg_off, seg, val_off, vals)
-            return _conv_backward_differentiable(ctx, grad_output_r, inp, weight, arcs) + nones
+            return _conv_backward_differentiable(ctx, grad_output_r, inp, weight, plan.arcs(t)) + nones
 
         grad_inp = None
         grad_weight = None
 
         if ctx.needs_input_grad[0]:
-            if split_ker is not None and _use_spatial_first_dgrad(Og, Cg, K):
-                grad_inp = _spatial_first_dgrad(
-                    grad_output_r, weight.to(itype), row_lat, seg_off, seg, val_off, vals_c, split_ker, K, ctx.nlat_in, ctx.nlon_in, ctx.split_row_offsets
-                )
+            if ctx.spatial_first:
+                grad_inp = _spatial_first_dgrad(grad_output_r, weight.to(itype), plan, t, call_slice(layout, tc, "scatter_split"), ctx.nlat_in, ctx.nlon_in)
             else:
                 grad_x_expanded = _weight_expansion(grad_output, weight.to(itype))
-                grad_inp = disco_kernels.backward_regular.default(grad_x_expanded, row_ker, row_lat, seg_off, seg, val_off, vals_c, K, ctx.nlat_in, ctx.nlon_in)
+                grad_inp = plan.scatter(grad_x_expanded, t, call_slice(layout, tc, "scatter"), ctx.nlat_in, ctx.nlon_in)
             grad_inp = grad_inp.to(itype)
 
         if ctx.needs_input_grad[1]:
             if ctx.recompute:
-                # the forward's own contraction: the tensor-core kernel when the layer has the
-                # kpacked layout, not the arc gather, which is several times slower there
-                x_expanded = _contract(inp, row_ker, row_lat, seg_off, seg, val_off, vals, pack_idx, pack_val, pack_offset, K, H, W)
+                # the forward's own contraction: the tensor-core kernel when the plan has it,
+                # not the arc gather, which is several times slower there
+                x_expanded = plan.gather(inp.contiguous(), t, call_slice(layout, tc, "gather"))
             grad_weight = _weight_gradient(grad_output, x_expanded.to(itype), G)
 
         return (grad_inp, grad_weight) + nones
@@ -742,7 +725,7 @@ def _conv_backward_differentiable(ctx, grad_output_r, inp, weight, arcs):
     path, without its choices of kernel.
     """
     B, G, Og, H, W = grad_output_r.shape
-    K = ctx.kernel_size
+    K = ctx.plan.kernel_size
     itype = grad_output_r.dtype
 
     grad_inp = None
@@ -759,7 +742,7 @@ def _conv_backward_differentiable(ctx, grad_output_r, inp, weight, arcs):
     return grad_inp, grad_weight
 
 
-def _disco_s2_conv_optimized(inp, weight, arcs, kpacked, split, kernel_size, nlat_out, nlon_out, groups, groupsize, recompute=False):
+def _disco_s2_conv_optimized(inp, weight, plan, t, groups, groupsize, recompute=False):
     """
     Contraction plus weight contraction through :class:`_DiscoConvFn`.
 
@@ -769,19 +752,24 @@ def _disco_s2_conv_optimized(inp, weight, arcs, kpacked, split, kernel_size, nla
         ``(B, groups * groupsize, H_in, W_in)``.
     weight : torch.Tensor
         ``(groups, out_per_group, groupsize, kernel_size)``.
-    arcs : Tuple[torch.Tensor, ...]
-        ``(row_ker, row_lat, seg_off, seg, val_off, vals)``, always: the backward reads it.
-    kpacked : Optional[Tuple[torch.Tensor, ...]]
-        ``(pack_idx, pack_val, pack_offset)`` to run the forward on the tensor cores.
-    split : Optional[Tuple]
-        ``(split_ker, row_offsets)`` from build_split, to allow the spatial-first input
-        gradient.
+    plan : DiscoPlanS2
+        The kernels, see :mod:`.disco_plan`.
+    t : Tuple[torch.Tensor, ...]
+        The plan's static state, ``plan.state(layer)``. The call state is bound here, before
+        the node: the gather's over the input's planes, and, if the input's gradient will be
+        needed, the input gradient's -- the weight-first scatter's over the same planes or the
+        spatial-first scatter's over the output gradient's.
     recompute : bool
         Recompute the K-expanded intermediate in backward rather than saving it.
     """
-    pack_idx, pack_val, pack_offset = kpacked if kpacked is not None else (None, None, None)
-    split_ker, row_offsets = split if split is not None else (None, ())
-    return _DiscoConvFn.apply(inp, weight, *arcs, pack_idx, pack_val, pack_offset, split_ker, kernel_size, nlat_out, nlon_out, groups, groupsize, recompute, row_offsets)
+    B, C = inp.shape[0], inp.shape[1]
+    out_per_group = weight.shape[1]
+    spatial_first = plan.has_split and _use_spatial_first_dgrad(out_per_group, groupsize, plan.kernel_size)
+    ops = (("gather", B * C),)
+    if _needs_input_grad(inp):
+        ops += (("scatter_split", B * groups * out_per_group) if spatial_first else ("scatter", B * C),)
+    layout, tc = plan.bind(ops, inp.dtype, t)
+    return _DiscoConvFn.apply(inp, weight, plan, groups, groupsize, recompute, spatial_first, layout, len(t), *t, *tc)
 
 
 def _spatial_first_dgrad_ragged(grad_output_r, weight, row_pt, seg_off, seg, val_off, vals, ring_base, ring_size, split_ker, kernel_size, npoints_in, row_offsets):
