@@ -239,12 +239,12 @@ class DiscoPlanS2:
         """
         Free the plan's call states; they are rebuilt as calls need them.
 
-        Synchronizes the device first, so no stream still uses them. Not while a captured CUDA
-        graph that replays them is still to be run: the graph keeps their addresses, not the
-        tensors.
+        Synchronizes every device that holds them first, so no stream still uses them. Not while
+        a captured CUDA graph that replays them is still to be run: the graph keeps their
+        addresses, not the tensors.
         """
-        if any(x.is_cuda for state in self._call_states.values() for x in state):
-            torch.cuda.synchronize()
+        for device in {x.device for state in self._call_states.values() for x in state if x.is_cuda}:
+            torch.cuda.synchronize(device)
         self._call_states.clear()
         self._warned = False
 

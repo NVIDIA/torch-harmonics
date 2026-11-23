@@ -1513,7 +1513,10 @@ class TestDiscoPlan(unittest.TestCase):
             warnings.simplefilter("error")
             plan.bind((("gather", plan.call_state_warn + 2),), torch.float32, (16, 32), t)
         self.assertEqual(len(plan._call_states), plan.call_state_warn + 2)
-        plan.clear_call_states()
+        with mock.patch.object(torch.cuda, "synchronize") as synchronize:
+            plan.clear_call_states()
+        # the device holding the state, whichever is current
+        self.assertEqual([c.args[0] for c in synchronize.call_args_list], [conv.psi_vals.device] if self.device.type == "cuda" else [])
         self.assertEqual(len(plan._call_states), 0)
         # rebuilt as needed
         plan.bind((("gather", 1),), torch.float32, (16, 32), t)
