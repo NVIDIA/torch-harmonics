@@ -1229,6 +1229,9 @@ class _CountingPlan(ArcPlanS2):
     def has_gather(self, dtype):
         return True
 
+    def has_scatter(self, dtype):
+        return True
+
     def _count(self, op):
         # a side effect Dynamo will not trace inside the autograd node; the compile test does not count
         if not torch.compiler.is_compiling():
@@ -1373,9 +1376,13 @@ class TestDiscoPlan(unittest.TestCase):
         self.assertEqual(_CountingPlan.calls["scatter_split"], 1 if spatial_first else 0)
         self.assertEqual(_CountingPlan.calls["scatter"], 0 if spatial_first else 1)
 
-    def test_drop_in_plan_runs_the_contraction(self):
-        """A plan that claims the gather serves ``contract`` too, with the arc scatter as its backward."""
+    @parameterized.expand([["both"], ["scatter"]])
+    def test_drop_in_plan_runs_the_contraction(self, claims):
+        """A plan with kernels of its own serves ``contract`` (the unfused distributed convolution) too, forward and backward."""
         conv, conv_arc = self._pair(4, 4, False)
+        if claims == "scatter":
+            # a plan with only a scatter of its own still takes the contraction's backward
+            conv.backend.plan.has_gather = lambda dtype: False
         x = torch.randn(2, 4, 16, 32, device=self.device)
         x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
         y, y_arc = conv.backend.contract(conv, x1), conv_arc.backend.contract(conv_arc, x2)
@@ -1384,8 +1391,31 @@ class TestDiscoPlan(unittest.TestCase):
         y_arc.backward(grad)
 
         self.assertEqual(_CountingPlan.calls["gather"], 1)
+        self.assertEqual(_CountingPlan.calls["scatter"], 1)
         self.assertTrue(compare_tensors("contraction", y, y_arc, atol=1e-6, rtol=1e-6))
         self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
+
+    def test_drop_in_plan_contraction_double_backward(self):
+        """Under ``create_graph=True`` the contraction's backward is built from ops autograd sees, and stays differentiable."""
+        conv, conv_arc = self._pair(4, 4, False)
+        x = torch.randn(2, 4, 16, 32, device=self.device, dtype=torch.float64)
+        conv, conv_arc = conv.double(), conv_arc.double()
+        grads = []
+        for c in (conv, conv_arc):
+            xi = x.clone().requires_grad_(True)
+            y = c.backend.contract(c, xi)
+            (g,) = torch.autograd.grad(y.square().sum(), xi, create_graph=True)
+            if c is conv:
+                # the differentiable path, not the plan's raw scatter
+                self.assertEqual(_CountingPlan.calls["scatter"], 0)
+            (gg,) = torch.autograd.grad(g.square().sum(), xi)
+            if c is conv:
+                # the second pass builds no graph: back through the node, it is the plan's scatter
+                self.assertEqual(_CountingPlan.calls["scatter"], 1)
+            grads.append((g.detach(), gg))
+        self.assertEqual(conv.backend.name, "regular-counting")
+        self.assertTrue(compare_tensors("first derivative", grads[0][0], grads[1][0], atol=1e-10, rtol=1e-10))
+        self.assertTrue(compare_tensors("second derivative", grads[0][1], grads[1][1], atol=1e-10, rtol=1e-10))
 
     def test_plan_state_goes_with_the_backend(self):
         """The plan's own tensors are the backend's state: registered with it, removed when another backend is selected."""
@@ -1461,13 +1491,29 @@ class TestDiscoPlan(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "during CUDA graph capture"):
                 plan.bind((("gather", 16),), torch.float32, t)
 
-    def test_contraction_binds_the_gather(self):
-        """``contract`` binds the gather's call state over the input's planes."""
+    def test_contraction_binds_its_operations(self):
+        """``contract`` binds the gather's call state over the input's planes, and the scatter's only when the gradient is needed."""
         conv, conv_arc = self._pair(4, 4, False, backend=_KeyedBackend)
         x = torch.randn(3, 4, 16, 32, device=self.device)
         y, y_arc = conv.backend.contract(conv, x), conv_arc.backend.contract(conv_arc, x)
         self.assertTrue(compare_tensors("contraction", y, y_arc, atol=1e-6, rtol=1e-6))
         self.assertEqual(_KeyedPlan.built, [("gather", 12, torch.float32)])
+
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        y, y_arc = conv.backend.contract(conv, x1), conv_arc.backend.contract(conv_arc, x2)
+        grad = torch.randn_like(y)
+        y.backward(grad)
+        y_arc.backward(grad)
+        self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
+        self.assertEqual(_KeyedPlan.built, [("gather", 12, torch.float32), ("scatter", 12, torch.float32)])
+        self.assertIn(("scatter", 12, 12), _KeyedPlan.used)
+
+    def test_conv_without_input_grad_binds_no_scatter(self):
+        """Inference binds only the gather: no call state is built for a gradient that is never taken."""
+        conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
+        with torch.no_grad():
+            conv(torch.randn(2, 4, 16, 32, device=self.device))
+        self.assertEqual(_KeyedPlan.built, [("gather", 8, torch.float32)])
 
     @parameterized.expand([[False], [True]])
     @requires_torch_compile

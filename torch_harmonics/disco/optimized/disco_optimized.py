@@ -565,46 +565,64 @@ if optimized_kernels_is_available():
 
 class _DiscoContractFn(torch.autograd.Function):
     """
-    The contraction through a plan's own gather, with the arc scatter as backward.
+    The contraction through a plan: its gather forward, its scatter backward.
 
-    For the activations a plan has kernels of its own for (see ``DiscoPlanS2.has_gather``),
-    e.g. the tensor-core forward on fp16/bf16. The backward stays on the scatter kernel: it
-    is input-pixel-parallel with no cross-CTA atomics, the right algorithm for overlapping
-    support sets (the reason cuDNN uses an implicit GEMM rather than col2im for strided
-    convolutions).
+    For the activations a plan has kernels of its own for (see ``DiscoPlanS2.has_gather``
+    and ``has_scatter``), e.g. the tensor-core forward on fp16/bf16; whichever of the two the
+    plan does not have runs on the arc kernels, the plan's defaults. The scatter is the
+    right backward: input-pixel-parallel with no cross-CTA atomics, the algorithm for
+    overlapping support sets (the reason cuDNN uses an implicit GEMM rather than col2im for
+    strided convolutions).
+
+    The backward calls the raw kernels, which autograd cannot see. Under
+    ``create_graph=True`` it runs the transpose contraction op on the plan's arcs instead,
+    which has autograd, so double backward works.
     """
 
     @staticmethod
-    def forward(ctx, inp, plan, n_static, *tensors):
-        # the static state, then the gather's call state
+    def forward(ctx, inp, plan, layout, n_static, *tensors):
         t, tc = tensors[:n_static], tensors[n_static:]
         ctx.plan = plan
-        ctx.save_for_backward(*t)
-        ctx.n_tensors = len(tensors)
+        ctx.layout = layout
+        ctx.n_static = n_static
+        ctx.save_for_backward(*tensors)
         ctx.nlat_in = inp.shape[-2]
         ctx.nlon_in = inp.shape[-1]
-        return plan.gather(inp.contiguous(), t, tc)
+        return plan.gather(inp.contiguous(), t, call_slice(layout, tc, "gather"))
 
     @staticmethod
     def backward(ctx, grad_output):
+        tensors = ctx.saved_tensors
+        t, tc = tuple(tensors[: ctx.n_static]), tuple(tensors[ctx.n_static :])
+        plan = ctx.plan
         grad_input = None
         if ctx.needs_input_grad[0]:
-            # the transpose contraction op rather than the raw scatter kernel: the op has
-            # autograd, so this backward is itself differentiable (double backward works)
-            arcs = ctx.plan.arcs(ctx.saved_tensors)
-            grad_input = _disco_s2_transpose_contraction_regular_optimized(grad_output, *arcs, ctx.plan.kernel_size, ctx.nlat_in, ctx.nlon_in)
-        # inp, plan, n_static, then the tensors
-        return (grad_input, None, None) + (None,) * ctx.n_tensors
+            if torch.is_grad_enabled() and not torch.compiler.is_compiling():
+                # create_graph=True: the transpose contraction op, which has autograd
+                grad_input = _disco_s2_transpose_contraction_regular_optimized(grad_output, *plan.arcs(t), plan.kernel_size, ctx.nlat_in, ctx.nlon_in)
+            else:
+                grad_input = plan.scatter(grad_output.contiguous(), t, call_slice(ctx.layout, tc, "scatter"), ctx.nlat_in, ctx.nlon_in).to(grad_output.dtype)
+        # inp, plan, layout, n_static, then the tensors
+        return (grad_input, None, None, None) + (None,) * len(tensors)
+
+
+def _needs_input_grad(inp: torch.Tensor) -> bool:
+    """Whether a node over ``inp`` will be asked for its gradient: what the backward's call state is bound for."""
+    return torch.is_grad_enabled() and inp.requires_grad
 
 
 def _disco_s2_contraction_planned(inp, plan, t):
     """
-    The contraction of ``inp`` through ``plan``'s gather (see :class:`_DiscoContractFn`).
+    The contraction of ``inp`` through ``plan`` (see :class:`_DiscoContractFn`).
 
-    ``t`` is the plan's static state; the gather's call state is bound here, before the node.
+    ``t`` is the plan's static state. The call state is bound here, before the node: the
+    gather's over the input's planes, and, if the input's gradient will be needed, the
+    scatter's over the same planes.
     """
-    _, tc = plan.bind((("gather", inp.shape[0] * inp.shape[1]),), inp.dtype, t)
-    return _DiscoContractFn.apply(inp, plan, len(t), *t, *tc)
+    bc = inp.shape[0] * inp.shape[1]
+    ops = (("gather", bc), ("scatter", bc)) if _needs_input_grad(inp) else (("gather", bc),)
+    layout, tc = plan.bind(ops, inp.dtype, t)
+    return _DiscoContractFn.apply(inp, plan, layout, len(t), *t, *tc)
 
 
 class _DiscoConvFn(torch.autograd.Function):
@@ -738,17 +756,19 @@ def _disco_s2_conv_optimized(inp, weight, plan, t, groups, groupsize, recompute=
         The kernels, see :mod:`.disco_plan`.
     t : Tuple[torch.Tensor, ...]
         The plan's static state, ``plan.state(layer)``. The call state is bound here, before
-        the node: the gather's over the input's planes, and the input gradient's, the
-        weight-first scatter's over the same planes or the spatial-first scatter's over the
-        output gradient's.
+        the node: the gather's over the input's planes, and, if the input's gradient will be
+        needed, the input gradient's -- the weight-first scatter's over the same planes or the
+        spatial-first scatter's over the output gradient's.
     recompute : bool
         Recompute the K-expanded intermediate in backward rather than saving it.
     """
     B, C = inp.shape[0], inp.shape[1]
     out_per_group = weight.shape[1]
     spatial_first = plan.has_split and _use_spatial_first_dgrad(out_per_group, groupsize, plan.kernel_size)
-    dgrad = ("scatter_split", B * groups * out_per_group) if spatial_first else ("scatter", B * C)
-    layout, tc = plan.bind((("gather", B * C), dgrad), inp.dtype, t)
+    ops = (("gather", B * C),)
+    if _needs_input_grad(inp):
+        ops += (("scatter_split", B * groups * out_per_group) if spatial_first else ("scatter", B * C),)
+    layout, tc = plan.bind(ops, inp.dtype, t)
     return _DiscoConvFn.apply(inp, weight, plan, groups, groupsize, recompute, spatial_first, layout, len(t), *t, *tc)
 
 

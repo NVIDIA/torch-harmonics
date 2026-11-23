@@ -40,7 +40,7 @@ particular kernels. They need three raw operations from it:
     of ``x``. Runs in the forward and in the recompute of ``fused=True``.
 ``scatter(g, t, tc, nlat_in, nlon_in)``
     The arc scatter, ``(B, C, K, H_out, W_out) -> (B, C, H_in, W_in)``: the input gradient
-    taken weight-first.
+    of the contraction, and of the convolution taken weight-first.
 ``scatter_split(g, t, tc, nlat_in, nlon_in)``
     The scatter of each basis function on its own, ``(B, C, 1, H_out, W_out) ->
     (B, C, K, H_in, W_in)``: the input gradient taken spatial-first. Only when the plan holds
@@ -78,7 +78,8 @@ memory is accounted for, and a kernel takes per-call scratch from torch's alloca
 
 New kernels are a subclass: name the static tensors they read and build them in the
 backend's ``prepare``; build the call state in ``call_state``; override the operations they
-implement. Anything they do not implement stays on the arc kernels.
+implement and claim them for the dtypes they take (``has_gather``, ``has_scatter``).
+Anything they do not implement stays on the arc kernels.
 """
 
 from collections import OrderedDict
@@ -221,6 +222,16 @@ class DiscoPlanS2:
 
         If not, the contraction goes through the arc contraction op, which has autograd and
         autocast of its own. The base plan's gather is that op's kernel, so it never needs to.
+        """
+        return False
+
+    def has_scatter(self, dtype: torch.dtype) -> bool:
+        """
+        Whether ``scatter`` runs kernels of the plan's own for gradients of ``dtype``.
+
+        Together with ``has_gather``, decides whether the contraction (``contract``, which
+        the unfused distributed convolution runs) goes through the plan or through the arc
+        contraction op. The convolution node runs the plan either way.
         """
         return False
 

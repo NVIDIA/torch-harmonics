@@ -257,8 +257,8 @@ class RegularOptimizedBackend(DiscoBackendS2):
 
     def contract(self, layer, x):
         dtype = _amp_dtype(x)
-        if not self.plan.has_gather(dtype):
-            # the arc contraction op, which follows autocast by itself
+        if not (self.plan.has_gather(dtype) or self.plan.has_scatter(dtype)):
+            # no kernels of the plan's own: the arc contraction op, which follows autocast by itself
             return _disco_s2_contraction_regular_optimized(x, *self._arcs(layer), layer.kernel_size, *layer._contract_shape)
         return _disco_s2_contraction_planned(x.to(dtype), self.plan, self.plan.state(layer))
 
