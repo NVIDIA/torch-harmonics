@@ -30,6 +30,7 @@
 #
 
 import math
+import types
 import unittest
 from unittest import mock
 
@@ -1718,16 +1719,20 @@ class TestKpackedDeviceGate(unittest.TestCase):
                 self.assertEqual(disco_arch.kpacked_build_available(), bool(built))
 
     def test_the_device_gets_its_own_op(self):
-        """The op a device is handed is that of the extension holding its target."""
+        """Each device is handed the kpacked op of its own family, and a device the build has no image for none."""
+        # spelled out here rather than read from disco_arch's tables, so a wrong mapping there is caught
+        expected = {(9, 0): "forward_kpacked_sm90", (10, 0): "forward_kpacked_sm100", (10, 3): "forward_kpacked_sm100"}
+        ops = types.SimpleNamespace(**{name: types.SimpleNamespace(default=object()) for name in set(expected.values())})
         built = frozenset(self._TARGETS)
-        for capability, (family, _) in disco_arch.DEVICE_TARGETS.items():
+        for capability, name in expected.items():
             with (
                 self.subTest(capability=capability),
+                mock.patch.object(torch.ops, "disco_kernels", ops, create=True),
                 mock.patch.object(disco_arch, "built_targets", return_value=built),
                 mock.patch("torch.cuda.get_device_capability", return_value=capability),
             ):
-                self.assertEqual(disco_arch.device_family(0), family)
-        with mock.patch.object(disco_arch, "built_targets", return_value=frozenset()), mock.patch("torch.cuda.get_device_capability", return_value=(10, 0)):
+                self.assertIs(disco_arch.kpacked_op(0), getattr(ops, name).default)
+        with mock.patch.object(disco_arch, "built_targets", return_value=frozenset({"9.0a"})), mock.patch("torch.cuda.get_device_capability", return_value=(10, 0)):
             with self.assertRaisesRegex(RuntimeError, "no kpacked kernel"):
                 disco_arch.kpacked_op(0)
 
