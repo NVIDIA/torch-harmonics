@@ -87,34 +87,65 @@ def _torch_cuda_arch_list_has(arch: str) -> bool:
     return any(alias in normalized for alias in aliases[arch])
 
 
-# Arch-specific targets the kpacked kernels are built for, and the device each one
-# enables. These cubins are arch-CONDITIONAL: an sm_100a image will not load on a
-# 10.3 device. A build that lists 10.0a next to plain 10.0 (or 10.0+PTX) therefore
-# hands a 10.3 GPU the plain sm_100 image, in which the tcgen05 kernel is an empty
-# stub that returns zeros. So each target gets its own flag, named after the device
-# it enables, and the runtime dispatch accepts exactly the devices built here.
+# The DISCO kernels that need an arch-specific target, built into extensions of their own, one per target
+# family, compiled for exactly the requested targets of that family and nothing else. Their sources use
+# instructions only those targets have (WGMMA on 9.0a, tcgen05 on 10.0a / 10.3a), and arch-specific images
+# are not forward compatible: an sm_100a image does not load on a 10.3 device, nor on Rubin (10.7). So an
+# extension is built when at least one of its targets is in TORCH_CUDA_ARCH_LIST, with one image per listed
+# target, and reports those targets (its TARGETS attribute) so that torch_harmonics/disco/optimized/
+# disco_arch.py selects it only on a matching device. Plain 9.0 / 10.0 / 10.0f targets build none of this.
 #
-# sm_120 / sm_121 (consumer Blackwell, and GB10 in DGX Spark) are deliberately
-# absent: they carry no TMEM and no tcgen05, so neither kpacked kernel can run
-# there and those devices take the CSR path.
-_KPACKED_TARGETS = {
-    "9.0a": "BUILD_KPACKED_SM90",
-    "10.0a": "BUILD_KPACKED_SM100",
-    "10.3a": "BUILD_KPACKED_SM103",
+# sm_120 / sm_121 (consumer Blackwell, and GB10 in DGX Spark) are deliberately absent: they have no TMEM and
+# no tcgen05, so those devices take the arc kernels of the main extension.
+_DISCO_ARCH_EXTENSIONS = {
+    # extension: (targets, sources)
+    "torch_harmonics.disco._C_sm90": (
+        ("9.0a",),
+        [
+            "torch_harmonics/disco/optimized/disco_interface_sm90.cpp",
+            "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm90.cu",
+        ],
+    ),
+    "torch_harmonics.disco._C_sm100": (
+        ("10.0a", "10.3a"),
+        [
+            "torch_harmonics/disco/optimized/disco_interface_sm100.cpp",
+            "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm100.cu",
+        ],
+    ),
 }
 
 
+def get_disco_arch_extensions(CUDAExtension):
+    """The extensions of _DISCO_ARCH_EXTENSIONS whose targets TORCH_CUDA_ARCH_LIST asks for."""
+    flags = get_compile_args("disco")
+    modules = []
+    for name, (targets, sources) in _DISCO_ARCH_EXTENSIONS.items():
+        built = [t for t in targets if _torch_cuda_arch_list_has(t)]
+        if not built:
+            print(f"NOTE: skipping {name}: none of {', '.join(targets)} is in TORCH_CUDA_ARCH_LIST")
+            continue
+        sms = [t.replace(".", "") for t in built]
+        print(f"Compiling {name} for {', '.join('sm_' + sm for sm in sms)}.")
+        # explicit -gencode flags keep torch from adding the other TORCH_CUDA_ARCH_LIST targets
+        gencode = [f"-gencode=arch=compute_{sm},code=sm_{sm}" for sm in sms]
+        defines = [f"-DDISCO_TARGET_SM{sm.upper()}=1" for sm in sms]
+        modules.append(
+            CUDAExtension(
+                name,
+                sources,
+                extra_compile_args={"cxx": flags.get("cxx", []) + defines, "nvcc": flags.get("nvcc", []) + defines + gencode},
+            )
+        )
+    return modules
+
+
 def get_helpers_compile_args(BUILD_CPP, BUILD_CUDA):
-    # BUILD_KPACKED_SM<XY> means "a compute capability X.Y device can run kpacked with
-    # this build", i.e. the arch-specific target X.Ya was compiled. Plain X.Y targets
-    # only produce stubs and never set it.
-    kpacked_flags = [f"-D{flag}={1 if BUILD_CUDA and _torch_cuda_arch_list_has(arch) else 0}" for arch, flag in _KPACKED_TARGETS.items()]
     return {
         "cxx": [
             f"-DBUILD_CPP={1 if BUILD_CPP else 0}",
             f"-DBUILD_CUDA={1 if BUILD_CUDA else 0}",
-        ]
-        + kpacked_flags,
+        ],
     }
 
 
@@ -189,16 +220,14 @@ def get_ext_modules():
             [
                 "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_bwd.cu",
-                # the tensor-core forward; each file compiles to a stub unless its
-                # architecture (9.0a, 10.0a/10.3a) is in TORCH_CUDA_ARCH_LIST
-                "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm90.cu",
-                "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm100.cu",
+                # the tensor-core kpacked forward is in the arch-specific extensions, see _DISCO_ARCH_EXTENSIONS
                 # ragged (HEALPix and other non-product grids); see kernels_cuda/ragged/
                 "torch_harmonics/disco/optimized/kernels_cuda/ragged/disco_cuda_fwd_ragged.cu",
                 "torch_harmonics/disco/optimized/kernels_cuda/ragged/disco_cuda_bwd_ragged.cu",
             ]
         )
         ext_modules.append(CUDAExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))
+        ext_modules.extend(get_disco_arch_extensions(CUDAExtension))
     else:
         ext_modules.append(CppExtension("torch_harmonics.disco._C", disco_sources, extra_compile_args=get_compile_args("disco")))
 

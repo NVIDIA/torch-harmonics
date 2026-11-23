@@ -288,33 +288,30 @@ namespace disco_kernels
             write_cell(bc23, wo23, n0, acc[ng * 4 + 2]);
             write_cell(bc23, wo23, n1, acc[ng * 4 + 3]);
         }
-#else
-        // Target without tcgen05: body intentionally empty.
-        //
-        // Nothing downstream catches this. The host launcher below does not check
-        // the feature macro, and it allocates `out` with torch::zeros, so a build
-        // for the wrong arch returns all-zero activations with no error anywhere.
-        // Validate a new arch numerically, not by reading the build flag.
-        (void)Hi;
-        (void)Wi;
-        (void)K;
-        (void)Ho;
-        (void)Wo;
-        (void)pscale;
-        (void)BC_total;
-        (void)pack_idx;
-        (void)pack_val;
-        (void)pack_offset;
-        (void)inp;
-        (void)out;
+#elif defined(__CUDA_ARCH__)
+#error "disco_cuda_fwd_dense_kpacked_sm100.cu is compiled for sm_100a / sm_103a only, in torch_harmonics.disco._C_sm100 (see setup.py)"
 #endif
     }
 
-    // Host launcher — called from the dispatcher in disco_interface.cpp.
+    // The op disco_kernels::forward_kpacked_sm100, of the extension torch_harmonics.disco._C_sm100, which is
+    // built for sm_100a and/or sm_103a. Raises on any device but a compute capability 10.0 or 10.3 one; which of
+    // the two images the build holds is checked before selection, in torch_harmonics/disco/optimized/disco_arch.py.
     torch::Tensor disco_cuda_fwd_kpacked_sm100(torch::Tensor inp, torch::Tensor pack_idx, torch::Tensor pack_val,
                                                torch::Tensor pack_offset, int64_t K, int64_t Ho, int64_t Wo)
     {
-        // validated, and the device guarded, by the dispatcher in disco_cuda_fwd_dense_kpacked_sm90.cu
+        TORCH_CHECK(inp.device().is_cuda(), "inp must be a CUDA tensor, got ", inp.device());
+        check_kpacked_inputs(inp, pack_idx, pack_val, pack_offset, K, Ho, Wo);
+
+        // launch on the inputs' device, not whichever one is current
+        const at::cuda::OptionalCUDAGuard device_guard(inp.device());
+
+        // cached by PyTorch, unlike cudaGetDeviceProperties, which queries the driver
+        const cudaDeviceProp *props = at::cuda::getDeviceProperties(inp.get_device());
+        TORCH_CHECK(
+            props->major == 10 && (props->minor == 0 || props->minor == 3),
+            "disco_kernels::forward_kpacked_sm100 requires a compute capability 10.0 or 10.3 device (Blackwell); got ",
+            props->major, ".", props->minor);
+
         const auto inp_dtype = inp.scalar_type();
         const int64_t B = inp.size(0);
         const int64_t C = inp.size(1);
@@ -375,5 +372,7 @@ namespace disco_kernels
 
         return out;
     }
+
+    TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m) { m.impl("forward_kpacked_sm100", &disco_cuda_fwd_kpacked_sm100); }
 
 } // namespace disco_kernels

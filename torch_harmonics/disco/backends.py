@@ -108,13 +108,12 @@ from ._disco_utils import _weight_contraction
 from ._psi_layouts import build_arcs, build_kpacked, build_split
 from .kernels_torch.disco_ragged_torch import _disco_s2_contraction_ragged_torch, _disco_s2_transpose_contraction_ragged_torch
 from .kernels_torch.disco_regular_torch import _disco_s2_contraction_regular_torch, _disco_s2_transpose_contraction_regular_torch
+from .optimized import disco_arch
 from .optimized.disco_optimized import (
     _disco_s2_contraction_planned,
     _disco_s2_conv_optimized,
     _disco_s2_conv_ragged_optimized,
-    _kpacked_build_available,
     _kpacked_k_pad,
-    _kpacked_supported_on_device,
 )
 from .optimized.disco_plan import ARC_STATE, KPACKED_STATE, ArcPlanS2, KpackedPlanS2
 
@@ -141,6 +140,11 @@ _RAGGED_ARC_STATE = ("psi_row_ker", "psi_row_pt", "psi_seg_off", "psi_seg", "psi
 #: failing in forward.
 _REGULAR_DEVICES = _kernel_device_types("disco_kernels::forward_regular")
 _RAGGED_DEVICES = _kernel_device_types("disco_kernels::forward_ragged")
+
+
+def _device_index(device: torch.device) -> int:
+    """The index of a CUDA device, the current one for a bare ``cuda``."""
+    return device.index if device.index is not None else torch.cuda.current_device()
 
 
 def _amp_dtype(x: torch.Tensor) -> torch.dtype:
@@ -282,7 +286,7 @@ class RegularKpackedBackend(RegularOptimizedBackend):
     hold for a kernel that could never launch.
 
     Available only for the forward direction, on a device and build the kernels were
-    compiled for (see ``_kpacked_supported_on_device``), for K <= 16 and ``nlon_out`` a
+    compiled for (see ``disco_arch``), for K <= 16 and ``nlon_out`` a
     multiple of 8. Declines in ``prepare`` when the basis functions do not share one
     support, which the layout requires and which is only known once it is built.
     """
@@ -297,8 +301,8 @@ class RegularKpackedBackend(RegularOptimizedBackend):
             super().available(layer, device)
             and not layer.transpose
             and device.type == "cuda"
-            and _kpacked_build_available()
-            and _kpacked_supported_on_device(device.index if device.index is not None else torch.cuda.current_device())
+            and disco_arch.kpacked_build_available()
+            and disco_arch.kpacked_supported_on_device(_device_index(device))
             and _kpacked_k_pad(layer.kernel_size) is not None
             and layer.nlon_out % 8 == 0
         )
@@ -312,6 +316,8 @@ class RegularKpackedBackend(RegularOptimizedBackend):
         for name, t in zip(KPACKED_STATE, kpacked):
             state[name] = t.to(device)
         self.plan = self._make_plan(layer, state)
+        # the forward of the arch-specific extension for this device
+        self.plan.kpacked_op = disco_arch.kpacked_op(_device_index(device))
         return state
 
 

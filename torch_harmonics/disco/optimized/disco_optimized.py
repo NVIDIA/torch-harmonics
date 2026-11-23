@@ -36,67 +36,17 @@
 # choice. On regular grids the nodes run the kernels of the backend's plan (disco_plan.py)
 # rather than particular ones.
 
-import functools
 from typing import Optional
 
 import torch
-from disco_helpers import (
-    kpacked_sm90_kernels_is_available,
-    kpacked_sm100_kernels_is_available,
-    kpacked_sm103_kernels_is_available,
-    optimized_kernels_is_available,
-)
+from disco_helpers import optimized_kernels_is_available
 
 from torch_harmonics.utils import check
 
 from .. import disco_kernels
 from .._disco_utils import _compute_dtype, _weight_contraction, _weight_expansion, _weight_gradient
+from . import disco_arch
 from .disco_plan import call_slice
-
-
-@functools.lru_cache(maxsize=None)
-def _kpacked_build_available() -> bool:
-    """Return True if this build contains any kpacked kernel at all.
-
-    Purely a build-time question: BUILD_KPACKED_SM90 / SM100 / SM103 come from whether
-    TORCH_CUDA_ARCH_LIST asked for 9.0a / 10.0a / 10.3a. If none is present no device
-    can ever run the kpacked path, so the (padded, and at high resolution large)
-    kpacked buffers need not be constructed.
-
-    Deliberately NOT a device check. Modules are normally built on CPU and moved
-    with .to(device) afterwards, so at construction time the runtime device is
-    unknown; keying on it would disable kpacked for the ordinary flow. The device is
-    checked when a backend is selected for it, see RegularKpackedBackend.available.
-    """
-    return any(available() for available in _KPACKED_BUILT_FOR.values())
-
-
-# The device each kpacked build flag enables, mirroring the arch targets in setup.py
-# (9.0a, 10.0a, 10.3a). These cubins are arch-CONDITIONAL, not forward compatible:
-# an sm_100a cubin will not load on sm_103 or sm_107. So each device needs its own
-# target -- one flag shared by 10.0 and 10.3 let a 10.0a-only build select kpacked
-# on a 10.3 GPU, where the driver falls back to a plain sm_100 image whose tcgen05
-# kernel is an empty stub and the forward silently returns zeros (#337). Likewise
-# Rubin reports 10.7 and must not be taken for a 10.0 device.
-_KPACKED_BUILT_FOR = {
-    (9, 0): kpacked_sm90_kernels_is_available,
-    (10, 0): kpacked_sm100_kernels_is_available,
-    (10, 3): kpacked_sm103_kernels_is_available,
-}
-
-
-def _kpacked_supported_on_device(device_index: int) -> bool:
-    """Return True if the kpacked kernel is supported on this CUDA device.
-
-    SM_90a (Hopper)  — WGMMA path in disco_cuda_fwd_dense_kpacked_sm90.cu.
-    SM_100a / SM_103a (Blackwell) — tcgen05 path in disco_cuda_fwd_dense_kpacked_sm100.cu.
-
-    Requires the exact (major, minor) to have been built; see the note on the table
-    above. A device outside those targets falls back to the arc kernels, which are
-    correct everywhere.
-    """
-    available = _KPACKED_BUILT_FOR.get(torch.cuda.get_device_capability(device_index))
-    return available is not None and available()
 
 
 def _kpacked_k_pad(kernel_size: int, n_align: int = 8) -> Optional[int]:
@@ -308,10 +258,13 @@ if optimized_kernels_is_available():
         _check_backward_inputs(inp, row_ker, row_lat, seg_off, seg, val_off, vals, kernel_size, nlat_out, nlon_out, vals_dtype_exact=True)
         return inp.new_empty((inp.shape[0], inp.shape[1], nlat_out, nlon_out))
 
-    @torch.library.register_fake("disco_kernels::forward_kpacked")
-    def _(inp: torch.Tensor, pack_idx: torch.Tensor, pack_val: torch.Tensor, pack_offset: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
+    # the kpacked forward of each arch-specific extension this build has (see disco_arch)
+    def _kpacked_fake(inp: torch.Tensor, pack_idx: torch.Tensor, pack_val: torch.Tensor, pack_offset: torch.Tensor, kernel_size: int, nlat_out: int, nlon_out: int) -> torch.Tensor:
         _check_kpacked_inputs(inp, pack_idx, pack_val, pack_offset, kernel_size, nlat_out, nlon_out)
         return inp.new_empty((inp.shape[0], inp.shape[1], kernel_size, nlat_out, nlon_out))
+
+    for _qualname in disco_arch.loaded_kpacked_ops():
+        torch.library.register_fake(_qualname)(_kpacked_fake)
 
     # The contraction and its transpose, as custom ops with their own autograd: each is
     # the other's backward. The activation stays in its storage dtype, so fp16/bf16 reach
@@ -414,8 +367,9 @@ if optimized_kernels_is_available():
 
     _register_autocast("disco_kernels::_disco_s2_contraction_regular_optimized", ("cuda", "cpu"))
     _register_autocast("disco_kernels::_disco_s2_transpose_contraction_regular_optimized", ("cuda", "cpu"))
-    # the kpacked kernel exists on CUDA only
-    _register_autocast("disco_kernels::forward_kpacked", ("cuda",))
+    # the kpacked kernels exist on CUDA only
+    for _qualname in disco_arch.loaded_kpacked_ops():
+        _register_autocast(_qualname, ("cuda",))
 
 
 # The ragged counterparts, for a grid whose rings differ in length (HEALPix, or a regular
