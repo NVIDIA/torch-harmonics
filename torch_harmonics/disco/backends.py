@@ -86,9 +86,15 @@ layer describes its psi and leaves the kernels to the backend:
     gradient in play, which is what the per-basis-function row ranges are for.
 
 The dtype is the one axis selection cannot settle, since fp16/bf16 -- under autocast in
-particular -- is only known in ``forward``. The kpacked backend therefore checks it per
-call and hands anything else to the arc kernels. That is a branch on a static dtype, so it
+particular -- is only known in ``forward``. The kpacked plan therefore checks it per call
+and hands anything else to the arc kernels. That is a branch on a static dtype, so it
 stays traceable.
+
+The compiled regular backends run their kernels through a plan
+(:mod:`torch_harmonics.disco.optimized.disco_plan`): the kernels together with the names of
+the state they read. The autograd nodes are written against the plan, so a backend with
+new kernels supplies a plan and its state and inherits the forward, the fused recompute
+and both orders of the input gradient.
 """
 
 from typing import TYPE_CHECKING
@@ -103,13 +109,14 @@ from ._psi_layouts import build_arcs, build_kpacked, build_split
 from .kernels_torch.disco_ragged_torch import _disco_s2_contraction_ragged_torch, _disco_s2_transpose_contraction_ragged_torch
 from .kernels_torch.disco_regular_torch import _disco_s2_contraction_regular_torch, _disco_s2_transpose_contraction_regular_torch
 from .optimized.disco_optimized import (
-    _disco_s2_contraction_kpacked,
+    _disco_s2_contraction_planned,
     _disco_s2_conv_optimized,
     _disco_s2_conv_ragged_optimized,
     _kpacked_build_available,
     _kpacked_k_pad,
     _kpacked_supported_on_device,
 )
+from .optimized.disco_plan import ARC_STATE, KPACKED_STATE, ArcPlanS2, KpackedPlanS2
 
 if optimized_kernels_is_available():
     from .optimized.disco_optimized import (
@@ -124,7 +131,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 #: the arc arrays, in the order the operators take them
-_ARC_STATE = ("psi_row_ker", "psi_row_lat", "psi_seg_off", "psi_seg", "psi_val_off", "psi_vals")
+_ARC_STATE = ARC_STATE
 
 #: the same on a ragged layer, where a row is a point, followed by the ring tables
 _RAGGED_ARC_STATE = ("psi_row_ker", "psi_row_pt", "psi_seg_off", "psi_seg", "psi_val_off", "psi_vals", "psi_ring_base", "psi_ring_size")
@@ -134,8 +141,6 @@ _RAGGED_ARC_STATE = ("psi_row_ker", "psi_row_pt", "psi_seg_off", "psi_seg", "psi
 #: failing in forward.
 _REGULAR_DEVICES = _kernel_device_types("disco_kernels::forward_regular")
 _RAGGED_DEVICES = _kernel_device_types("disco_kernels::forward_ragged")
-
-_HALF_DTYPES = (torch.float16, torch.bfloat16)
 
 
 def _amp_dtype(x: torch.Tensor) -> torch.dtype:
@@ -209,16 +214,31 @@ class RegularOptimizedBackend(DiscoBackendS2):
     and this one backend serves either. The device test is only whether this build has a
     kernel for the device at all: MPS, XPU, or CUDA under a CPU-only build fall through
     to the reference.
+
+    The contraction and the convolution run through a plan (see
+    :mod:`torch_harmonics.disco.optimized.disco_plan`), the kernels together with the names
+    of the state they read. This backend's is the arc plan; a backend with other kernels
+    builds its own state in ``prepare`` and returns its own plan from :meth:`_make_plan`,
+    and inherits ``contract`` and ``conv``. ``transpose`` stays on the arc contraction ops.
     """
 
     name = "regular-optimized"
+
+    #: the plan class, constructed by :meth:`_make_plan`
+    plan_class = ArcPlanS2
 
     @classmethod
     def available(cls, layer, device):
         return not layer.ragged and layer.optimized_kernel and device.type in _REGULAR_DEVICES
 
     def prepare(self, layer, device):
-        return self._arc_state(layer, device)
+        state = self._arc_state(layer, device)
+        self.plan = self._make_plan(layer, state)
+        return state
+
+    def _make_plan(self, layer, state):
+        """The plan over ``state``, the tensors ``prepare`` built, in the order they were built."""
+        return self.plan_class(tuple(state), layer.kernel_size, layer._contract_shape, self.split_row_offsets)
 
     def _arc_state(self, layer, device):
         """The arc arrays, and the per-basis-function row ranges if the layer wants them."""
@@ -235,19 +255,18 @@ class RegularOptimizedBackend(DiscoBackendS2):
     def _arcs(self, layer):
         return tuple(getattr(layer, name) for name in _ARC_STATE)
 
-    def _split(self, layer):
-        if self.split_row_offsets is None:
-            return None
-        return (layer.psi_split_ker, self.split_row_offsets)
-
     def contract(self, layer, x):
-        return _disco_s2_contraction_regular_optimized(x, *self._arcs(layer), layer.kernel_size, *layer._contract_shape)
+        dtype = _amp_dtype(x)
+        if not self.plan.has_gather(dtype):
+            # the arc contraction op, which follows autocast by itself
+            return _disco_s2_contraction_regular_optimized(x, *self._arcs(layer), layer.kernel_size, *layer._contract_shape)
+        return _disco_s2_contraction_planned(x.to(dtype), self.plan, self.plan.state(layer))
 
     def conv(self, layer, x, weight, groups, groupsize, recompute=False):
         # the contraction op follows autocast by itself; this path calls the kernels
         # directly, so it applies the cast the same way
         x = x.to(_amp_dtype(x))
-        return _disco_s2_conv_optimized(x, weight, self._arcs(layer), None, self._split(layer), layer.kernel_size, *layer._contract_shape, groups, groupsize, recompute)
+        return _disco_s2_conv_optimized(x, weight, self.plan, self.plan.state(layer), groups, groupsize, recompute)
 
     def transpose(self, layer, x):
         return _disco_s2_transpose_contraction_regular_optimized(x, *self._arcs(layer), layer.kernel_size, *layer._contract_shape)
@@ -258,9 +277,9 @@ class RegularKpackedBackend(RegularOptimizedBackend):
     The tensor-core forward (WGMMA on sm_90a, tcgen05 on sm_100a), with the arc scatter as backward.
 
     Serves fp16/bf16 activations and hands anything else to the arc kernels, which it
-    also needs for the backward. The layout is built only on a device that can run it: it
-    is padded per point to K_pad values, a sizeable buffer to hold for a kernel that could
-    never launch.
+    also needs for the backward (see ``KpackedPlanS2``). The layout is built only on a
+    device that can run it: it is padded per point to K_pad values, a sizeable buffer to
+    hold for a kernel that could never launch.
 
     Available only for the forward direction, on a device and build the kernels were
     compiled for (see ``_kpacked_supported_on_device``), for K <= 16 and ``nlon_out`` a
@@ -269,6 +288,8 @@ class RegularKpackedBackend(RegularOptimizedBackend):
     """
 
     name = "regular-kpacked"
+
+    plan_class = KpackedPlanS2
 
     @classmethod
     def available(cls, layer, device):
@@ -288,26 +309,10 @@ class RegularKpackedBackend(RegularOptimizedBackend):
             return None
 
         state = self._arc_state(layer, device)
-        for name, t in zip(("psi_kpacked_idx", "psi_kpacked_vals", "psi_kpacked_offset"), kpacked):
+        for name, t in zip(KPACKED_STATE, kpacked):
             state[name] = t.to(device)
+        self.plan = self._make_plan(layer, state)
         return state
-
-    def _kpacked(self, layer):
-        return (layer.psi_kpacked_idx, layer.psi_kpacked_vals, layer.psi_kpacked_offset)
-
-    def contract(self, layer, x):
-        dtype = _amp_dtype(x)
-        if dtype not in _HALF_DTYPES:
-            return super().contract(layer, x)
-        return _disco_s2_contraction_kpacked(x.to(dtype), self._kpacked(layer), self._arcs(layer), layer.kernel_size, *layer._contract_shape)
-
-    def conv(self, layer, x, weight, groups, groupsize, recompute=False):
-        dtype = _amp_dtype(x)
-        if dtype not in _HALF_DTYPES:
-            return super().conv(layer, x, weight, groups, groupsize, recompute)
-        return _disco_s2_conv_optimized(
-            x.to(dtype), weight, self._arcs(layer), self._kpacked(layer), self._split(layer), layer.kernel_size, *layer._contract_shape, groups, groupsize, recompute
-        )
 
 
 class RaggedOptimizedBackend(DiscoBackendS2):

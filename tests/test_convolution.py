@@ -49,6 +49,7 @@ from torch_harmonics.disco.convolution import (
 )
 from torch_harmonics.disco.optimized import disco_optimized
 from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad, _kpacked_supported_on_device
+from torch_harmonics.disco.optimized.disco_plan import ArcPlanS2
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import RegularGridS2
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
@@ -1211,6 +1212,301 @@ def _kpacked_runnable_here():
 def _is_kpacked_supported():
     """Return True when the kpacked forward can actually run here (device AND build)."""
     return _kpacked_built_for_sm90() or _kpacked_built_for_sm100()
+
+
+class _CountingPlan(ArcPlanS2):
+    """
+    The arc plan with a state tensor of its own and a count of the calls it serves.
+
+    Stands in for a drop-in kernel: its gather and scatter read their values from
+    ``psi_vals_plan``, which its backend builds in ``prepare``, rather than from the arcs, so
+    the tests see that the plan's own state reaches it through the autograd nodes. It claims
+    the gather for every dtype, so ``contract`` runs it too.
+    """
+
+    calls = None
+
+    def has_gather(self, dtype):
+        return True
+
+    def _count(self, op):
+        # a side effect Dynamo will not trace inside the autograd node; the compile test does not count
+        if not torch.compiler.is_compiling():
+            type(self).calls[op] += 1
+
+    def _with_own_vals(self, t):
+        own = dict(zip(self.state_names, t))
+        own["psi_vals"] = own["psi_vals_plan"]
+        return tuple(own[name] for name in self.state_names)
+
+    def gather(self, x, t, tc=()):
+        self._count("gather")
+        return super().gather(x, self._with_own_vals(t), tc)
+
+    def scatter(self, g, t, tc, nlat_in, nlon_in):
+        self._count("scatter")
+        return super().scatter(g, self._with_own_vals(t), tc, nlat_in, nlon_in)
+
+    def scatter_split(self, g, t, tc, nlat_in, nlon_in):
+        self._count("scatter_split")
+        return super().scatter_split(g, self._with_own_vals(t), tc, nlat_in, nlon_in)
+
+
+class _KeyedPlan(ArcPlanS2):
+    """
+    The arc plan with call state: each operation reads its values from state built for the
+    planes it contracts, as a drop-in kernel reads psi laid out for the launch configuration
+    it picks from B * C. Records the keys it builds and the keys each operation is run with.
+    """
+
+    has_call_state = True
+    built = None
+    used = None
+
+    def has_gather(self, dtype):
+        return True
+
+    def call_state(self, op, bc, dtype, t):
+        type(self).built.append((op, bc, dtype))
+        # the values, and the key they were built for
+        return (self.arcs(t)[-1].clone(), torch.tensor([bc], device=t[0].device))
+
+    def _use(self, op, x, t, tc):
+        vals, bc = tc
+        if not torch.compiler.is_compiling():
+            type(self).used.append((op, int(bc.item()), x.shape[0] * x.shape[1]))
+        return t[: self._index["psi_vals"]] + (vals,) + t[self._index["psi_vals"] + 1 :]
+
+    def gather(self, x, t, tc=()):
+        return super().gather(x, self._use("gather", x, t, tc), tc)
+
+    def scatter(self, g, t, tc, nlat_in, nlon_in):
+        return super().scatter(g, self._use("scatter", g, t, tc), tc, nlat_in, nlon_in)
+
+    def scatter_split(self, g, t, tc, nlat_in, nlon_in):
+        return super().scatter_split(g, self._use("scatter_split", g, t, tc), tc, nlat_in, nlon_in)
+
+
+class _KeyedBackend(RegularOptimizedBackend):
+    """A backend whose plan has call state."""
+
+    name = "regular-keyed"
+    plan_class = _KeyedPlan
+
+
+class _CountingBackend(RegularOptimizedBackend):
+    """A backend that differs from the arc one only in its plan and the state that plan adds."""
+
+    name = "regular-counting"
+    plan_class = _CountingPlan
+
+    def prepare(self, layer, device):
+        state = self._arc_state(layer, device)
+        state["psi_vals_plan"] = state["psi_vals"].clone()
+        self.plan = self._make_plan(layer, state)
+        return state
+
+
+@unittest.skipUnless(optimized_kernels_is_available(), "skipping plan tests: optimized kernels not available")
+@parameterized_class(("device",), _devices)
+class TestDiscoPlan(unittest.TestCase):
+    """A backend brings its kernels as a plan and inherits the autograd nodes around them."""
+
+    def setUp(self):
+        if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
+            raise unittest.SkipTest("skipping test because CUDA kernels are not available")
+        _CountingPlan.calls = {"gather": 0, "scatter": 0, "scatter_split": 0}
+        _KeyedPlan.built, _KeyedPlan.used = [], []
+
+    def _pair(self, in_channels, out_channels, fused, backend=None):
+        """The same layer twice, with the counting (or the given) backend and with the arc backend."""
+        convs = []
+        for backend in (backend or _CountingBackend, RegularOptimizedBackend):
+            set_seed(333)
+            conv = DiscreteContinuousConvS2(
+                as_grid("equiangular", nlat=16, nlon=32),
+                as_grid("equiangular", nlat=8, nlon=16),
+                in_channels,
+                out_channels,
+                (3, 2),
+                basis_type="harmonic",
+                bias=False,
+                theta_cutoff=0.3,
+                fused=fused,
+            )
+            conv._backends = (backend, RegularReferenceBackend)
+            conv._select_backend()
+            convs.append(conv.to(self.device))
+        self.assertEqual(convs[1].backend.name, "regular-optimized")
+        return convs
+
+    @parameterized.expand(
+        [
+            # in_channels, out_channels, fused: weight-first and spatial-first input gradient
+            [4, 4, False],
+            [4, 4, True],
+            [8, 2, False],
+            [8, 2, True],
+        ]
+    )
+    def test_drop_in_plan_runs_the_conv(self, in_channels, out_channels, fused):
+        """The plan's gather, scatter and recompute run in place of the arc kernels, with the same result."""
+        conv, conv_arc = self._pair(in_channels, out_channels, fused)
+        self.assertEqual(conv.backend.name, "regular-counting")
+        self.assertIn("psi_vals_plan", dict(conv.named_buffers()))
+
+        x = torch.randn(2, in_channels, 16, 32, device=self.device)
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        out, out_arc = conv(x1), conv_arc(x2)
+        grad = torch.randn_like(out)
+        out.backward(grad)
+        out_arc.backward(grad)
+
+        self.assertTrue(compare_tensors("output", out, out_arc, atol=1e-6, rtol=1e-6))
+        self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad, conv_arc.weight.grad, atol=1e-6, rtol=1e-6))
+
+        spatial_first = conv._needs_split
+        self.assertEqual(spatial_first, out_channels * 2 <= in_channels)
+        # the forward, and the recompute of the fused layer
+        self.assertEqual(_CountingPlan.calls["gather"], 2 if fused else 1)
+        self.assertEqual(_CountingPlan.calls["scatter_split"], 1 if spatial_first else 0)
+        self.assertEqual(_CountingPlan.calls["scatter"], 0 if spatial_first else 1)
+
+    def test_drop_in_plan_runs_the_contraction(self):
+        """A plan that claims the gather serves ``contract`` too, with the arc scatter as its backward."""
+        conv, conv_arc = self._pair(4, 4, False)
+        x = torch.randn(2, 4, 16, 32, device=self.device)
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        y, y_arc = conv.backend.contract(conv, x1), conv_arc.backend.contract(conv_arc, x2)
+        grad = torch.randn_like(y)
+        y.backward(grad)
+        y_arc.backward(grad)
+
+        self.assertEqual(_CountingPlan.calls["gather"], 1)
+        self.assertTrue(compare_tensors("contraction", y, y_arc, atol=1e-6, rtol=1e-6))
+        self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
+
+    def test_plan_state_goes_with_the_backend(self):
+        """The plan's own tensors are the backend's state: registered with it, removed when another backend is selected."""
+        conv, _ = self._pair(4, 4, False)
+        self.assertIn("psi_vals_plan", dict(conv.named_buffers()))
+        conv._backends = (RegularOptimizedBackend, RegularReferenceBackend)
+        conv._select_backend()
+        self.assertEqual(conv.backend.name, "regular-optimized")
+        self.assertNotIn("psi_vals_plan", dict(conv.named_buffers()))
+
+    @parameterized.expand(
+        [
+            # in_channels, out_channels, fused: weight-first and spatial-first input gradient
+            [4, 4, False],
+            [4, 4, True],
+            [8, 2, False],
+        ]
+    )
+    def test_call_state_is_built_once_per_key(self, in_channels, out_channels, fused):
+        """Call state is built per operation and number of planes, reused across calls, and each operation gets its own."""
+        conv, conv_arc = self._pair(in_channels, out_channels, fused, backend=_KeyedBackend)
+        self.assertEqual(conv.backend.name, "regular-keyed")
+        spatial_first = conv._needs_split
+        dgrad_op = "scatter_split" if spatial_first else "scatter"
+
+        for batch in (2, 2, 3, 2):
+            x = torch.randn(batch, in_channels, 16, 32, device=self.device)
+            x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+            out, out_arc = conv(x1), conv_arc(x2)
+            grad = torch.randn_like(out)
+            out.backward(grad)
+            out_arc.backward(grad)
+            self.assertTrue(compare_tensors("output", out, out_arc, atol=1e-6, rtol=1e-6))
+            self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
+            self.assertTrue(compare_tensors("weight grad", conv.weight.grad, conv_arc.weight.grad, atol=1e-6, rtol=1e-6))
+            conv.weight.grad = conv_arc.weight.grad = None
+
+        # built once per (op, planes), for batch 2 and for batch 3; the input gradient's over
+        # the input's planes weight-first, over the output gradient's spatial-first
+        dgrad_channels = out_channels if spatial_first else in_channels
+        expected = [(op, b * c, torch.float32) for b in (2, 3) for op, c in (("gather", in_channels), (dgrad_op, dgrad_channels))]
+        self.assertEqual(_KeyedPlan.built, expected)
+        # every operation ran with the state built for the planes it contracted
+        for op, bc_built, bc_seen in _KeyedPlan.used:
+            self.assertEqual(bc_built, bc_seen, f"{op} ran with the call state of another key")
+        gathers = 4 * (2 if fused else 1)
+        self.assertEqual(sum(op == "gather" for op, _, _ in _KeyedPlan.used), gathers)
+        self.assertEqual(sum(op == dgrad_op for op, _, _ in _KeyedPlan.used), 4)
+
+    def test_call_state_cache_is_bounded(self):
+        """The least recently used call state goes once the plan holds max_call_states."""
+        conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
+        plan = conv.backend.plan
+        t = plan.state(conv)
+        for bc in range(1, plan.max_call_states + 2):
+            plan.bind((("gather", bc),), torch.float32, t)
+        self.assertEqual(len(plan._call_states), plan.max_call_states)
+        self.assertNotIn(("gather", 1, torch.float32), plan._call_states)
+        # a hit refreshes, a miss rebuilds
+        plan.bind((("gather", 2),), torch.float32, t)
+        plan.bind((("gather", 1),), torch.float32, t)
+        self.assertIn(("gather", 2, torch.float32), plan._call_states)
+        self.assertEqual(_KeyedPlan.built.count(("gather", 1, torch.float32)), 2)
+
+    def test_call_state_is_not_built_during_capture(self):
+        """A call that would build call state during CUDA graph capture raises; one that finds it cached does not."""
+        conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
+        plan = conv.backend.plan
+        t = plan.state(conv)
+        plan.bind((("gather", 8),), torch.float32, t)
+        with mock.patch.object(torch.cuda, "is_available", return_value=True), mock.patch.object(torch.cuda, "is_current_stream_capturing", return_value=True):
+            plan.bind((("gather", 8),), torch.float32, t)
+            with self.assertRaisesRegex(RuntimeError, "during CUDA graph capture"):
+                plan.bind((("gather", 16),), torch.float32, t)
+
+    def test_contraction_binds_the_gather(self):
+        """``contract`` binds the gather's call state over the input's planes."""
+        conv, conv_arc = self._pair(4, 4, False, backend=_KeyedBackend)
+        x = torch.randn(3, 4, 16, 32, device=self.device)
+        y, y_arc = conv.backend.contract(conv, x), conv_arc.backend.contract(conv_arc, x)
+        self.assertTrue(compare_tensors("contraction", y, y_arc, atol=1e-6, rtol=1e-6))
+        self.assertEqual(_KeyedPlan.built, [("gather", 12, torch.float32)])
+
+    @parameterized.expand([[False], [True]])
+    @requires_torch_compile
+    def test_keyed_plan_compiles(self, fused):
+        """With its call state bound before the node, a keyed plan's conv traces as a whole, building on the first compiled call."""
+        conv, _ = self._pair(8, 2, fused, backend=_KeyedBackend)
+        compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
+        x = torch.randn(2, 8, 16, 32, device=self.device)
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        out_compiled = compiled(x2)
+        out = conv(x1)
+        grad = torch.randn_like(out)
+        out.backward(grad)
+        weight_grad = conv.weight.grad.clone()
+        conv.weight.grad = None
+        out_compiled.backward(grad)
+        self.assertTrue(compare_tensors("output", out_compiled, out, atol=1e-6, rtol=1e-6))
+        self.assertTrue(compare_tensors("input grad", x2.grad, x1.grad, atol=1e-6, rtol=1e-6))
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad, weight_grad, atol=1e-6, rtol=1e-6))
+        # one build per key, whether the compiled or the eager call came first
+        self.assertEqual(len(_KeyedPlan.built), len(set(_KeyedPlan.built)))
+
+    @parameterized.expand([[False], [True]])
+    @requires_torch_compile
+    def test_drop_in_plan_compiles(self, fused):
+        """The conv node traces as a whole with a plan's kernels in it, forward and backward."""
+        conv, _ = self._pair(8, 2, fused)
+        compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
+        x = torch.randn(2, 8, 16, 32, device=self.device)
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        out, out_compiled = conv(x1), compiled(x2)
+        grad = torch.randn_like(out)
+        out.backward(grad)
+        weight_grad = conv.weight.grad.clone()
+        conv.weight.grad = None
+        out_compiled.backward(grad)
+        self.assertTrue(compare_tensors("output", out_compiled, out, atol=1e-6, rtol=1e-6))
+        self.assertTrue(compare_tensors("input grad", x2.grad, x1.grad, atol=1e-6, rtol=1e-6))
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad, weight_grad, atol=1e-6, rtol=1e-6))
 
 
 @parameterized_class(("device"), _devices)
