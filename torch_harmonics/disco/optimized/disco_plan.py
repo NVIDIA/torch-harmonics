@@ -71,6 +71,14 @@ then receives ``t`` and ``tc`` as tensor arguments and passes each operation its
 keeps the node traceable as a whole under ``torch.compile`` -- the plan is configuration,
 and Dynamo inlines its methods -- and the building, a side effect, outside it.
 
+Two rules make cached call state safe to share between streams and with CUDA graphs:
+
+* it is complete before anyone sees it: the build synchronizes its stream (once per key);
+* it is never freed while the plan lives: nothing evicts it. A plan holds one entry per
+  operation and shape it has met, typically one or two per layer in training; it warns once
+  when it holds more than ``call_state_warn``, and :meth:`DiscoPlanS2.clear_call_states`
+  frees them -- not while a captured CUDA graph still replays them.
+
 Call state is built outside CUDA graph capture: a call that would build it during capture
 raises, so run the layer once eagerly at the shapes to be captured first (the usual warmup
 before ``torch.cuda.graph``). All of a plan's tensors are allocated through torch, so its
@@ -82,7 +90,7 @@ implement and claim them for the dtypes they take (``has_gather``, ``has_scatter
 Anything they do not implement stays on the arc kernels.
 """
 
-from collections import OrderedDict
+import warnings
 from typing import Dict, Optional, Sequence, Tuple
 
 import torch
@@ -137,11 +145,9 @@ class DiscoPlanS2:
     #: whether the kernels read call state (see :meth:`call_state`); without it ``bind`` is free
     has_call_state = False
 
-    #: call states kept per plan, least recently used dropped first: a training run needs one per
-    #: operation, varying batch sizes one per size. Empty call states (operations whose kernels
-    #: have none) do not count. State a captured CUDA graph uses is never dropped, and may take
-    #: the cache beyond this (see ``_evict``)
-    max_call_states = 16
+    #: call states a plan holds before it warns, once, about the memory they take: a training run
+    #: needs one per operation, varying batch sizes one per size
+    call_state_warn = 8
 
     def __init__(self, state_names: Sequence[str], kernel_size: int, contract_shape: Tuple[int, int], split_row_offsets: Optional[Tuple[int, ...]] = None):
         self.state_names = tuple(state_names)
@@ -149,14 +155,8 @@ class DiscoPlanS2:
         self.nlat_out, self.nlon_out = contract_shape
         self.split_row_offsets = split_row_offsets
         self._index: Dict[str, int] = {name: i for i, name in enumerate(self.state_names)}
-        self._call_states: "OrderedDict[Tuple[str, int, torch.dtype, Tuple[int, int]], Tensors]" = OrderedDict()
-        # key -> (event recorded after the build, the stream that built it), for state on a CUDA device
-        self._call_ready: Dict[Tuple[str, int, torch.dtype, Tuple[int, int]], Tuple["torch.cuda.Event", "torch.cuda.Stream"]] = {}
-        # keys a captured CUDA graph uses: never evicted, the graph replays their memory
-        self._pinned: set = set()
-        # keys whose call state is empty (an operation running on kernels without any): remembered, so they are neither
-        # rebuilt nor taken for a miss during capture, but outside the cache, so they take none of its slots
-        self._empty: set = set()
+        self._call_states: Dict[Tuple[str, int, torch.dtype, Tuple[int, int]], Tensors] = {}
+        self._warned = False
         missing = [name for name in ARC_STATE + (("psi_split_ker",) if self.has_split else ()) if name not in self._index]
         if missing:
             raise ValueError(f"{type(self).__name__} needs the state {missing}")
@@ -206,25 +206,18 @@ class DiscoPlanS2:
         for backward -- and Dynamo cannot query that mode. Once an eager call has built a key,
         compiled calls use it, so run the layer once eagerly per shape, as before CUDA graph
         capture.
-
-        Cached state may be used on another stream than the one that built it: such a call
-        waits for the build and marks the tensors in use on its stream. A key used during CUDA
-        graph capture is pinned in the cache, since the graph replays its memory; the build
-        is complete by then, as ``torch.cuda.graph`` synchronizes the device when capture
-        begins. Compiled calls do neither, as Dynamo traces no stream handling: share a
-        compiled layer across streams only after an eager call on each.
         """
-        compiling = torch.compiler.is_compiling()
         if not self.has_call_state:
             return tuple((op, 0, 0) for op, _ in ops), ()
 
+        compiling = torch.compiler.is_compiling()
         in_shape = (int(in_shape[0]), int(in_shape[1]))
         layout, tc = [], []
         for op, bc in ops:
             if op not in PLAN_OPS:
                 raise ValueError(f"unknown plan operation {op!r}; known: {PLAN_OPS}")
             key = (op, int(bc), dtype, in_shape)
-            state = () if key in self._empty else self._call_states.get(key)
+            state = self._call_states.get(key)
             if state is None and compiling:
                 # built for this call only, see above
                 with torch.no_grad():
@@ -236,62 +229,39 @@ class DiscoPlanS2:
                         "run the layer once eagerly with the shapes to be captured first"
                     )
                 state = self._build_call_state(op, int(bc), dtype, in_shape, t)
-                if state:
-                    self._call_states[key] = state
-                    self._record_built(key, state)
-                    self._evict(keep=key)
-                else:
-                    self._empty.add(key)
-            elif state and not compiling:
-                self._call_states.move_to_end(key)
-                self._ready_on_current_stream(key, state)
+                self._call_states[key] = state
+                self._warn_if_large()
             layout.append((op, len(tc), len(tc) + len(state)))
             tc.extend(state)
         return tuple(layout), tuple(tc)
 
-    def _record_built(self, key, state: Tensors) -> None:
-        """Remember when the build of ``state`` completes on the stream that built it."""
-        device = next((x.device for x in state if x.is_cuda), None)
-        if device is None:
-            return
-        stream = torch.cuda.current_stream(device)
-        event = torch.cuda.Event()
-        event.record(stream)
-        self._call_ready[key] = (event, stream)
-
-    def _ready_on_current_stream(self, key, state: Tensors) -> None:
-        """Make cached ``state`` safe to use on the current stream (see ``bind``)."""
-        ready = self._call_ready.get(key)
-        if ready is None:
-            return
-        event, stream = ready
-        if torch.cuda.is_current_stream_capturing():
-            self._pinned.add(key)
-            return
-        current = torch.cuda.current_stream(stream.device)
-        if current != stream:
-            current.wait_event(event)
-            for x in state:
-                if x.is_cuda:
-                    x.record_stream(current)
-
-    def _evict(self, keep) -> None:
+    def clear_call_states(self) -> None:
         """
-        Drop the least recently used call states beyond ``max_call_states``, but not ``keep``, just built, nor pinned ones.
+        Free the plan's call states; they are rebuilt as calls need them.
 
-        Without enough of the others the cache grows beyond ``max_call_states`` instead: evicting the state just built
-        would leave its call -- typically the warmup before a capture -- without it. Pinned state lives as long as the
-        plan, i.e. the layer's backend selection, since nothing tells when the graphs that captured it are discarded;
-        it is bounded by the shapes ever captured.
+        Synchronizes the device first, so no stream still uses them. Not while a captured CUDA
+        graph that replays them is still to be run: the graph keeps their addresses, not the
+        tensors.
         """
-        candidates = [k for k in self._call_states if k not in self._pinned and k != keep]
-        for key in candidates[: max(0, len(self._call_states) - self.max_call_states)]:
-            del self._call_states[key]
-            self._call_ready.pop(key, None)
+        if any(x.is_cuda for state in self._call_states.values() for x in state):
+            torch.cuda.synchronize()
+        self._call_states.clear()
+        self._warned = False
+
+    def _warn_if_large(self) -> None:
+        if self._warned or len(self._call_states) <= self.call_state_warn:
+            return
+        self._warned = True
+        nbytes = sum(x.numel() * x.element_size() for state in self._call_states.values() for x in state)
+        warnings.warn(
+            f"{type(self).__name__} holds call states for {len(self._call_states)} operations and shapes, {nbytes / 2**20:.0f} MiB; "
+            "they are kept until clear_call_states() (e.g. layer.backend.plan.clear_call_states()). "
+            "Varying batch sizes or dtypes add one per combination."
+        )
 
     def _build_call_state(self, op: str, bc: int, dtype: torch.dtype, in_shape: Tuple[int, int], t: Tensors) -> Tensors:
         """
-        ``call_state``, built in an eager call so that every later call can use it.
+        ``call_state``, built in an eager call so that every later call, on any stream, can use it.
 
         The state is cached across calls, so it must not depend on the mode of the call that
         happens to build it: without autograd (it never needs gradients), and outside
@@ -300,8 +270,14 @@ class DiscoPlanS2:
         with torch.no_grad():
             if torch.is_inference_mode_enabled():
                 with torch.inference_mode(False):
-                    return tuple(self.call_state(op, bc, dtype, in_shape, t))
-            return tuple(self.call_state(op, bc, dtype, in_shape, t))
+                    state = tuple(self.call_state(op, bc, dtype, in_shape, t))
+            else:
+                state = tuple(self.call_state(op, bc, dtype, in_shape, t))
+        # complete before it is cached: a later call on any stream may use it
+        device = next((x.device for x in state if x.is_cuda), None)
+        if device is not None:
+            torch.cuda.current_stream(device).synchronize()
+        return state
 
     # ------------------------------------------------------------------ operations
 
