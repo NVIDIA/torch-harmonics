@@ -27,7 +27,7 @@
 // CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// twiddle tables of disco_cuda_bwd_fft_sm100.cu, as delivered by Kernel Factory (candidate 8e15cd9c)
+// twiddle tables of disco_cuda_bwd_fft.cu, as delivered by Kernel Factory (candidate 8e15cd9c)
 
 // e^{-2 pi i t / R}, t in [0, R), for the composite in-register DFT radices R
 __constant__ float2 c_rtw[244] = {
