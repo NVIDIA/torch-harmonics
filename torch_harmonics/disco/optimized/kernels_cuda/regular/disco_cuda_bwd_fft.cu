@@ -29,19 +29,23 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // =====================================================================================================================
-// The DISCO arc scatter in frequency space, for sm_100a (B200 / GB200), float16 or bfloat16 activations, fp32 psi.
+// The DISCO arc scatter in frequency space, for sm_90a (H100) and sm_100a (B200 / GB200), float16 or bfloat16
+// activations, fp32 psi.
 //
 // Provenance: Kernel Factory campaign disco-bwd-b200-v2 (dpar3kk2t54g96gx2vt1qpdckg), delivered candidate 8e15cd9c
 // (14.93x the shipped arc scatter, geometric mean over its four workloads). The device code below is the candidate's
-// as delivered (disco_quartet_merge.cu, with radix_twiddles_a2.inc), up to formatting and one change in
-// contract_kernel marked "torch-harmonics" (a generic lambda the CUDA 13.3 front end crashes on); the host side at the
-// end of the file is torch-harmonics' own, see the comment there. The campaign's final review left two findings open:
-// fp32 FFT round-off on outputs that should be exactly zero, and no check that the output longitudes are a multiple of
-// the input longitudes (the host side checks it now).
+// as delivered (disco_quartet_merge.cu, with radix_twiddles_a2.inc), up to formatting, one change in contract_kernel
+// marked "torch-harmonics" (a generic lambda the CUDA 13.3 front end crashes on), and the sm_90 fallback of the packed
+// fp32x2 helpers; the host side at the end of the file is torch-harmonics' own, see the comment there. The campaign's
+// final review left two findings open: fp32 FFT round-off on outputs that should be exactly zero, and no check that the
+// output longitudes are a multiple of the input longitudes (the host side checks it now).
 //
-// Needs Blackwell (packed fp32x2 arithmetic, bulk copies, programmatic dependent launch); part of the arch-specific
-// extension torch_harmonics.disco._C_sm100 (see _DISCO_ARCH_EXTENSIONS in setup.py), and selected on compute
-// capability 10.0 devices only, the one it was validated on.
+// Uses bulk copies, mbarriers and programmatic dependent launch (sm_90 and later), and on sm_100 the packed fp32x2
+// instructions, for which sm_90 takes two scalar operations that round each lane alike. Compiled into both
+// arch-specific extensions, torch_harmonics.disco._C_sm90 and _C_sm100 (see _DISCO_ARCH_EXTENSIONS in setup.py), each
+// registering the ops under its own name (scatter_fft_sm90_* / scatter_fft_sm100_*, see DISCO_FFT_OP below), so a build
+// with both can load both; selected on compute capability 9.0 and 10.0 devices, the ones it was validated on. The
+// launch configuration was tuned on B200 and sizes itself by the device's SM count.
 //
 // The candidate's description:
 //
@@ -97,7 +101,22 @@ template <> struct ElemT<__nv_bfloat16> {
     static __device__ __forceinline__ __nv_bfloat16 from_float(const float a) { return __float2bfloat16_rn(a); }
 };
 
-// ---------------------------------------------------------------- packed fp32x2 (sm_100) and complex helpers
+// ---------------------------------------------------------------- packed fp32x2 (scalar on sm_90) and complex helpers
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 1000
+// sm_90 has no packed fp32x2 arithmetic: two scalar operations, rounded to nearest each, compute the same lanes
+__device__ __forceinline__ float2 add2(float2 a, float2 b)
+{
+    return make_float2(__fadd_rn(a.x, b.x), __fadd_rn(a.y, b.y));
+}
+__device__ __forceinline__ float2 mul2(float2 a, float2 b)
+{
+    return make_float2(__fmul_rn(a.x, b.x), __fmul_rn(a.y, b.y));
+}
+__device__ __forceinline__ float2 fma2(float2 a, float2 b, float2 c)
+{
+    return make_float2(__fmaf_rn(a.x, b.x, c.x), __fmaf_rn(a.y, b.y, c.y));
+}
+#else
 __device__ __forceinline__ float2 add2(float2 a, float2 b)
 {
     float2 d;
@@ -126,6 +145,8 @@ __device__ __forceinline__ float2 fma2(float2 a, float2 b, float2 c)
         : "f"(a.x), "f"(a.y), "f"(b.x), "f"(b.y), "f"(c.x), "f"(c.y));
     return d;
 }
+#endif
+
 __device__ __forceinline__ float2 cadd(float2 a, float2 b) { return add2(a, b); }
 __device__ __forceinline__ float2 csub(float2 a, float2 b) { return add2(a, make_float2(-b.x, -b.y)); }
 // a * b = a.x * b + a.y * (i b)
@@ -259,7 +280,7 @@ template <> __device__ __forceinline__ void dft<8>(float2 *v)
     }
 }
 
-#include "disco_cuda_bwd_fft_sm100_twiddles.inc"
+#include "disco_cuda_bwd_fft_twiddles.inc"
 
 __host__ __device__ constexpr int ctf(int N) { return N % 4 == 0 ? 4 : (N % 3 == 0 ? 3 : (N % 2 == 0 ? 2 : 5)); }
 
@@ -2747,6 +2768,16 @@ static void launch_direct64(cudaStream_t st, const E *x, const int *row_ker, con
 #include <c10/cuda/CUDAGuard.h>
 #include <torch/library.h>
 
+// The ops' names carry the extension's family, as the kpacked forwards' do: the same source is in _C_sm90 and _C_sm100,
+// and both register in the disco_kernels namespace. setup.py defines DISCO_TARGET_SM90A for the sm_90a build only.
+#if defined(DISCO_TARGET_SM90A) && DISCO_TARGET_SM90A
+#define DISCO_FFT_OP(name) scatter_fft_sm90_##name
+#define DISCO_FFT_OP_NAME "scatter_fft_sm90"
+#else
+#define DISCO_FFT_OP(name) scatter_fft_sm100_##name
+#define DISCO_FFT_OP_NAME "scatter_fft_sm100"
+#endif
+
 namespace
 {
 
@@ -2955,12 +2986,12 @@ namespace
                     const at::Tensor &seg, const at::Tensor &val_off, const at::Tensor &vals)
     {
         const auto dev = row_ker.device();
-        TORCH_CHECK(dev.is_cuda(), "scatter_fft_sm100: psi must be on a CUDA device");
+        TORCH_CHECK(dev.is_cuda(), DISCO_FFT_OP_NAME ": psi must be on a CUDA device");
         auto check = [&](const at::Tensor &t, at::ScalarType dtype, const char *name) {
-            TORCH_CHECK(t.device() == dev, "scatter_fft_sm100: ", name, " is on ", t.device(), ", expected ", dev);
-            TORCH_CHECK(t.scalar_type() == dtype, "scatter_fft_sm100: ", name, " must be ", dtype, ", got ",
+            TORCH_CHECK(t.device() == dev, DISCO_FFT_OP_NAME ": ", name, " is on ", t.device(), ", expected ", dev);
+            TORCH_CHECK(t.scalar_type() == dtype, DISCO_FFT_OP_NAME ": ", name, " must be ", dtype, ", got ",
                         t.scalar_type());
-            TORCH_CHECK(t.is_contiguous(), "scatter_fft_sm100: ", name, " must be contiguous");
+            TORCH_CHECK(t.is_contiguous(), DISCO_FFT_OP_NAME ": ", name, " must be contiguous");
         };
         check(row_ker, at::kInt, "row_ker");
         check(row_lat, at::kInt, "row_lat");
@@ -2968,10 +2999,10 @@ namespace
         check(seg, at::kInt, "seg");
         check(val_off, at::kLong, "val_off");
         check(vals, at::kFloat, "vals");
-        TORCH_CHECK(seg.dim() == 2 && seg.size(1) == 3, "scatter_fft_sm100: seg must be (nseg, 3), got ", seg.sizes());
+        TORCH_CHECK(seg.dim() == 2 && seg.size(1) == 3, DISCO_FFT_OP_NAME ": seg must be (nseg, 3), got ", seg.sizes());
         TORCH_CHECK(seg_off.numel() == row_ker.numel() + 1 && val_off.numel() == row_ker.numel() + 1,
-                    "scatter_fft_sm100: seg_off and val_off must have one entry per row plus one");
-        TORCH_CHECK(row_lat.numel() == row_ker.numel(), "scatter_fft_sm100: row_lat must have one entry per row");
+                    DISCO_FFT_OP_NAME ": seg_off and val_off must have one entry per row plus one");
+        TORCH_CHECK(row_lat.numel() == row_ker.numel(), DISCO_FFT_OP_NAME ": row_lat must have one entry per row");
     }
 
     int sm_count() { return at::cuda::getCurrentDeviceProperties()->multiProcessorCount; }
@@ -2979,7 +3010,7 @@ namespace
     ScatterFftConfig config_for(int64_t BC, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo,
                                 const at::Tensor &row_ker, const at::Tensor &seg, const at::Tensor &vals)
     {
-        TORCH_CHECK(Wi > 0 && Wo % Wi == 0 && Wo / Wi >= 1, "scatter_fft_sm100: the output longitudes (", Wo,
+        TORCH_CHECK(Wi > 0 && Wo % Wi == 0 && Wo / Wi >= 1, DISCO_FFT_OP_NAME ": the output longitudes (", Wo,
                     ") must be a multiple of the input longitudes (", Wi, ")");
         return make_config(BC, K, Hi, Wi, Ho, Wo, row_ker.numel(), seg.size(0), vals.numel(), sm_count());
     }
@@ -2990,9 +3021,9 @@ namespace disco_kernels
 {
 
     // The plan of the scatter of (BC, K, Hi, Wi) planes onto (BC, Ho, Wo) through psi in arc form.
-    at::Tensor scatter_fft_sm100_plan(at::Tensor row_ker, at::Tensor row_lat, at::Tensor seg_off, at::Tensor seg,
-                                      at::Tensor val_off, at::Tensor vals, int64_t BC, int64_t K, int64_t Hi,
-                                      int64_t Wi, int64_t Ho, int64_t Wo)
+    at::Tensor DISCO_FFT_OP(plan)(at::Tensor row_ker, at::Tensor row_lat, at::Tensor seg_off, at::Tensor seg,
+                                  at::Tensor val_off, at::Tensor vals, int64_t BC, int64_t K, int64_t Hi, int64_t Wi,
+                                  int64_t Ho, int64_t Wo)
     {
         check_arcs(row_ker, row_lat, seg_off, seg, val_off, vals);
         const c10::cuda::CUDAGuard guard(row_ker.device());
@@ -3111,7 +3142,7 @@ namespace disco_kernels
     }
 
     // The scatter of the contiguous fp16 (B, C, K, Hi, Wi) inp onto (B, C, Ho, Wo) through psi in arc form, with the
-    // plan scatter_fft_sm100_plan built for B * C.
+    // plan DISCO_FFT_OP(plan) built for B * C.
     // The scatter through the plan, for activations of element type E (__half or __nv_bfloat16).
     template <typename E>
     void scatter_run_impl(const ScatterFftConfig &c, const at::Tensor &inp, const at::Tensor &plan, at::Tensor &out,
@@ -3392,19 +3423,19 @@ namespace disco_kernels
         }
     }
 
-    at::Tensor scatter_fft_sm100_run(at::Tensor inp, at::Tensor plan, at::Tensor row_ker, at::Tensor row_lat,
-                                     at::Tensor seg_off, at::Tensor seg, at::Tensor val_off, at::Tensor vals,
-                                     int64_t Ho64, int64_t Wo64)
+    at::Tensor DISCO_FFT_OP(run)(at::Tensor inp, at::Tensor plan, at::Tensor row_ker, at::Tensor row_lat,
+                                 at::Tensor seg_off, at::Tensor seg, at::Tensor val_off, at::Tensor vals, int64_t Ho64,
+                                 int64_t Wo64)
     {
         check_arcs(row_ker, row_lat, seg_off, seg, val_off, vals);
-        TORCH_CHECK(inp.device() == row_ker.device(), "scatter_fft_sm100: inp is on ", inp.device(), ", psi on ",
+        TORCH_CHECK(inp.device() == row_ker.device(), DISCO_FFT_OP_NAME ": inp is on ", inp.device(), ", psi on ",
                     row_ker.device());
         TORCH_CHECK(inp.scalar_type() == at::kHalf || inp.scalar_type() == at::kBFloat16,
-                    "scatter_fft_sm100: inp must be float16 or bfloat16, got ", inp.scalar_type());
+                    DISCO_FFT_OP_NAME ": inp must be float16 or bfloat16, got ", inp.scalar_type());
         TORCH_CHECK(inp.dim() == 5 && inp.is_contiguous(),
-                    "scatter_fft_sm100: inp must be a contiguous (B, C, K, H, W) tensor");
+                    DISCO_FFT_OP_NAME ": inp must be a contiguous (B, C, K, H, W) tensor");
         TORCH_CHECK(plan.scalar_type() == at::kByte && plan.device() == inp.device() && plan.is_contiguous(),
-                    "scatter_fft_sm100: plan must be a contiguous uint8 tensor on the device of inp");
+                    DISCO_FFT_OP_NAME ": plan must be a contiguous uint8 tensor on the device of inp");
         const c10::cuda::CUDAGuard guard(inp.device());
 
         const int64_t B64 = inp.size(0), C64 = inp.size(1);
@@ -3413,7 +3444,7 @@ namespace disco_kernels
 
         const ScatterFftConfig c
             = config_for(B64 * C64, inp.size(2), inp.size(3), inp.size(4), Ho64, Wo64, row_ker, seg, vals);
-        TORCH_CHECK((size_t)plan.numel() == c.plan_bytes, "scatter_fft_sm100: the plan has ", plan.numel(),
+        TORCH_CHECK((size_t)plan.numel() == c.plan_bytes, DISCO_FFT_OP_NAME ": the plan has ", plan.numel(),
                     " bytes, a plan for these shapes and B * C = ", B64 * C64, " has ", c.plan_bytes,
                     "; it was built for other shapes");
 
@@ -3427,10 +3458,10 @@ namespace disco_kernels
     // Which path the scatter takes for these sizes, from the same configuration plan and run use: {mode (0: the 64-bit
     // direct kernel, 1: the direct gather, 2: frequency space), fast contraction, input transform, output transform}, a
     // transform being 0 (none), 1 (two-pass register FFT) or 2 (multi-pass shared-memory FFT). For tests.
-    std::vector<int64_t> scatter_fft_sm100_config(int64_t BC, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo,
-                                                  int64_t nrows, int64_t nseg, int64_t nnz)
+    std::vector<int64_t> DISCO_FFT_OP(config)(int64_t BC, int64_t K, int64_t Hi, int64_t Wi, int64_t Ho, int64_t Wo,
+                                              int64_t nrows, int64_t nseg, int64_t nnz)
     {
-        TORCH_CHECK(Wi > 0 && Wo % Wi == 0, "scatter_fft_sm100: the output longitudes (", Wo,
+        TORCH_CHECK(Wi > 0 && Wo % Wi == 0, DISCO_FFT_OP_NAME ": the output longitudes (", Wo,
                     ") must be a multiple of the input longitudes (", Wi, ")");
         const ScatterFftConfig c = make_config(BC, K, Hi, Wi, Ho, Wo, nrows, nseg, nnz, sm_count());
         const int64_t in_t = c.mode != MODE_FFT ? 0 : (c.i2 ? 1 : 2);
@@ -3440,24 +3471,24 @@ namespace disco_kernels
 
     TORCH_LIBRARY_FRAGMENT(disco_kernels, m)
     {
-        // the plan of scatter_fft_sm100_run for B * C = bc planes of (K, nlat_in, nlon_in) onto (nlat_out, nlon_out)
-        m.def("scatter_fft_sm100_plan(Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor seg, Tensor val_off, "
-              "Tensor vals, int bc, int kernel_size, int nlat_in, int nlon_in, int nlat_out, int nlon_out) -> Tensor");
+        // the plan of DISCO_FFT_OP(run) for B * C = bc planes of (K, nlat_in, nlon_in) onto (nlat_out, nlon_out)
+        m.def(DISCO_FFT_OP_NAME "_plan(Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor seg, Tensor val_off, "
+                                "Tensor vals, int bc, int kernel_size, int nlat_in, int nlon_in, int nlat_out, "
+                                "int nlon_out) -> Tensor");
         // the arc scatter (B, C, K, nlat_in, nlon_in) -> (B, C, nlat_out, nlon_out), float16 or bfloat16, through that
         // plan
-        m.def("scatter_fft_sm100_run(Tensor inp, Tensor plan, Tensor row_ker, Tensor row_lat, Tensor seg_off, Tensor "
-              "seg, "
-              "Tensor val_off, Tensor vals, int nlat_out, int nlon_out) -> Tensor");
-        // the path scatter_fft_sm100_run takes for these sizes (for tests)
-        m.def("scatter_fft_sm100_config(int bc, int kernel_size, int nlat_in, int nlon_in, int nlat_out, int nlon_out, "
-              "int nrows, int nseg, int nnz) -> int[]",
-              &scatter_fft_sm100_config);
+        m.def(DISCO_FFT_OP_NAME "_run(Tensor inp, Tensor plan, Tensor row_ker, Tensor row_lat, Tensor seg_off, "
+                                "Tensor seg, Tensor val_off, Tensor vals, int nlat_out, int nlon_out) -> Tensor");
+        // the path DISCO_FFT_OP(run) takes for these sizes (for tests)
+        m.def(DISCO_FFT_OP_NAME "_config(int bc, int kernel_size, int nlat_in, int nlon_in, int nlat_out, "
+                                "int nlon_out, int nrows, int nseg, int nnz) -> int[]",
+              &DISCO_FFT_OP(config));
     }
 
     TORCH_LIBRARY_IMPL(disco_kernels, CUDA, m)
     {
-        m.impl("scatter_fft_sm100_plan", &scatter_fft_sm100_plan);
-        m.impl("scatter_fft_sm100_run", &scatter_fft_sm100_run);
+        m.impl(DISCO_FFT_OP_NAME "_plan", &DISCO_FFT_OP(plan));
+        m.impl(DISCO_FFT_OP_NAME "_run", &DISCO_FFT_OP(run));
     }
 
 } // namespace disco_kernels

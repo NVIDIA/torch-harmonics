@@ -35,9 +35,14 @@ They live in extensions of their own, one per target family, built for exactly t
 ``TORCH_CUDA_ARCH_LIST`` asks for (see ``_DISCO_ARCH_EXTENSIONS`` in ``setup.py``):
 
 ``torch_harmonics.disco._C_sm90``
-    ``sm_90a``: the WGMMA kpacked forward, op ``forward_kpacked_sm90``.
+    ``sm_90a``: the WGMMA kpacked forward, op ``forward_kpacked_sm90``, and the frequency-space
+    arc scatter, ops ``scatter_fft_sm90_{plan,run,config}``.
 ``torch_harmonics.disco._C_sm100``
-    ``sm_100a`` and/or ``sm_103a``: the tcgen05 kpacked forward, op ``forward_kpacked_sm100``.
+    ``sm_100a`` and/or ``sm_103a``: the tcgen05 kpacked forward, op ``forward_kpacked_sm100``, and
+    the frequency-space arc scatter, ops ``scatter_fft_sm100_{plan,run,config}``.
+
+The frequency-space scatter is one source (``kernels_cuda/regular/disco_cuda_bwd_fft.cu``) built
+into both; each registers its ops under its family's name, so a build with both loads both.
 
 Each reports the targets it holds images for in its ``TARGETS`` attribute. Arch-specific images
 are not forward compatible -- an ``sm_100a`` image does not load on a 10.3 device, nor on Rubin
@@ -71,6 +76,16 @@ KPACKED_OPS: Dict[str, str] = {
     "sm90": "forward_kpacked_sm90",
     "sm100": "forward_kpacked_sm100",
 }
+
+#: the prefix of the frequency-space scatter's ops (``<prefix>_plan``, ``_run``, ``_config``) of each extension family
+FFT_SCATTER_OPS: Dict[str, str] = {
+    "sm90": "scatter_fft_sm90",
+    "sm100": "scatter_fft_sm100",
+}
+
+#: the compute capabilities the frequency-space scatter was validated on: H100 and B200 / GB200; a 10.3 (GB300) keeps
+#: the arc scatter
+FFT_SCATTER_CAPABILITIES: FrozenSet[Tuple[int, int]] = frozenset({(9, 0), (10, 0)})
 
 
 @functools.lru_cache(maxsize=None)
@@ -128,3 +143,32 @@ def kpacked_op(device_index: int):
 def loaded_kpacked_ops() -> Tuple[str, ...]:
     """The qualified names of the kpacked ops of the extensions this build has."""
     return tuple(f"disco_kernels::{KPACKED_OPS[family]}" for family in EXTENSIONS if family in KPACKED_OPS and extension(family) is not None)
+
+
+def fft_scatter_registered(family: str) -> bool:
+    """Whether the extension of ``family`` was built and registered the frequency-space scatter's ops."""
+    return family in FFT_SCATTER_OPS and extension(family) is not None and hasattr(torch.ops.disco_kernels, FFT_SCATTER_OPS[family] + "_run")
+
+
+def fft_scatter_supported_on_device(device_index: int) -> bool:
+    """Whether the frequency-space scatter can run on CUDA device ``device_index`` with this build."""
+    if torch.cuda.get_device_capability(device_index) not in FFT_SCATTER_CAPABILITIES:
+        return False
+    family = device_family(device_index)
+    return family is not None and fft_scatter_registered(family)
+
+
+def fft_scatter_ops(device_index: int):
+    """The frequency-space scatter's ``(plan, run)`` ops for CUDA device ``device_index`` (see ``fft_scatter_supported_on_device``)."""
+    if not fft_scatter_supported_on_device(device_index):
+        raise RuntimeError(f"this build has no frequency-space scatter for CUDA device {device_index} (compute capability {torch.cuda.get_device_capability(device_index)})")
+    prefix = FFT_SCATTER_OPS[device_family(device_index)]
+    ops = torch.ops.disco_kernels
+    return getattr(ops, prefix + "_plan").default, getattr(ops, prefix + "_run").default
+
+
+def fft_scatter_config_op(device_index: int):
+    """The op reporting the path the frequency-space scatter takes for given sizes on CUDA device ``device_index`` (for tests)."""
+    if not fft_scatter_supported_on_device(device_index):
+        raise RuntimeError(f"this build has no frequency-space scatter for CUDA device {device_index}")
+    return getattr(torch.ops.disco_kernels, FFT_SCATTER_OPS[device_family(device_index)] + "_config").default
