@@ -111,6 +111,8 @@ _DISCO_ARCH_EXTENSIONS = {
         [
             "torch_harmonics/disco/optimized/disco_interface_sm100.cpp",
             "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm100.cu",
+            # the frequency-space arc scatter (experimental, see disco_plan_sm100.py)
+            "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_bwd_fft_sm100.cu",
         ],
     ),
 }

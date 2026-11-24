@@ -30,8 +30,10 @@
 #
 
 import math
+import os
 import types
 import unittest
+import warnings
 from unittest import mock
 
 import torch
@@ -44,13 +46,21 @@ from torch_harmonics.disco import backends as disco_backends
 from torch_harmonics.disco import cuda_kernels_is_available, optimized_kernels_is_available
 from torch_harmonics.disco._disco_utils import _weight_contraction, _weight_expansion, _weight_gradient
 from torch_harmonics.disco._psi_layouts import arcs_to_coo, build_arcs, build_kpacked
-from torch_harmonics.disco.backends import RaggedOptimizedBackend, RaggedReferenceBackend, RegularOptimizedBackend, RegularReferenceBackend
+from torch_harmonics.disco.backends import (
+    RaggedOptimizedBackend,
+    RaggedReferenceBackend,
+    RegularKpackedBackend,
+    RegularOptimizedBackend,
+    RegularReferenceBackend,
+    RegularSm100Backend,
+)
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
 )
 from torch_harmonics.disco.optimized import disco_arch
 from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad
 from torch_harmonics.disco.optimized.disco_plan import ArcPlanS2
+from torch_harmonics.disco.optimized.disco_plan_sm100 import sm100_scatter_available
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import RegularGridS2
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
@@ -1265,13 +1275,15 @@ class _KeyedPlan(ArcPlanS2):
 
     has_call_state = True
     built = None
+    shapes = None
     used = None
 
     def has_gather(self, dtype):
         return True
 
-    def call_state(self, op, bc, dtype, t):
+    def call_state(self, op, bc, dtype, in_shape, t):
         type(self).built.append((op, bc, dtype))
+        type(self).shapes.append(in_shape)
         # the values, and the key they were built for
         return (self.arcs(t)[-1].clone(), torch.tensor([bc], device=t[0].device))
 
@@ -1320,7 +1332,7 @@ class TestDiscoPlan(unittest.TestCase):
         if (self.device.type == "cuda") and (not cuda_kernels_is_available()):
             raise unittest.SkipTest("skipping test because CUDA kernels are not available")
         _CountingPlan.calls = {"gather": 0, "scatter": 0, "scatter_split": 0}
-        _KeyedPlan.built, _KeyedPlan.used = [], []
+        _KeyedPlan.built, _KeyedPlan.shapes, _KeyedPlan.used = [], [], []
 
     def _pair(self, in_channels, out_channels, fused, backend=None):
         """The same layer twice, with the counting (or the given) backend and with the arc backend."""
@@ -1459,6 +1471,8 @@ class TestDiscoPlan(unittest.TestCase):
         dgrad_channels = out_channels if spatial_first else in_channels
         expected = [(op, b * c, torch.float32) for b in (2, 3) for op, c in (("gather", in_channels), (dgrad_op, dgrad_channels))]
         self.assertEqual(_KeyedPlan.built, expected)
+        # with the shape of the contraction's input, the gather's and the scatters' alike
+        self.assertEqual(set(_KeyedPlan.shapes), {(16, 32)})
         # every operation ran with the state built for the planes it contracted
         for op, bc_built, bc_seen in _KeyedPlan.used:
             self.assertEqual(bc_built, bc_seen, f"{op} ran with the call state of another key")
@@ -1473,7 +1487,7 @@ class TestDiscoPlan(unittest.TestCase):
         with torch.inference_mode():
             conv(x)
         self.assertEqual(_KeyedPlan.built, [("gather", 8, torch.float32)])
-        state = conv.backend.plan._call_states[("gather", 8, torch.float32)]
+        state = conv.backend.plan._call_states[("gather", 8, torch.float32, (16, 32))]
         self.assertFalse(any(s.is_inference() or s.requires_grad for s in state))
 
         x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
@@ -1486,19 +1500,26 @@ class TestDiscoPlan(unittest.TestCase):
         self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
         self.assertTrue(compare_tensors("weight grad", conv.weight.grad, conv_arc.weight.grad, atol=1e-6, rtol=1e-6))
 
-    def test_call_state_cache_is_bounded(self):
-        """The least recently used call state goes once the plan holds max_call_states."""
+    def test_call_states_are_kept_until_cleared(self):
+        """Nothing evicts call state: the plan keeps every key, warns once past call_state_warn, and frees them on request."""
         conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
         plan = conv.backend.plan
         t = plan.state(conv)
-        for bc in range(1, plan.max_call_states + 2):
-            plan.bind((("gather", bc),), torch.float32, t)
-        self.assertEqual(len(plan._call_states), plan.max_call_states)
-        self.assertNotIn(("gather", 1, torch.float32), plan._call_states)
-        # a hit refreshes, a miss rebuilds
-        plan.bind((("gather", 2),), torch.float32, t)
-        plan.bind((("gather", 1),), torch.float32, t)
-        self.assertIn(("gather", 2, torch.float32), plan._call_states)
+        for bc in range(1, plan.call_state_warn + 1):
+            plan.bind((("gather", bc),), torch.float32, (16, 32), t)
+        with self.assertWarnsRegex(UserWarning, "clear_call_states"):
+            plan.bind((("gather", plan.call_state_warn + 1),), torch.float32, (16, 32), t)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            plan.bind((("gather", plan.call_state_warn + 2),), torch.float32, (16, 32), t)
+        self.assertEqual(len(plan._call_states), plan.call_state_warn + 2)
+        with mock.patch.object(torch.cuda, "synchronize") as synchronize:
+            plan.clear_call_states()
+        # the device holding the state, whichever is current
+        self.assertEqual([c.args[0] for c in synchronize.call_args_list], [conv.psi_vals.device] if self.device.type == "cuda" else [])
+        self.assertEqual(len(plan._call_states), 0)
+        # rebuilt as needed
+        plan.bind((("gather", 1),), torch.float32, (16, 32), t)
         self.assertEqual(_KeyedPlan.built.count(("gather", 1, torch.float32)), 2)
 
     def test_call_state_is_not_built_during_capture(self):
@@ -1506,11 +1527,46 @@ class TestDiscoPlan(unittest.TestCase):
         conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
         plan = conv.backend.plan
         t = plan.state(conv)
-        plan.bind((("gather", 8),), torch.float32, t)
+        plan.bind((("gather", 8),), torch.float32, (16, 32), t)
         with mock.patch.object(torch.cuda, "is_available", return_value=True), mock.patch.object(torch.cuda, "is_current_stream_capturing", return_value=True):
-            plan.bind((("gather", 8),), torch.float32, t)
+            plan.bind((("gather", 8),), torch.float32, (16, 32), t)
             with self.assertRaisesRegex(RuntimeError, "during CUDA graph capture"):
-                plan.bind((("gather", 16),), torch.float32, t)
+                plan.bind((("gather", 16),), torch.float32, (16, 32), t)
+
+    def test_call_state_is_complete_before_it_is_cached(self):
+        """The build synchronizes its stream, once per key, so another stream can use the cached state without waiting."""
+        if self.device.type != "cuda":
+            raise unittest.SkipTest("streams are CUDA only")
+        conv, conv_arc = self._pair(4, 4, False, backend=_KeyedBackend)
+        x = torch.randn(2, 4, 16, 32, device=self.device)
+        built_on, other = torch.cuda.Stream(), torch.cuda.Stream()
+        built_on.wait_stream(torch.cuda.current_stream())
+        synchronize = torch.cuda.Stream.synchronize
+        with mock.patch.object(torch.cuda.Stream, "synchronize", autospec=True, side_effect=synchronize) as syncs:
+            with torch.cuda.stream(built_on):
+                conv(x)
+            self.assertEqual(syncs.call_count, 1, "one build, one synchronization")
+            with torch.cuda.stream(built_on):
+                conv(x)
+            other.wait_stream(built_on)
+            with torch.cuda.stream(other):
+                out = conv(x)
+            self.assertEqual(syncs.call_count, 1, "cached state needs no further synchronization")
+        torch.cuda.synchronize()
+        self.assertTrue(compare_tensors("output", out, conv_arc(x), atol=1e-6, rtol=1e-6))
+
+    def test_empty_call_state_is_remembered(self):
+        """An operation without call state is built once and found again, also during capture."""
+        conv, _ = self._pair(4, 4, False, backend=_KeyedBackend)
+        plan = conv.backend.plan
+        t = plan.state(conv)
+        with mock.patch.object(_KeyedPlan, "call_state", return_value=()) as build:
+            plan.bind((("gather", 2),), torch.float32, (16, 32), t)
+            plan.bind((("gather", 2),), torch.float32, (16, 32), t)
+            with mock.patch.object(torch.cuda, "is_available", return_value=True), mock.patch.object(torch.cuda, "is_current_stream_capturing", return_value=True):
+                layout, tc = plan.bind((("gather", 2),), torch.float32, (16, 32), t)
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual((layout, tc), ((("gather", 0, 0),), ()))
 
     def test_contraction_binds_its_operations(self):
         """``contract`` binds the gather's call state over the input's planes, and the scatter's only when the gradient is needed."""
@@ -1669,6 +1725,201 @@ class TestWeightContraction(unittest.TestCase):
         with torch.autocast("cuda", dtype=torch.float16):
             self.assertEqual(_weight_contraction(torch.randn(2, 2 * Cg, 1, 4, 8, device=self.device), w).dtype, torch.float16)
             self.assertEqual(_weight_expansion(torch.randn(2, 2 * Og, 4, 8, device=self.device), w).dtype, torch.float16)
+
+
+# Opt-in gate for expensive cases, as in test_distributed_convolution.py
+_run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
+
+
+def _sm100_here():
+    return torch.cuda.is_available() and sm100_scatter_available(torch.device("cuda"))
+
+
+@unittest.skipUnless(_sm100_here(), "the sm_100a frequency-space scatter needs a 10.0 GPU and a build with 10.0a in TORCH_CUDA_ARCH_LIST")
+class TestSm100Scatter(unittest.TestCase):
+    """The experimental regular-sm100 backend: the kpacked forward with the frequency-space arc scatter for fp16 and bf16."""
+
+    device = torch.device("cuda")
+
+    def _pair(self, in_channels, out_channels, in_shape, out_shape, fused=False, kernel_shape=(3, 3)):
+        """The same fp16 layer with the sm100 backend and with the kpacked one (same forward, arc scatter)."""
+        convs = []
+        for backend in (RegularSm100Backend, RegularKpackedBackend):
+            set_seed(333)
+            conv = DiscreteContinuousConvS2(
+                as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+                as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
+                in_channels,
+                out_channels,
+                kernel_shape,
+                basis_type="harmonic",
+                bias=False,
+                theta_cutoff=2.5 * torch.pi / float(out_shape[0] - 1),
+                fused=fused,
+            )
+            conv._backends = (backend, RegularOptimizedBackend, RegularReferenceBackend)
+            conv._select_backend()
+            convs.append(conv.to(self.device))
+        self.assertEqual(convs[0].backend.name, "regular-sm100")
+        self.assertEqual(convs[1].backend.name, "regular-kpacked")
+        return convs
+
+    def _check_conv(self, conv, conv_ref, batch, in_shape, dtype=torch.float16):
+        x = torch.randn(batch, conv.groupsize * conv.groups, *in_shape, device=self.device, dtype=dtype)
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        out, out_ref = conv(x1), conv_ref(x2)
+        grad = torch.randn_like(out)
+        out.backward(grad)
+        out_ref.backward(grad)
+        # the forward and the weight gradient run the same kernels in both
+        self.assertTrue(torch.equal(out, out_ref))
+        self.assertTrue(torch.equal(conv.weight.grad, conv_ref.weight.grad))
+        # the input gradient: frequency space (fp32 FFTs, rounded once to the dtype) against the arc scatter; bf16
+        # keeps 8 mantissa bits to fp16's 11
+        tol = 2e-2 if dtype == torch.float16 else 8e-2
+        self.assertTrue(compare_tensors("input grad", x1.grad.float(), x2.grad.float(), atol=tol, rtol=tol))
+        conv.weight.grad = conv_ref.weight.grad = None
+
+    @parameterized.expand(
+        [
+            # in_channels, out_channels, in_shape, out_shape, fused, dtype: pscale 1 and 2, weight-first and
+            # spatial-first, fp16 and bf16
+            [in_ch, out_ch, in_shape, out_shape, fused, dtype]
+            for in_ch, out_ch, in_shape, out_shape, fused in (
+                (4, 4, (32, 64), (32, 64), False),
+                (4, 4, (32, 64), (16, 32), False),
+                (4, 4, (32, 64), (16, 32), True),
+                (8, 2, (32, 64), (16, 32), False),
+                (8, 2, (32, 64), (32, 64), True),
+                (2, 16, (64, 128), (32, 64), False),
+            )
+            for dtype in (torch.float16, torch.bfloat16)
+        ]
+    )
+    def test_matches_the_arc_scatter(self, in_channels, out_channels, in_shape, out_shape, fused, dtype):
+        conv, conv_ref = self._pair(in_channels, out_channels, in_shape, out_shape, fused)
+        # batch sizes across the scatter's channel-group and tile thresholds
+        for batch in (1, 2, 3, 8):
+            with self.subTest(batch=batch):
+                self._check_conv(conv, conv_ref, batch, in_shape, dtype)
+
+    @parameterized.expand(
+        [
+            # name, in_shape, out_shape, expected (mode, fast, input transform, output transform) with None for "any",
+            # slow, dtype. mode 1: direct gather; 2: frequency space. transforms 1: two-pass, 2: multi-pass FFT
+            [name, in_shape, out_shape, expected, slow, dtype]
+            for name, in_shape, out_shape, expected, slow in (
+                # 56 longitudes: n = 28 = 4 * 7 has no FFT plan
+                ("direct gather", (16, 56), (16, 56), (1, 0, 0, 0), False),
+                # pscale 4 and 3: the generic contraction
+                ("generic contraction, pscale 4", (16, 128), (8, 32), (2, 0, 1, 1), False),
+                ("generic contraction, pscale 3", (24, 96), (8, 32), (2, 0, 1, 1), False),
+                # the multi-pass transform needs n smooth but not a product of two radices up to 32, which first happens
+                # at 1000 longitudes and more; slow, gated behind TORCH_HARMONICS_RUN_SLOW_TESTS=1.
+                # n = 500 splits into two radices, n = 1000 only in passes
+                ("two-pass and multi-pass", (16, 2000), (8, 1000), (2, None, 1, 2), True),
+                # n = 972 on both sides
+                ("multi-pass", (8, 1944), (8, 1944), (2, None, 2, 2), True),
+            )
+            for dtype in (torch.float16, torch.bfloat16)
+        ]
+    )
+    def test_fallback_paths(self, name, in_shape, out_shape, expected, slow, dtype):
+        """The paths besides the fast one -- direct gather, generic contraction, multi-pass transforms -- match the arc scatter."""
+        if slow and not _run_slow_tests:
+            raise unittest.SkipTest(f"{name}: large grid, set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
+        conv, conv_ref = self._pair(4, 4, in_shape, out_shape)
+        batch = 2
+        path = torch.ops.disco_kernels.scatter_fft_sm100_config(
+            batch * 4, conv.kernel_size, *out_shape, *in_shape, conv.psi_row_ker.numel(), conv.psi_seg.shape[0], conv.psi_vals.numel()
+        )
+        for got, want, what in zip(path, expected, ("mode", "fast contraction", "input transform", "output transform")):
+            if want is not None:
+                self.assertEqual(got, want, f"{name}: {what}")
+        self._check_conv(conv, conv_ref, batch, in_shape, dtype)
+
+    def test_plans_are_built_once_per_shape(self):
+        """The scatter's plan is call state: built once per number of planes and input shape, then reused."""
+        conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
+        for batch in (2, 2, 3, 2):
+            self._check_conv(conv, conv_ref, batch, (32, 64))
+        plan = conv.backend.plan
+        # the scatter has a plan per batch size; the kpacked gather has no call state
+        self.assertEqual(sorted((op, bc) for op, bc, _, _ in plan._call_states), [("gather", 8), ("gather", 12), ("scatter", 8), ("scatter", 12)])
+        self.assertTrue(all(len(state) == (1 if op == "scatter" else 0) for (op, *_), state in plan._call_states.items()))
+
+    def test_bf16_plans_are_their_own(self):
+        """fp16 and bf16 gradients of the same shape get plans of their own: the call state is keyed by dtype."""
+        conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
+        for dtype in (torch.float16, torch.bfloat16, torch.float16):
+            self._check_conv(conv, conv_ref, 2, (32, 64), dtype)
+        scatter_keys = sorted(str(dtype) for op, _, dtype, _ in conv.backend.plan._call_states if op == "scatter")
+        self.assertEqual(scatter_keys, ["torch.bfloat16", "torch.float16"])
+
+    def test_other_dtypes_take_the_arc_scatter(self):
+        """fp32 gradients take the arc scatter: no plan is built and the result is the kpacked backend's."""
+        conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
+        x = torch.randn(2, 4, 32, 64, device=self.device, dtype=torch.float32)
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        out, out_ref = conv(x1), conv_ref(x2)
+        out.backward(torch.ones_like(out))
+        out_ref.backward(torch.ones_like(out_ref))
+        # the same arc scatter in both; its fp32 atomics need not sum in the same order
+        self.assertTrue(compare_tensors("input grad", x1.grad, x2.grad, atol=1e-6, rtol=1e-6))
+        self.assertFalse(any(state for state in conv.backend.plan._call_states.values()))
+
+    @parameterized.expand([[torch.float16], [torch.bfloat16]])
+    def test_cuda_graph_replay(self, dtype):
+        """After an eager warmup, forward and backward capture into a CUDA graph and replay correctly on new inputs."""
+        conv, conv_ref = self._pair(8, 2, (32, 64), (16, 32))
+        static_x = torch.randn(2, 8, 32, 64, device=self.device, dtype=dtype, requires_grad=True)
+        static_grad = torch.randn(2, 2, 16, 32, device=self.device, dtype=dtype)
+
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(2):
+                static_x.grad = None
+                conv(static_x).backward(static_grad)
+        torch.cuda.current_stream().wait_stream(side)
+
+        graph = torch.cuda.CUDAGraph()
+        static_x.grad = None
+        with torch.cuda.graph(graph):
+            static_out = conv(static_x)
+            static_out.backward(static_grad)
+
+        for _ in range(3):
+            x = torch.randn_like(static_x)
+            grad = torch.randn_like(static_grad)
+            with torch.no_grad():
+                static_x.copy_(x)
+                static_grad.copy_(grad)
+            graph.replay()
+            x_ref = x.clone().requires_grad_(True)
+            out_ref = conv_ref(x_ref)
+            out_ref.backward(grad)
+            self.assertTrue(torch.equal(static_out, out_ref))
+            tol = 2e-2 if dtype == torch.float16 else 8e-2
+            self.assertTrue(compare_tensors("input grad", static_x.grad.float(), x_ref.grad.float(), atol=tol, rtol=tol))
+
+    @requires_torch_compile
+    def test_compiles_after_warmup(self):
+        """The conv node traces as a whole with the sm100 plan, using the plans an eager call built."""
+        conv, _ = self._pair(8, 2, (32, 64), (16, 32))
+        x = torch.randn(2, 8, 32, 64, device=self.device, dtype=torch.float16)
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        out = conv(x1)
+        grad = torch.randn_like(out)
+        out.backward(grad)
+        weight_grad = conv.weight.grad.clone()
+        conv.weight.grad = None
+        compiled = torch.compile(conv, backend="aot_eager", fullgraph=True)
+        out_compiled = compiled(x2)
+        out_compiled.backward(grad)
+        self.assertTrue(torch.equal(out_compiled, out))
+        self.assertTrue(compare_tensors("input grad", x2.grad.float(), x1.grad.float(), atol=1e-3, rtol=1e-3))
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad.float(), weight_grad.float(), atol=1e-3, rtol=1e-3))
 
 
 class TestKpackedDeviceGate(unittest.TestCase):
