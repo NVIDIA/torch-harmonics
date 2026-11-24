@@ -32,8 +32,10 @@
 r"""
 DISCO backends: an implementation of the psi contraction together with the state it needs.
 
-The contraction of a DISCO layer on a regular grid can run three ways:
+The contraction of a DISCO layer on a regular grid can run four ways:
 
+* ``regular-fft`` -- the kpacked forward, and for fp16/bf16 gradients the arc scatter in
+  frequency space (sm_90a and sm_100a). Off unless ``TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL=1``.
 * ``regular-kpacked`` -- the tensor-core forward (WGMMA on sm_90a, tcgen05 on sm_100a), for
   fp16/bf16 activations. psi in the blocked layout where every point carries all K filter
   values, plus the arcs its backward scatters with.
@@ -48,6 +50,19 @@ neighborhood attention:
 * ``ragged-optimized`` -- the compiled ragged gather and scatter, on CPU and CUDA. psi in
   arc form keyed per output point, plus the ring tables of the grid its columns index.
 * ``ragged-reference`` -- the torch implementation, one sparse product per basis function.
+
+The arch-specific kernels can be switched on and off with environment variables, as Transformer Engine does
+for its attention backends. They are read whenever a layer selects its backend -- on construction and on every
+device or dtype change -- so they can be set at any time before then:
+
+``TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL`` (default ``0``)
+    Allows ``regular-fft``. It runs the kpacked forward, so it also needs the kpacked kernel allowed.
+``TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL`` (default ``1``)
+    Allows ``regular-kpacked`` (and with it ``regular-fft``).
+
+Of the allowed backends, a layer takes the first in ``BACKENDS`` that can serve it on its device: the
+frequency-space scatter where it is eligible, then the kpacked forward, then the arc kernels. ``1``, ``true``,
+``yes`` and ``on`` allow, ``0``, ``false``, ``no`` and ``off`` disallow, anything else is an error.
 
 The layouts are described, and built, in :mod:`torch_harmonics.disco._psi_layouts`. A
 backend registers the ones it reads and nothing else; see :mod:`torch_harmonics._backend`
@@ -118,6 +133,36 @@ from .optimized.disco_optimized import (
 )
 from .optimized.disco_plan import ARC_STATE, KPACKED_STATE, ArcPlanS2, KpackedPlanS2
 from .optimized.disco_plan_fft import FftPlanS2, build_fft_state, fft_scatter_available
+
+#: the environment variables that allow or disallow the arch-specific kernels, see the module docstring
+ENABLE_FFT_KERNEL = "TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL"
+ENABLE_KPACKED_KERNEL = "TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL"
+
+_TRUE = frozenset({"1", "true", "yes", "on"})
+_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """The boolean environment variable ``name``, ``default`` when unset or empty."""
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    raise ValueError(f"{name}={os.getenv(name)!r}: expected one of {sorted(_TRUE | _FALSE)}")
+
+
+def fft_kernel_enabled() -> bool:
+    """Whether ``TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL`` allows the frequency-space scatter (default: no)."""
+    return _env_flag(ENABLE_FFT_KERNEL, False)
+
+
+def kpacked_kernel_enabled() -> bool:
+    """Whether ``TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL`` allows the kpacked forward (default: yes)."""
+    return _env_flag(ENABLE_KPACKED_KERNEL, True)
+
 
 if optimized_kernels_is_available():
     from .optimized.disco_optimized import (
@@ -287,7 +332,8 @@ class RegularKpackedBackend(RegularOptimizedBackend):
     device that can run it: it is padded per point to K_pad values, a sizeable buffer to
     hold for a kernel that could never launch.
 
-    Available only for the forward direction, on a device and build the kernels were
+    Available only when ``TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL`` allows it (the
+    default), for the forward direction, on a device and build the kernels were
     compiled for (see ``disco_arch``), for K <= 16 and ``nlon_out`` a
     multiple of 8. Declines in ``prepare`` when the basis functions do not share one
     support, which the layout requires and which is only known once it is built.
@@ -300,7 +346,8 @@ class RegularKpackedBackend(RegularOptimizedBackend):
     @classmethod
     def available(cls, layer, device):
         return (
-            super().available(layer, device)
+            kpacked_kernel_enabled()
+            and super().available(layer, device)
             and not layer.transpose
             and device.type == "cuda"
             and disco_arch.kpacked_build_available()
@@ -336,16 +383,16 @@ class RegularKpackedBackend(RegularOptimizedBackend):
 
 class RegularFftBackend(RegularKpackedBackend):
     """
-    Experimental: the kpacked forward with the frequency-space arc scatter, on H100 and B200 / GB200.
+    The kpacked forward with the frequency-space arc scatter, on H100 and B200 / GB200.
 
     The scatter is a Kernel Factory candidate (``kernels_cuda/regular/disco_cuda_bwd_fft.cu``), built
     into both arch-specific extensions, and runs for fp16 and bf16 gradients; see ``FftPlanS2``.
-    Available where the kpacked backend is, on a compute capability 9.0 or 10.0 device whose
+    Available when ``TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL=1`` (off by default; the scatter keeps
+    scratch of the size of the input gradient's spectra) and wherever the kpacked backend is, which
+    needs the kpacked kernel allowed as well, on a compute capability 9.0 or 10.0 device whose
     extension (``torch_harmonics.disco._C_sm90`` / ``_C_sm100``, 9.0a / 10.0a in
     ``TORCH_CUDA_ARCH_LIST``) was built, and when the input longitudes are a multiple of the output
     longitudes, which the scatter requires.
-
-    Not in ``BACKENDS`` yet: layers select it only when ``EXPERIMENTAL_BACKENDS`` are enabled (see there).
     """
 
     name = "regular-fft"
@@ -354,7 +401,7 @@ class RegularFftBackend(RegularKpackedBackend):
 
     @classmethod
     def available(cls, layer, device):
-        return super().available(layer, device) and fft_scatter_available(device) and layer._psi_nlon % layer.nlon_out == 0
+        return fft_kernel_enabled() and super().available(layer, device) and fft_scatter_available(device) and layer._psi_nlon % layer.nlon_out == 0
 
     def prepare(self, layer, device):
         state = self._kpacked_state(layer, device)
@@ -448,20 +495,13 @@ class RaggedReferenceBackend(DiscoBackendS2):
 #: Every backend, most specific first; see :mod:`torch_harmonics._backend`. A regular
 #: and a ragged backend never both accept a layer, so the two families are ordered only
 #: among themselves, as in :data:`torch_harmonics.attention.backends.BACKENDS`. The
-#: transpose layers use the same list: the kpacked backend declines them itself.
-#: backends with kernels still being validated, most specific first. Layers do not select them unless
-#: ``TORCH_HARMONICS_DISCO_EXPERIMENTAL_BACKENDS=1`` is set when torch_harmonics is imported, which puts
-#: them ahead of the others in ``BACKENDS``; a layer can also opt in on its own by setting its
-#: ``_backends`` to ``EXPERIMENTAL_BACKENDS + BACKENDS`` and calling ``_select_backend()``.
-EXPERIMENTAL_BACKENDS = (RegularFftBackend,)
-
+#: transpose layers use the same list: the kpacked and fft backends decline them themselves.
+#: Whether the arch-specific ones are allowed at all is up to the environment, see the module docstring.
 BACKENDS = (
     RaggedOptimizedBackend,
     RaggedReferenceBackend,
+    RegularFftBackend,
     RegularKpackedBackend,
     RegularOptimizedBackend,
     RegularReferenceBackend,
 )
-
-if os.getenv("TORCH_HARMONICS_DISCO_EXPERIMENTAL_BACKENDS", "0") == "1":
-    BACKENDS = EXPERIMENTAL_BACKENDS + BACKENDS
