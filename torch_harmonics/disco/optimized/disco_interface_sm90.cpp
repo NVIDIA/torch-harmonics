@@ -29,7 +29,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // The extension torch_harmonics.disco._C_sm90: the DISCO kernels that need the arch-specific target(s)
-// sm_90a, compiled for nothing else (see _DISCO_ARCH_EXTENSIONS in setup.py). Today the WGMMA kpacked forward (Hopper).
+// sm_90a, compiled for nothing else (see _DISCO_ARCH_EXTENSIONS in setup.py). Today the WGMMA kpacked forward (Hopper)
+// and the frequency-space arc scatter (disco_cuda_bwd_fft.cu, ops scatter_fft_sm90_*).
 //
 // Importing the module registers its operators in the disco_kernels namespace. Its TARGETS attribute lists the
 // targets the build holds images for, which torch_harmonics/disco/optimized/disco_arch.py matches against the device:

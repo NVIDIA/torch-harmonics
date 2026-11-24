@@ -49,10 +49,10 @@ from torch_harmonics.disco._psi_layouts import arcs_to_coo, build_arcs, build_kp
 from torch_harmonics.disco.backends import (
     RaggedOptimizedBackend,
     RaggedReferenceBackend,
+    RegularFftBackend,
     RegularKpackedBackend,
     RegularOptimizedBackend,
     RegularReferenceBackend,
-    RegularSm100Backend,
 )
 from torch_harmonics.disco.convolution import (
     _precompute_convolution_tensor_s2,
@@ -60,7 +60,7 @@ from torch_harmonics.disco.convolution import (
 from torch_harmonics.disco.optimized import disco_arch
 from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad
 from torch_harmonics.disco.optimized.disco_plan import ArcPlanS2
-from torch_harmonics.disco.optimized.disco_plan_sm100 import sm100_scatter_available
+from torch_harmonics.disco.optimized.disco_plan_fft import fft_scatter_available
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import RegularGridS2
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
@@ -1731,20 +1731,20 @@ class TestWeightContraction(unittest.TestCase):
 _run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
 
 
-def _sm100_here():
-    return torch.cuda.is_available() and sm100_scatter_available(torch.device("cuda"))
+def _fft_scatter_here():
+    return torch.cuda.is_available() and fft_scatter_available(torch.device("cuda"))
 
 
-@unittest.skipUnless(_sm100_here(), "the sm_100a frequency-space scatter needs a 10.0 GPU and a build with 10.0a in TORCH_CUDA_ARCH_LIST")
-class TestSm100Scatter(unittest.TestCase):
-    """The experimental regular-sm100 backend: the kpacked forward with the frequency-space arc scatter for fp16 and bf16."""
+@unittest.skipUnless(_fft_scatter_here(), "the frequency-space scatter needs a 9.0 or 10.0 GPU and a build with 9.0a / 10.0a in TORCH_CUDA_ARCH_LIST")
+class TestFftScatter(unittest.TestCase):
+    """The experimental regular-fft backend: the kpacked forward with the frequency-space arc scatter for fp16 and bf16."""
 
     device = torch.device("cuda")
 
     def _pair(self, in_channels, out_channels, in_shape, out_shape, fused=False, kernel_shape=(3, 3)):
-        """The same fp16 layer with the sm100 backend and with the kpacked one (same forward, arc scatter)."""
+        """The same fp16 layer with the fft backend and with the kpacked one (same forward, arc scatter)."""
         convs = []
-        for backend in (RegularSm100Backend, RegularKpackedBackend):
+        for backend in (RegularFftBackend, RegularKpackedBackend):
             set_seed(333)
             conv = DiscreteContinuousConvS2(
                 as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
@@ -1760,7 +1760,7 @@ class TestSm100Scatter(unittest.TestCase):
             conv._backends = (backend, RegularOptimizedBackend, RegularReferenceBackend)
             conv._select_backend()
             convs.append(conv.to(self.device))
-        self.assertEqual(convs[0].backend.name, "regular-sm100")
+        self.assertEqual(convs[0].backend.name, "regular-fft")
         self.assertEqual(convs[1].backend.name, "regular-kpacked")
         return convs
 
@@ -1830,7 +1830,7 @@ class TestSm100Scatter(unittest.TestCase):
             raise unittest.SkipTest(f"{name}: large grid, set TORCH_HARMONICS_RUN_SLOW_TESTS=1 to run")
         conv, conv_ref = self._pair(4, 4, in_shape, out_shape)
         batch = 2
-        path = torch.ops.disco_kernels.scatter_fft_sm100_config(
+        path = disco_arch.fft_scatter_config_op(torch.cuda.current_device())(
             batch * 4, conv.kernel_size, *out_shape, *in_shape, conv.psi_row_ker.numel(), conv.psi_seg.shape[0], conv.psi_vals.numel()
         )
         for got, want, what in zip(path, expected, ("mode", "fast contraction", "input transform", "output transform")):
@@ -1905,7 +1905,7 @@ class TestSm100Scatter(unittest.TestCase):
 
     @requires_torch_compile
     def test_compiles_after_warmup(self):
-        """The conv node traces as a whole with the sm100 plan, using the plans an eager call built."""
+        """The conv node traces as a whole with the fft plan, using the plans an eager call built."""
         conv, _ = self._pair(8, 2, (32, 64), (16, 32))
         x = torch.randn(2, 8, 32, 64, device=self.device, dtype=torch.float16)
         x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
@@ -1957,6 +1957,26 @@ class TestKpackedDeviceGate(unittest.TestCase):
     )
     def test_each_device_needs_its_own_target(self, built, capability, expected):
         self.assertEqual(self._supported(built, capability), expected)
+
+    @parameterized.expand(
+        [
+            # build targets, device capability, frequency-space scatter selected: on the devices it was validated on
+            # (9.0, 10.0) with their own image, not on GB300 (10.3) even with a 10.3a build
+            [("9.0a",), (9, 0), True],
+            [("10.0a",), (10, 0), True],
+            [("9.0a", "10.0a", "10.3a"), (10, 3), False],
+            [("10.0a",), (9, 0), False],
+            [("9.0a",), (10, 0), False],
+            [("9.0a", "10.0a", "10.3a"), (12, 0), False],
+        ]
+    )
+    def test_fft_scatter_device_gate(self, built, capability, expected):
+        with (
+            mock.patch.object(disco_arch, "built_targets", return_value=frozenset(built)),
+            mock.patch("torch.cuda.get_device_capability", return_value=capability),
+            mock.patch.object(disco_arch, "fft_scatter_registered", return_value=True),
+        ):
+            self.assertEqual(disco_arch.fft_scatter_supported_on_device(0), expected)
 
     def test_the_table_covers_every_kpacked_target(self):
         self.assertEqual({target: capability for capability, (_, target) in disco_arch.DEVICE_TARGETS.items()}, self._TARGETS)

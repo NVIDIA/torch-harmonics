@@ -117,7 +117,7 @@ from .optimized.disco_optimized import (
     _kpacked_k_pad,
 )
 from .optimized.disco_plan import ARC_STATE, KPACKED_STATE, ArcPlanS2, KpackedPlanS2
-from .optimized.disco_plan_sm100 import Sm100PlanS2, build_sm100_state, sm100_scatter_available
+from .optimized.disco_plan_fft import FftPlanS2, build_fft_state, fft_scatter_available
 
 if optimized_kernels_is_available():
     from .optimized.disco_optimized import (
@@ -334,33 +334,35 @@ class RegularKpackedBackend(RegularOptimizedBackend):
         return state
 
 
-class RegularSm100Backend(RegularKpackedBackend):
+class RegularFftBackend(RegularKpackedBackend):
     """
-    Experimental: the kpacked forward with the frequency-space arc scatter of sm_100a (B200 / GB200).
+    Experimental: the kpacked forward with the frequency-space arc scatter, on H100 and B200 / GB200.
 
-    The scatter is a Kernel Factory candidate (``kernels_cuda/regular/disco_cuda_bwd_fft_sm100.cu``)
-    and runs for fp16 and bf16 gradients; see ``Sm100PlanS2``. Available where the kpacked backend is, on a
-    compute capability 10.0 device with the extension ``torch_harmonics.disco._C_sm100`` built
-    (10.0a in ``TORCH_CUDA_ARCH_LIST``), and when the input longitudes are a multiple of the output
+    The scatter is a Kernel Factory candidate (``kernels_cuda/regular/disco_cuda_bwd_fft.cu``), built
+    into both arch-specific extensions, and runs for fp16 and bf16 gradients; see ``FftPlanS2``.
+    Available where the kpacked backend is, on a compute capability 9.0 or 10.0 device whose
+    extension (``torch_harmonics.disco._C_sm90`` / ``_C_sm100``, 9.0a / 10.0a in
+    ``TORCH_CUDA_ARCH_LIST``) was built, and when the input longitudes are a multiple of the output
     longitudes, which the scatter requires.
 
     Not in ``BACKENDS`` yet: layers select it only when ``EXPERIMENTAL_BACKENDS`` are enabled (see there).
     """
 
-    name = "regular-sm100"
+    name = "regular-fft"
 
-    plan_class = Sm100PlanS2
+    plan_class = FftPlanS2
 
     @classmethod
     def available(cls, layer, device):
-        return super().available(layer, device) and sm100_scatter_available(device) and layer._psi_nlon % layer.nlon_out == 0
+        return super().available(layer, device) and fft_scatter_available(device) and layer._psi_nlon % layer.nlon_out == 0
 
     def prepare(self, layer, device):
         state = self._kpacked_state(layer, device)
         if state is None:
             return None
-        state.update(build_sm100_state(state, self.split_row_offsets))
+        state.update(build_fft_state(state, self.split_row_offsets))
         self.plan = self._kpacked_plan(layer, state, device)
+        self.plan.fft_plan_op, self.plan.fft_run_op = disco_arch.fft_scatter_ops(_device_index(device))
         return state
 
 
@@ -451,7 +453,7 @@ class RaggedReferenceBackend(DiscoBackendS2):
 #: ``TORCH_HARMONICS_DISCO_EXPERIMENTAL_BACKENDS=1`` is set when torch_harmonics is imported, which puts
 #: them ahead of the others in ``BACKENDS``; a layer can also opt in on its own by setting its
 #: ``_backends`` to ``EXPERIMENTAL_BACKENDS + BACKENDS`` and calling ``_select_backend()``.
-EXPERIMENTAL_BACKENDS = (RegularSm100Backend,)
+EXPERIMENTAL_BACKENDS = (RegularFftBackend,)
 
 BACKENDS = (
     RaggedOptimizedBackend,
