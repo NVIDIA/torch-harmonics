@@ -32,6 +32,7 @@
 import os
 import unittest
 from itertools import accumulate
+from unittest import mock
 
 import torch
 import torch.distributed as dist
@@ -52,7 +53,7 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-from torch_harmonics.disco.backends import RegularFftBackend, RegularKpackedBackend, RegularOptimizedBackend, RegularReferenceBackend
+from torch_harmonics.disco.backends import ENABLE_FFT_KERNEL, RegularFftBackend, RegularKpackedBackend, RegularOptimizedBackend, RegularReferenceBackend
 from torch_harmonics.disco.optimized.disco_plan_fft import fft_scatter_available
 from torch_harmonics.distributed import compute_split_shapes
 from torch_harmonics.quadrature import compute_theta_cutoff
@@ -570,11 +571,14 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         scatter) against the serial conv on the kpacked one (the same forward, the arc scatter).
 
         Each rank runs the scatter on its own block, so each builds plans of its own shapes. The
-        backend is experimental and not selected by default; the test selects it explicitly.
+        backend is off by default; the test allows it through the environment and selects it explicitly.
         """
         if not fft_scatter_available(self.device):
             # the same verdict on every rank: they run on the same kind of device and build
             self.skipTest("the frequency-space scatter needs a 9.0 or 10.0 GPU and a build with 9.0a / 10.0a")
+        env = mock.patch.dict(os.environ, {ENABLE_FFT_KERNEL: "1"})
+        env.start()
+        self.addCleanup(env.stop)
 
         set_seed(333)
         B = 2

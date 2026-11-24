@@ -1731,15 +1731,110 @@ class TestWeightContraction(unittest.TestCase):
 _run_slow_tests = os.getenv("TORCH_HARMONICS_RUN_SLOW_TESTS", "0") == "1"
 
 
+class TestDiscoKernelFlags(unittest.TestCase):
+    """The environment variables that allow the arch-specific kernels; runs anywhere."""
+
+    @parameterized.expand(
+        [
+            # value (None: unset), default, expected
+            [None, True, True],
+            [None, False, False],
+            ["", False, False],
+            ["1", False, True],
+            [" ON ", False, True],
+            ["true", False, True],
+            ["yes", False, True],
+            ["0", True, False],
+            ["off", True, False],
+            ["False", True, False],
+            ["no", True, False],
+        ]
+    )
+    def test_flag_values(self, value, default, expected):
+        name = "TORCH_HARMONICS_TEST_FLAG"
+        with mock.patch.dict(os.environ, {} if value is None else {name: value}):
+            if value is None:
+                os.environ.pop(name, None)
+            self.assertEqual(disco_backends._env_flag(name, default), expected)
+
+    def test_flag_rejects_other_values(self):
+        with mock.patch.dict(os.environ, {"TORCH_HARMONICS_TEST_FLAG": "2"}):
+            with self.assertRaises(ValueError):
+                disco_backends._env_flag("TORCH_HARMONICS_TEST_FLAG", False)
+
+    def test_defaults(self):
+        """The fft scatter is off and the kpacked forward on unless the environment says otherwise."""
+        with mock.patch.dict(os.environ):
+            os.environ.pop(disco_backends.ENABLE_FFT_KERNEL, None)
+            os.environ.pop(disco_backends.ENABLE_KPACKED_KERNEL, None)
+            self.assertFalse(disco_backends.fft_kernel_enabled())
+            self.assertTrue(disco_backends.kpacked_kernel_enabled())
+
+    def test_fft_is_tried_before_kpacked(self):
+        """Selection takes the first allowed backend that accepts the layer: the fft backend comes ahead of kpacked."""
+        order = [cls.name for cls in disco_backends.BACKENDS]
+        self.assertLess(order.index("regular-fft"), order.index("regular-kpacked"))
+        self.assertLess(order.index("regular-kpacked"), order.index("regular-optimized"))
+
+
 def _fft_scatter_here():
     return torch.cuda.is_available() and fft_scatter_available(torch.device("cuda"))
 
 
 @unittest.skipUnless(_fft_scatter_here(), "the frequency-space scatter needs a 9.0 or 10.0 GPU and a build with 9.0a / 10.0a in TORCH_CUDA_ARCH_LIST")
 class TestFftScatter(unittest.TestCase):
-    """The experimental regular-fft backend: the kpacked forward with the frequency-space arc scatter for fp16 and bf16."""
+    """The regular-fft backend: the kpacked forward with the frequency-space arc scatter for fp16 and bf16."""
 
     device = torch.device("cuda")
+
+    def setUp(self):
+        # the backend is off by default: allow it for these tests
+        env = mock.patch.dict(os.environ, {disco_backends.ENABLE_FFT_KERNEL: "1"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def _default_backend(self, in_shape=(32, 64), out_shape=(16, 32)):
+        """The backend a layer with the default candidates selects on this device."""
+        conv = DiscreteContinuousConvS2(
+            as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+            as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
+            4,
+            4,
+            (3, 3),
+            basis_type="harmonic",
+            theta_cutoff=2.5 * torch.pi / float(out_shape[0] - 1),
+        )
+        return conv.to(self.device).backend.name
+
+    @parameterized.expand(
+        [
+            # TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL, ..._KPACKED_KERNEL (None: unset), the backend selected
+            ["1", None, "regular-fft"],
+            ["1", "1", "regular-fft"],
+            [None, None, "regular-kpacked"],
+            ["0", "1", "regular-kpacked"],
+            # the fft backend runs the kpacked forward, so it needs the kpacked kernel allowed too
+            ["1", "0", "regular-optimized"],
+            ["0", "0", "regular-optimized"],
+        ]
+    )
+    def test_environment_selects_the_kernels(self, fft, kpacked, expected):
+        """Of the kernels the environment allows, a layer takes the fft scatter over the kpacked forward over the arc kernels."""
+        env = {disco_backends.ENABLE_FFT_KERNEL: fft, disco_backends.ENABLE_KPACKED_KERNEL: kpacked}
+        with mock.patch.dict(os.environ, {k: v for k, v in env.items() if v is not None}):
+            for k, v in env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+            self.assertEqual(self._default_backend(), expected)
+
+    def test_environment_is_read_on_selection(self):
+        """The flags are read when a layer selects its backend, so a layer moved after a change follows it."""
+        conv = DiscreteContinuousConvS2(
+            as_grid("equiangular", nlat=32, nlon=64), as_grid("equiangular", nlat=16, nlon=32), 4, 4, (3, 3), basis_type="harmonic", theta_cutoff=2.5 * torch.pi / 15.0
+        )
+        self.assertEqual(conv.to(self.device).backend.name, "regular-fft")
+        with mock.patch.dict(os.environ, {disco_backends.ENABLE_FFT_KERNEL: "0"}):
+            self.assertEqual(conv.cpu().to(self.device).backend.name, "regular-kpacked")
 
     def _pair(self, in_channels, out_channels, in_shape, out_shape, fused=False, kernel_shape=(3, 3)):
         """The same fp16 layer with the fft backend and with the kpacked one (same forward, arc scatter)."""
