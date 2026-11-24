@@ -52,7 +52,8 @@ from testutils import (
 
 import torch_harmonics as th
 import torch_harmonics.distributed as thd
-from torch_harmonics.disco.backends import RegularOptimizedBackend, RegularReferenceBackend
+from torch_harmonics.disco.backends import RegularFftBackend, RegularKpackedBackend, RegularOptimizedBackend, RegularReferenceBackend
+from torch_harmonics.disco.optimized.disco_plan_fft import fft_scatter_available
 from torch_harmonics.distributed import compute_split_shapes
 from torch_harmonics.quadrature import compute_theta_cutoff
 
@@ -541,6 +542,107 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
     def test_kpacked_fallback_fp16_unfused(self):
         """fp16 + kpacked ruled out → arc kernels, fused=False."""
         self._run_kpacked_fallback(fused=False, dtype=torch.float16)
+
+    @parameterized.expand(
+        [
+            # in_shape, out_shape, in_channels, out_channels, fused, polar_mode, dtype: pscale 1 and 2, the standard
+            # and the reordered a2a, halo exchange and reduce-scatter, and with the reordered a2a and fewer output than
+            # input channels the spatial-first input gradient (one scatter per basis function)
+            [in_shape, out_shape, cin, cout, fused, polar_mode, dtype]
+            for in_shape, out_shape, cin, cout, fused, polar_mode in (
+                ((64, 128), (64, 128), 8, 8, False, "halo-exchange"),
+                ((64, 128), (64, 128), 8, 8, True, "halo-exchange"),
+                ((64, 128), (32, 64), 8, 8, False, "halo-exchange"),
+                ((64, 128), (32, 64), 8, 8, True, "halo-exchange"),
+                ((64, 128), (64, 128), 8, 2, True, "halo-exchange"),
+                ((64, 128), (32, 64), 8, 2, True, "halo-exchange"),
+                ((64, 128), (64, 128), 8, 8, False, "reduce-scatter"),
+                ((64, 128), (32, 64), 8, 2, True, "reduce-scatter"),
+                # odd latitudes: ranks hold bands of different heights, so their plans differ
+                ((65, 128), (33, 64), 8, 8, False, "halo-exchange"),
+            )
+            for dtype in (torch.float16, torch.bfloat16)
+        ]
+    )
+    def test_regular_fft_backend(self, in_shape, out_shape, in_channels, out_channels, fused, polar_mode, dtype):
+        """
+        The distributed conv on the regular-fft backend (the kpacked forward, the frequency-space
+        scatter) against the serial conv on the kpacked one (the same forward, the arc scatter).
+
+        Each rank runs the scatter on its own block, so each builds plans of its own shapes. The
+        backend is experimental and not selected by default; the test selects it explicitly.
+        """
+        if not fft_scatter_available(self.device):
+            # the same verdict on every rank: they run on the same kind of device and build
+            self.skipTest("the frequency-space scatter needs a 9.0 or 10.0 GPU and a build with 9.0a / 10.0a")
+
+        set_seed(333)
+        B = 2
+        grid_in = th.as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1])
+        grid_out = th.as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1])
+        args = dict(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            basis_type="harmonic",
+            basis_norm_mode="mean",
+            kernel_shape=(3, 3),
+            groups=1,
+            grid_in=grid_in,
+            grid_out=grid_out,
+            bias=True,
+            theta_cutoff=2.5 * torch.pi / float(out_shape[0] - 1),
+        )
+
+        conv_local = th.DiscreteContinuousConvS2(**args).to(dtype=torch.float32, device=self.device)
+        conv_dist = thd.DistributedDiscreteContinuousConvS2(**args, fused=fused, polar_mode=polar_mode).to(dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            conv_dist.weight.copy_(conv_local.weight)
+            conv_dist.bias.copy_(conv_local.bias)
+
+        conv_local._backends = (RegularKpackedBackend, RegularOptimizedBackend, RegularReferenceBackend)
+        conv_local._select_backend()
+        conv_dist._backends = (RegularFftBackend, RegularOptimizedBackend, RegularReferenceBackend)
+        conv_dist._select_backend()
+        self.assertEqual(conv_local.backend.name, "regular-kpacked")
+        self.assertEqual(conv_dist.backend.name, "regular-fft")
+        self.assertEqual(conv_dist.backend.plan.has_split, fused and 2 * out_channels <= in_channels)
+
+        inp_full = torch.randn((B, in_channels, *in_shape), dtype=torch.float32, device=self.device)
+        inp_full.requires_grad = True
+        with maybe_autocast(self.device.type, dtype):
+            out_full = conv_local(inp_full)
+        ograd_full = torch.randn_like(out_full)
+        out_full.backward(ograd_full)
+        igrad_full = inp_full.grad.clone()
+
+        inp_local = self.split_field(inp_full.detach().clone(), conv_dist.shard_in)
+        inp_local.requires_grad = True
+        with maybe_autocast(self.device.type, dtype):
+            out_local = conv_dist(inp_local)
+        ograd_local = self.split_field(ograd_full, conv_dist.shard_out)
+        out_local.backward(ograd_local)
+        igrad_local = inp_local.grad.clone()
+
+        # the input gradient went through the frequency-space scatter: it built a plan for this dtype
+        scatter_states = [state for (op, _, state_dtype, _), state in conv_dist.backend.plan._call_states.items() if op.startswith("scatter") and state_dtype == dtype]
+        self.assertTrue(scatter_states and all(len(state) > 0 for state in scatter_states), "no frequency-space scatter plan was built")
+
+        verbose = self.world_rank == 0
+        out_gather = self.gather_field(out_local, conv_dist.shard_out)
+        ok = compare_tensors("output", out_gather, out_full, atol=0.0, rtol=0.0, ulps=_ulps(dtype), eps_dtype=dtype, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "output")
+
+        # frequency space (fp32 FFTs, rounded once to the dtype) against the arc scatter: each within about half an
+        # ULP of the exact result, so within the budget of two implementations of the same contraction
+        igrad_gather = self.gather_field(igrad_local, conv_dist.shard_in)
+        ok = compare_tensors("gradients", igrad_gather, igrad_full, atol=0.0, rtol=0.0, ulps=_ulps(dtype), eps_dtype=dtype, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "gradients")
+
+        # the weight gradient does not go through the scatter
+        pg_ulps = param_grad_ulps(B * max(grid_in.npoints, grid_out.npoints), dtype)
+        wgrad = self._allreduce_param_grad(conv_dist.weight.grad)
+        ok = compare_tensors("weight grad", wgrad, conv_local.weight.grad, atol=0.0, rtol=0.0, ulps=pg_ulps, eps_dtype=dtype, verbose=verbose)
+        self.assertTrue(reduce_success(ok, self.device), "weight grad")
 
     @parameterized.expand(
         [
