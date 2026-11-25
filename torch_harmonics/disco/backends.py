@@ -374,6 +374,15 @@ class RegularKpackedBackend(RegularOptimizedBackend):
         self.plan = self._kpacked_plan(layer, state, device)
         return state
 
+    @classmethod
+    def variant(cls, device):
+        # prepare reads the Hankel/Toeplitz switch: layers built on either side of it must not share a plan
+        return ("hankel", cls._hankel_forward(device))
+
+    @staticmethod
+    def _hankel_forward(device):
+        return hankel_kernel_enabled() and hankel_forward_available(device)
+
     def _kpacked_plan(self, layer, state, device):
         """
         The plan over ``state``, with the kpacked forward of the arch-specific extension for ``device``.
@@ -383,7 +392,7 @@ class RegularKpackedBackend(RegularOptimizedBackend):
         """
         plan = self._make_plan(layer, state)
         plan.kpacked_op = disco_arch.kpacked_op(_device_index(device))
-        if hankel_kernel_enabled() and hankel_forward_available(device):
+        if self._hankel_forward(device):
             plan.hankel_plan_op, plan.hankel_run_op = disco_arch.hankel_forward_ops(_device_index(device))
         return plan
 

@@ -986,7 +986,9 @@ __global__ void __launch_bounds__(128)
 // the latitude ranges published (they are the plan's), the extension claims past the reserved tasks,
 // and the main kernel's dynamic item counter.  (torch-harmonics: the delivered kernel kept these words
 // across calls and told calls apart by an epoch, which a CUDA graph freezes at capture.)
-__global__ void __launch_bounds__(256) init_kernel(unsigned *__restrict__ stamps, int nwords, int xreserve, int item_base)
+constexpr int INIT_THREADS = 256;
+__global__ void __launch_bounds__(INIT_THREADS)
+    init_kernel(unsigned *__restrict__ stamps, int nwords, int xreserve, int item_base)
 {
     for (int i = threadIdx.x; i < nwords; i += blockDim.x) {
         unsigned v = 0u;
@@ -2913,7 +2915,7 @@ namespace disco_kernels
         prm.hrot = c.hrot;
 
         // the call's stamps, claims and item counter
-        init_kernel<<<1, 1024, 0, st>>>(stamps, STAMP_WORDS, c.xres, c.grid);
+        init_kernel<<<1, INIT_THREADS, 0, st>>>(stamps, STAMP_WORDS, c.xres, c.grid);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         // the extended input ahead of the main kernel: every row, or in co-resident mode the first xpre latitudes
