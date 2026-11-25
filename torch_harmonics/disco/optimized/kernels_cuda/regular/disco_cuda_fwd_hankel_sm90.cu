@@ -2476,6 +2476,8 @@ namespace
 
         bool lp = false;
         if constexpr (RG == 1) lp = CPS != 1 && lp_ok;
+        if (const char *e = getenv("TORCH_HARMONICS_HANKEL_SM90_NOLP")) // TEMPORARY: LP A/B
+            if (atoi(e) != 0) lp = false;
         if (lp)
             c.variant = c.nvs == 5 ? MV_LP_NV : MV_LP_8;
         else if (c.tx && c.nvs == 5)
