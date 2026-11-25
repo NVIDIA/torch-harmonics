@@ -1467,20 +1467,28 @@ __device__ __forceinline__ void decode_item(const HkParams &p, int item, int &ho
     ho = (r & 1) ? (p.NG - 1 - (r >> 1)) : (r >> 1);
 }
 
-// The configuration of a main-kernel family <DW, MT, CPS, RG>: MT M tiles of 128 GEMM rows per item, one consumer
-// warpgroup each, CPS CTAs per SM.  The accumulators are registers (MN / 2 per thread and m64 half), so the widest
-// families of the sm_100a kernel (row pairs at DW 8, MN 144) are not taken.
-template <int DW, int MT_, int CPS = 1, int RG = 1> struct HkCfg {
+// The configuration of a main-kernel family <DW, NWG, CPS, RG>: NWG consumer warpgroups, each owning TPW M tiles of
+// 128 GEMM rows, so MT = NWG * TPW tiles per item; CPS CTAs per SM.  The accumulators are registers, TPW * MN per
+// thread: narrow MMAs take several tiles per warpgroup, which issue against the same Toeplitz operand (the sm_100a
+// kernel's items hold up to 10 tiles in tensor memory).  The widest families of the sm_100a kernel (row pairs at
+// DW 8, MN 144) are not taken.
+template <int DW, int NWG_, int CPS = 1, int RG = 1> struct HkCfg {
     static constexpr int MN1 = KB * DW;                 // logical columns per output row
     static constexpr int MN = ((RG * MN1 + 7) / 8) * 8; // exact MMA width across row groups
     static_assert(MN <= 80, "the accumulators of wider MMAs do not fit the register file");
-    static constexpr int MT = MT_;
-    static constexpr int NWG = MT; // consumer warpgroups
+    // M tiles per warpgroup: as many as about 80 accumulators per thread allow at one CTA per SM (170 registers),
+    // 56 at two (128 registers), at most 4
+    static constexpr int ACC_BUDGET = CPS == 1 ? 80 : 56;
+    static constexpr int TPW = ACC_BUDGET / MN < 1 ? 1 : (ACC_BUDGET / MN > 4 ? 4 : ACC_BUDGET / MN);
+    static constexpr int NWG = NWG_;     // consumer warpgroups
+    static constexpr int MT = NWG * TPW; // M tiles per item
     // One-CTA kernels use a second producer so adjacent pieces can issue their TMA loads in
     // parallel; other configurations keep a single producer to preserve occupancy.
     static constexpr int NPW = CPS == 1 ? 2 : 1;
     static constexpr int THREADS = 128 * (1 + NWG);
 };
+// wgmma groups (one per piece) a consumer warp keeps in flight; fewer where the stages are few (see the consumer)
+#define WG_INFLIGHT 4
 
 __device__ __forceinline__ void tma_load_4d(unsigned dst, const void *tmap, int c0, int c1, int c2, int c3, unsigned bar)
 {
@@ -1502,12 +1510,78 @@ template <int NV> struct TmapX {
     CUtensorMap m[NV];
 };
 
-template <int DW, bool TX, int MT_, int CPS, int RG, bool LP, int NV, bool Z>
+// The stores of one accumulator row of an m64 half (sub 0: the thread's first row, 1: the row 8 below) to GEMM row
+// (channel chan, block b): columns 8 j + 2 (lane % 4) + {0, 1}.  Loops of constant trip count only, so that they
+// unroll and the accumulators keep their registers.
+template <int DW, int RG, int MN, int R, int SUB>
+__device__ __forceinline__ void store_rows(const float (&a)[R], int lane, uint16_t *chan, unsigned kstride,
+                                           const HkParams &p, int ho, int b, int sh)
+{
+    constexpr int MN1 = KB * DW;
+#pragma unroll
+    for (int j = 0; j < MN / 8; ++j) {
+        const unsigned pk = pack2(a[4 * j + 2 * SUB], a[4 * j + 2 * SUB + 1], p.bf16);
+        const int n = 8 * j + 2 * (lane & 3); // the pair's first column
+        if constexpr (DW >= 2) {
+            // DW even: the pair lies in one (row r, basis k) block; columns past RG * MN1 are padding
+            const int r = n / MN1;
+            const int rn = n - r * MN1;
+            const int k = rn / DW;
+            const int hr = ho * RG + r;
+            if (r < RG && k < p.K && hr < p.Ho) {
+                int wo = DW * b + sh + (rn - k * DW);
+                if (wo >= p.Wo) wo -= p.Wo;
+                uint16_t *dst = chan + ((unsigned)k * kstride + (unsigned)hr * (unsigned)p.Wo);
+                if (DW == 2 && sh != 0) {
+                    // odd start: the pair straddles a 4-byte boundary, and the seam for the last block
+                    dst[wo] = (uint16_t)(pk & 0xFFFFu);
+                    dst[wo + 1 == p.Wo ? 0 : wo + 1] = (uint16_t)(pk >> 16);
+                } else {
+                    *reinterpret_cast<unsigned *>(dst + wo) = pk;
+                }
+            }
+        } else {
+            // DW 1: one column per (row, basis function)
+#pragma unroll
+            for (int u = 0; u < 2; ++u) {
+                const int r = (n + u) / MN1;
+                const int k = n + u - r * MN1;
+                const int hr = ho * RG + r;
+                if (r < RG && k < p.K && hr < p.Ho)
+                    chan[(unsigned)k * kstride + (unsigned)hr * (unsigned)p.Wo + (unsigned)b]
+                        = (uint16_t)(u ? (pk >> 16) : (pk & 0xFFFFu));
+            }
+        }
+    }
+}
+
+// One k-step of a consumer warpgroup: the MMAs of its tiles t (tile w + NWG t, first slot 128 (w + NWG t)) whose
+// halves hold stored rows, A from slot a16 + the tile's first slot (K-direction stride alb), all against B descriptor
+// bd.  A function rather than a lambda: it must inline, or the accumulators lose their registers.
+template <int MN, int TPW, int NWG>
+__device__ __forceinline__ void mma_tiles(float (&acc)[TPW][2][Wgmma<MN>::R], const int (&nh)[TPW], int w, unsigned a16,
+                                          unsigned alb, uint64_t bd, int sc, bool bf)
+{
+    // tile by tile, with constant indices (spelled out rather than unrolled: see the epilogue)
+#define HK_MMA_TILE(T)                                                                                                 \
+    if constexpr (TPW > T) {                                                                                           \
+        const unsigned at = a16 + (unsigned)((w + NWG * T) * 128);                                                     \
+        if (nh[T] > 0) Wgmma<MN>::mma(acc[T][0], mkdesc(at, alb), bd, sc, bf);                                         \
+        if (nh[T] > 1) Wgmma<MN>::mma(acc[T][1], mkdesc(at + 64u, alb), bd, sc, bf);                                   \
+    }
+    HK_MMA_TILE(0)
+    HK_MMA_TILE(1)
+    HK_MMA_TILE(2)
+    HK_MMA_TILE(3)
+#undef HK_MMA_TILE
+}
+
+template <int DW, bool TX, int NWG_, int CPS, int RG, bool LP, int NV, bool Z>
 __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams &p)
 {
     static_assert(NV == 8 || NV == NVMAX);
     static_assert(!LP || RG == 1);
-    using Cfg = HkCfg<DW, MT_, CPS, RG>;
+    using Cfg = HkCfg<DW, NWG_, CPS, RG>;
     constexpr int MN = Cfg::MN;
     constexpr int MN1 = Cfg::MN1;
     constexpr int NWG = Cfg::NWG;
@@ -1995,20 +2069,39 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
             }
         }
     } else if (warp >= 4) {
-        // ---------------- consumer warpgroup 1 + m: M tile m ----------------
+        // ---------------- consumer warpgroup 1 + w: M tiles m = w + NWG t (t < TPW) ----------------
         // Every warp waits for each stage and releases it (one arrival per warp) once the wgmma group that read
-        // it has completed; one piece's group stays in flight behind the next one's issue.
-        using W = Wgmma<MN>;
-        constexpr int R = W::R;        // accumulator registers per m64 half
-        const int m = (warp >> 2) - 1; // this warpgroup's M tile
-        const int wq = warp & 3;       // its warp: rows 16 wq .. 16 wq + 15 of each m64 half
+        // it has completed.  Up to WG_INFLIGHT pieces' groups stay in flight, bounded by the stages: with keep
+        // groups pending after a wait, the stages of the pieces up to q - keep - 1 are free (a carried stage is
+        // freed with the next piece), so the producer can fill piece q + 1 when nst >= keep + 2.
+        constexpr int TPW = Cfg::TPW;
+        constexpr int R = Wgmma<MN>::R; // accumulator registers per m64 half
+        const int w = (warp >> 2) - 1;  // this warpgroup
+        const int wq = warp & 3;        // its warp: rows 16 wq .. 16 wq + 15 of each m64 half
         const bool bf = p.bf16 != 0;
         const unsigned z16 = (smem_u32(smem) + (unsigned)p.z_off) >> 4;
-        const unsigned off = (unsigned)(m * 128); // the tile's first slot
+        const int keep = min(WG_INFLIGHT - 1, nst - 2);
         // Output offsets: 64-bit to the channel, 32-bit within it (the host checks K * Ho * Wo < 2^32), so the
         // epilogue keeps 32-bit address arithmetic while the whole output may exceed 2^32 elements.
         const unsigned kstride = (unsigned)p.Ho * (unsigned)p.Wo;
-        float acc[2][R];
+        float acc[TPW][2][R];
+        // the stages pending release, one 16-bit entry per wgmma group (newest lowest): (r0 + 1) << 8 | (r1 + 1)
+        uint64_t ring = 0;
+        int nring = 0;
+        auto release = [&](unsigned e) {
+            if (lane == 0) {
+                if (e >> 8) mbar_arrive(EMPTY((int)(e >> 8) - 1));
+                if (e & 0xFFu) mbar_arrive(EMPTY((int)(e & 0xFFu) - 1));
+            }
+        };
+        // release the oldest groups until at most k remain (they have completed: the caller waited for that)
+        auto drain = [&](int k) {
+            while (nring > k) {
+                --nring;
+                release((unsigned)(ring >> (16 * nring)) & 0xFFFFu);
+            }
+            ring &= nring ? ((1ull << (16 * nring)) - 1) : 0ull;
+        };
         int s = 0;
         unsigned ph = 0;
         int qs = 0;
@@ -2032,23 +2125,22 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
             // The last channel's halo rows are never stored, so exclude them from the tile count.
             const int nrow = (nch - 1) * p.RPC + p.nb;
             const int mtc = (nrow + 127) >> 7;
-            // m64 halves of this tile that hold stored rows
-            const int nh = m < mtc ? (nrow - 128 * m > 64 ? 2 : 1) : 0;
+            // per tile: the m64 halves that hold stored rows
+            int nh[TPW];
+            bool any = false;
+#pragma unroll
+            for (int t = 0; t < TPW; ++t) {
+                const int m = w + NWG * t;
+                nh[t] = m < mtc ? (nrow - 128 * m > 64 ? 2 : 1) : 0;
+                any |= nh[t] > 0;
+            }
 
-            // the tile's MMAs of one k-step: A from slot start a16 (K-direction stride alb), B from descriptor bd
             bool init = false; // whether the accumulators hold this item's partial sums
-            auto mma = [&](unsigned a16, unsigned alb, uint64_t bd) {
-                const int sc = init ? 1 : 0;
-                W::mma(acc[0], mkdesc(a16, alb), bd, sc, bf);
-                if (nh > 1) W::mma(acc[1], mkdesc(a16 + 64u, alb), bd, sc, bf);
-                init = true;
-            };
             // Chunk-packed issue: a k-step covers two 8-longitude chunks.  A piece's odd last chunk is
             // paired with the next piece's first chunk (both operands via an LBO spanning the two
             // stages); a ring wrap reverses both K halves, which leaves A*B unchanged and keeps the LBO positive.
-            int pend = -1;            // stage whose last chunk is still pending
-            unsigned pa = 0, pb = 0;  // its A / B start (16-byte units)
-            int rel0 = -1, rel1 = -1; // the stages the previous piece's wgmma group frees
+            int pend = -1;           // stage whose last chunk is still pending
+            unsigned pa = 0, pb = 0; // its A / B start (16-byte units)
             for (int q = 0; q < np; ++q) {
                 mbar_wait(FULL(s), ph); // TMA-written operands: the mbarrier completion orders them
                 const int nc = sks[s];
@@ -2068,24 +2160,28 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 // accumulates into it.
                 const bool carry = (rem & 1) && (q > 0 || nc > 1) && (q + 1 < np);
                 const int npair = carry ? (rem >> 1) : ((rem + 1) >> 1);
-                if (nh > 0) {
+                if (any) {
                     wgmma_fence();
                     if (comb) {
                         const bool fwd = ts16 > pb;
                         const uint64_t bd = fwd ? mkdesc(pb, ts16 - pb) : mkdesc(ts16, pb - ts16);
                         if (fwd)
-                            mma(pa + off, xs16 - pa, bd);
+                            mma_tiles<MN, TPW, NWG>(acc, nh, w, pa, xs16 - pa, bd, init ? 1 : 0, bf);
                         else
-                            mma(xs16 + off, pa - xs16, bd);
+                            mma_tiles<MN, TPW, NWG>(acc, nh, w, xs16, pa - xs16, bd, init ? 1 : 0, bf);
+                        init = true;
                     }
                     for (int j = 0; j < npair; ++j) {
                         const unsigned c = (unsigned)(cs + 2 * j);
-                        mma(xs16 + c + off, 1u, bdesc(c));
+                        mma_tiles<MN, TPW, NWG>(acc, nh, w, xs16 + c, 1u, bdesc(c), init ? 1 : 0, bf);
+                        init = true;
                     }
                 }
                 wgmma_commit();
-                const int r0 = comb ? pend : -1;
-                const int r1 = carry ? -1 : s;
+                // this group frees the pending stage (if it consumed its last chunk) and its own (unless carried)
+                const unsigned ent = (unsigned)((comb ? pend + 1 : 0) << 8) | (unsigned)(carry ? 0 : s + 1);
+                ring = (ring << 16) | ent;
+                ++nring;
                 if (carry) {
                     pend = s;
                     pa = xs16 + (unsigned)(nc - 1);
@@ -2093,101 +2189,85 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 } else {
                     pend = -1;
                 }
-                // the previous piece's group has completed: its stages are free
-                wgmma_wait<1>();
-                if (lane == 0) {
-                    if (rel0 >= 0) mbar_arrive(EMPTY(rel0));
-                    if (rel1 >= 0) mbar_arrive(EMPTY(rel1));
+                switch (keep) {
+                case 3: wgmma_wait<3>(); break;
+                case 2: wgmma_wait<2>(); break;
+                case 1: wgmma_wait<1>(); break;
+                default: wgmma_wait<0>(); break;
                 }
-                rel0 = r0;
-                rel1 = r1;
+                drain(keep);
                 if (++s == nst) {
                     s = 0;
                     ph ^= 1u;
                 }
             }
             wgmma_wait<0>();
-            if (lane == 0) {
-                if (rel0 >= 0) mbar_arrive(EMPTY(rel0));
-                if (rel1 >= 0) mbar_arrive(EMPTY(rel1));
-            }
-            fence_acc(acc[0]);
-            fence_acc(acc[1]);
-            if (!init) {
-                // no pieces: the outputs are zero
-#pragma unroll
-                for (int i = 0; i < R; ++i) acc[0][i] = acc[1][i] = 0.f;
-            }
+            drain(0);
+            // (per tile with constant indices, see the epilogue; no pieces: the outputs are zero)
+#define HK_FINISH_TILE(T)                                                                                              \
+    if constexpr (TPW > T) {                                                                                           \
+        fence_acc(acc[T][0]);                                                                                          \
+        fence_acc(acc[T][1]);                                                                                          \
+        if (!init)                                                                                                     \
+            for (int i = 0; i < R; ++i) acc[T][0][i] = acc[T][1][i] = 0.f;                                             \
+    }
+            HK_FINISH_TILE(0)
+            HK_FINISH_TILE(1)
+            HK_FINISH_TILE(2)
+            HK_FINISH_TILE(3)
+#undef HK_FINISH_TILE
 
             // ---------------- epilogue: registers -> fp16 / bf16 -> global ----------------
             // half-block shift: GEMM row b holds outputs DW b + DW / 2 + dwo (mod Wo)
             const int sh = (DW >= 2 && p.rowsig[ho] != 0) ? DW / 2 : 0;
-#pragma unroll
-            for (int h = 0; h < 2; ++h) {
-                if (h >= nh) break;
-#pragma unroll
-                for (int sub = 0; sub < 2; ++sub) {
-                    const int g = m * 128 + h * 64 + wq * 16 + (lane >> 2) + 8 * sub; // GEMM row
-                    const int cl = p.G == 2 ? (int)(g >= p.RPC) : g / p.RPC;
-                    const int b = g - cl * p.RPC;
-                    if (cl >= nch || b >= p.nb) continue;
-                    uint16_t *chan = p.out + (size_t)(c0 + cl) * ((size_t)p.K * kstride);
-#pragma unroll
-                    for (int j = 0; j < MN / 8; ++j) {
-                        const float v0 = acc[h][4 * j + 2 * sub], v1 = acc[h][4 * j + 2 * sub + 1];
-                        const int n = 8 * j + 2 * (lane & 3); // the pair's first column
-                        if constexpr (DW >= 2) {
-                            // DW even: the pair lies in one (row r, basis k) block
-                            const int r = n / MN1;
-                            if (r >= RG) continue; // padding columns
-                            const int rn = n - r * MN1;
-                            const int k = rn / DW;
-                            const int hr = ho * RG + r;
-                            if (k >= p.K || hr >= p.Ho) continue;
-                            int w = DW * b + sh + (rn - k * DW);
-                            if (w >= p.Wo) w -= p.Wo;
-                            uint16_t *dst = chan + ((unsigned)k * kstride + (unsigned)hr * (unsigned)p.Wo);
-                            const unsigned pk = pack2(v0, v1, p.bf16);
-                            if (DW == 2 && sh != 0) {
-                                // odd start: the pair straddles a 4-byte boundary, and the seam for the last block
-                                dst[w] = (uint16_t)(pk & 0xFFFFu);
-                                dst[w + 1 == p.Wo ? 0 : w + 1] = (uint16_t)(pk >> 16);
-                            } else {
-                                *reinterpret_cast<unsigned *>(dst + w) = pk;
-                            }
-                        } else {
-                            // DW 1: one column per (row, basis function)
-                            const unsigned pk = pack2(v0, v1, p.bf16);
-#pragma unroll
-                            for (int t = 0; t < 2; ++t) {
-                                const int r = (n + t) / MN1;
-                                if (r >= RG) continue;
-                                const int k = n + t - r * MN1;
-                                const int hr = ho * RG + r;
-                                if (k >= p.K || hr >= p.Ho) continue;
-                                chan[(unsigned)k * kstride + (unsigned)hr * (unsigned)p.Wo + (unsigned)b]
-                                    = (uint16_t)(t ? (pk >> 16) : (pk & 0xFFFFu));
-                            }
-                        }
-                    }
-                }
-            }
+            // tile by tile and half by half with constant indices into acc, spelled out: a loop the unroller leaves
+            // rolled indexes acc at run time and sends it to local memory
+            auto rows = [&](int t, int h, int sub, int &cl, int &b) {
+                const int g = (w + NWG * t) * 128 + h * 64 + wq * 16 + (lane >> 2) + 8 * sub; // GEMM row
+                cl = p.G == 2 ? (int)(g >= p.RPC) : g / p.RPC;
+                b = g - cl * p.RPC;
+                return cl < nch && b < p.nb;
+            };
+#define HK_STORE_ROW(T, H, SUB)                                                                                        \
+    {                                                                                                                  \
+        int cl, b;                                                                                                     \
+        if (rows(T, H, SUB, cl, b))                                                                                    \
+            store_rows<DW, RG, MN, R, SUB>(acc[T][H], lane, p.out + (size_t)(c0 + cl) * ((size_t)p.K * kstride),       \
+                                           kstride, p, ho, b, sh);                                                     \
+    }
+#define HK_STORE_HALF(T, H)                                                                                            \
+    if (nh[T] > H) {                                                                                                   \
+        HK_STORE_ROW(T, H, 0)                                                                                          \
+        HK_STORE_ROW(T, H, 1)                                                                                          \
+    }
+#define HK_STORE_TILE(T)                                                                                               \
+    if constexpr (TPW > T) {                                                                                           \
+        HK_STORE_HALF(T, 0)                                                                                            \
+        HK_STORE_HALF(T, 1)                                                                                            \
+    }
+            HK_STORE_TILE(0)
+            HK_STORE_TILE(1)
+            HK_STORE_TILE(2)
+            HK_STORE_TILE(3)
+#undef HK_STORE_TILE
+#undef HK_STORE_HALF
+#undef HK_STORE_ROW
         }
     }
     // warps NPW .. 3 of warpgroup 0 have no role
 }
 
-template <int DW, bool TX, int MT, int CPS, int RG, bool LP, int NV, bool Z>
-__global__ void __launch_bounds__(HkCfg<DW, MT, CPS, RG>::THREADS, CPS)
+template <int DW, bool TX, int NWG, int CPS, int RG, bool LP, int NV, bool Z>
+__global__ void __launch_bounds__(HkCfg<DW, NWG, CPS, RG>::THREADS, CPS)
     disco_hk_wg(const __grid_constant__ TmapX<NV> tmap_x, const HkParams p)
 {
-    hk_body<DW, TX, MT, CPS, RG, LP, NV, Z>(tmap_x, p);
+    hk_body<DW, TX, NWG, CPS, RG, LP, NV, Z>(tmap_x, p);
 }
 // the main-kernel entry of a configuration
-template <int DW, bool TX, int MT, int CPS, int RG, bool LP = false, int NV = NVMAX, bool Z = false>
+template <int DW, bool TX, int NWG, int CPS, int RG, bool LP = false, int NV = NVMAX, bool Z = false>
 static constexpr auto disco_hk_kernel()
 {
-    return &disco_hk_wg<DW, TX, MT, CPS, RG, LP, NV, Z>;
+    return &disco_hk_wg<DW, TX, NWG, CPS, RG, LP, NV, Z>;
 }
 
 // =====================================================================================================================
@@ -2260,7 +2340,7 @@ namespace
         return G;
     }
 
-    // which main kernel of a family <DW, MT, CPS, RG> runs
+    // which main kernel of a family <DW, NWG, CPS, RG> runs
     enum MainVariant : int { MV_LP_NV = 0, MV_LP_8 = 1, MV_TX_NV = 2, MV_TX_8 = 3, MV_BULK = 4 };
 
     struct HkConfig {
@@ -2271,7 +2351,7 @@ namespace
         int nsm = 0;
         // main kernel family and variant
         int DW = 0, CPS = 0, RG = 0;
-        int MT = 0;
+        int NWG = 0, MT = 0; // consumer warpgroups, M tiles per item
         int variant = MV_BULK;
         bool tx = false, shared_z = false, pdl = false, co = false, use_R = false;
         // launch parameters (HkParams and the preprocessing)
@@ -2289,7 +2369,7 @@ namespace
     };
 
     // The main kernel of a configuration (as the delivered launch_hk2 chose it).
-    template <int DW, int MT, int CPS, int RG> const void *main_kernel(const HkConfig &c)
+    template <int DW, int NWG, int CPS, int RG> const void *main_kernel(const HkConfig &c)
     {
         constexpr bool ZCFG = CPS != 3;
         switch (c.variant) {
@@ -2297,13 +2377,13 @@ namespace
         case MV_LP_8:
             if constexpr (RG == 1) {
                 if (c.variant == MV_LP_NV)
-                    return (const void *)disco_hk_kernel<DW, true, MT, CPS, RG, true, NVMAX, ZCFG>();
-                return (const void *)disco_hk_kernel<DW, true, MT, CPS, RG, true, 8, ZCFG>();
+                    return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, true, NVMAX, ZCFG>();
+                return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, true, 8, ZCFG>();
             }
             return nullptr;
-        case MV_TX_NV: return (const void *)disco_hk_kernel<DW, true, MT, CPS, RG, false, NVMAX, ZCFG>();
-        case MV_TX_8: return (const void *)disco_hk_kernel<DW, true, MT, CPS, RG, false, 8, ZCFG>();
-        default: return (const void *)disco_hk_kernel<DW, false, MT, CPS, RG, false, 8>();
+        case MV_TX_NV: return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, false, NVMAX, ZCFG>();
+        case MV_TX_8: return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, false, 8, ZCFG>();
+        default: return (const void *)disco_hk_kernel<DW, false, NWG, CPS, RG, false, 8>();
         }
     }
 
@@ -2328,16 +2408,17 @@ namespace
         return regs <= regs_sm && sm <= smem_sm && cps * nth + XC_THREADS <= thr_sm;
     }
 
-    // The configuration of the family <DW, MT, CPS, RG> (the delivered launch_hk2 up to its launches). Leaves
+    // The configuration of the family <DW, NWG, CPS, RG> (the delivered launch_hk2 up to its launches). Leaves
     // c.ok false where the delivered kernel would have fallen back.
-    template <int DW, int MT_, int CPS, int RG> void configure(HkConfig &c, const cudaDeviceProp &prop)
+    template <int DW, int NWG, int CPS, int RG> void configure(HkConfig &c, const cudaDeviceProp &prop)
     {
-        using Cfg = HkCfg<DW, MT_, CPS, RG>;
+        using Cfg = HkCfg<DW, NWG, CPS, RG>;
         constexpr int MN = Cfg::MN;
         constexpr int MT = Cfg::MT;
         const int BC = c.BC, Hi = c.Hi, Wi = c.Wi, Ho = c.Ho, ps = c.ps;
         const int64_t NNZ = c.NNZ;
         c.DW = DW;
+        c.NWG = NWG;
         c.MT = MT;
         c.CPS = CPS;
         c.RG = RG;
@@ -2414,7 +2495,7 @@ namespace
         // Co-resident extension: the longitude-extended input is written by a separate kernel that runs
         // next to the main kernel instead of in front of it.
         c.co = c.pdl && c.tx && Hi <= CO_MAXHI
-            && co_fits(main_kernel<DW, MT, CPS, RG>(c), Cfg::THREADS, CPS, c.smem, prop);
+            && co_fits(main_kernel<DW, NWG, CPS, RG>(c), Cfg::THREADS, CPS, c.smem, prop);
         c.TY = CPS == 3 ? 8 : 6;
         c.tpl = (BC + XC_RPT - 1) / XC_RPT;
         // co-resident mode: the input extension ahead of the main kernel covers the first fifth of the latitude
@@ -2516,8 +2597,9 @@ namespace
     // f(std::integral_constant...) for the family of c: every family make_config can choose.
     template <class F> void with_family(const HkConfig &c, F &&f)
     {
-#define DISCO_HK_FAMILY(DW_, MT_, CPS_, RG_)                                                                           \
-    if (c.DW == DW_ && c.MT == MT_ && c.CPS == CPS_ && c.RG == RG_) return f.template operator()<DW_, MT_, CPS_, RG_>();
+#define DISCO_HK_FAMILY(DW_, NWG_, CPS_, RG_)                                                                          \
+    if (c.DW == DW_ && c.NWG == NWG_ && c.CPS == CPS_ && c.RG == RG_)                                                  \
+        return f.template operator()<DW_, NWG_, CPS_, RG_>();
 #define DISCO_HK_FAMILIES(DW_, RG_)                                                                                    \
     DISCO_HK_FAMILY(DW_, 1, 2, RG_)                                                                                    \
     DISCO_HK_FAMILY(DW_, 2, 1, RG_)
@@ -2528,8 +2610,8 @@ namespace
         DISCO_HK_FAMILIES(1, 1)
 #undef DISCO_HK_FAMILIES
 #undef DISCO_HK_FAMILY
-        TORCH_CHECK(false, "forward_hankel_sm90: no main kernel for DW ", c.DW, ", MT ", c.MT, ", CPS ", c.CPS, ", RG ",
-                    c.RG);
+        TORCH_CHECK(false, "forward_hankel_sm90: no main kernel for DW ", c.DW, ", NWG ", c.NWG, ", CPS ", c.CPS,
+                    ", RG ", c.RG);
     }
 
     // launch with programmatic stream serialization when pdl is set (the kernel calls pdl_wait before
@@ -2615,7 +2697,7 @@ namespace
                                                                                     T, c.nsm, c.TY, counter, flat);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
-        template <int DW, int MT, int CPS, int RG> void operator()() const
+        template <int DW, int NWG, int CPS, int RG> void operator()() const
         {
             if (c.kpad == 16) {
                 if (c.shared_z)
@@ -2638,9 +2720,9 @@ namespace
         TmapX<NVMAX> *tmap;
         HkParams *prm;
 
-        template <int DW, int MT, int CPS, int RG> void operator()() const
+        template <int DW, int NWG, int CPS, int RG> void operator()() const
         {
-            const void *kfn = main_kernel<DW, MT, CPS, RG>(c);
+            const void *kfn = main_kernel<DW, NWG, CPS, RG>(c);
             C10_CUDA_CHECK(cudaFuncSetAttribute(kfn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)MAIN_SMEM_ATTR));
             cudaLaunchConfig_t cfg = {};
             cfg.gridDim = dim3((unsigned)c.grid);
