@@ -18,7 +18,7 @@ env:
   # but silently compile those specialized kernels out.
   # 10.0a and 12.0 are omitted for CUDA 12.6: sm_100/sm_120 only exist from 12.8;
   # 10.3a (sm_103a) only from 12.9.
-  CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0a+PTX", "12.8": "8.0;8.6;8.9;9.0a;10.0a;12.0+PTX", "12.9": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.0": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.2": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "none": ""}'
+  CUDA_ARCH_MAP: '{"12.6": "8.0;8.6;8.9;9.0a+PTX", "12.8": "8.0;8.6;8.9;9.0a;10.0a;12.0+PTX", "12.9": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.0": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.2": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "13.4": "8.0;8.6;8.9;9.0a;10.0a;10.3a;12.0+PTX", "none": ""}'
 
 jobs:
   # The variants, listed once: the build matrix crosses them with the Python
@@ -33,7 +33,7 @@ jobs:
       run: echo 'dist-tags=["cu126", "cu128", "cu129", "cu130", "cu132", "cuda-latest", "cpu"]' >> "$GITHUB_OUTPUT"
 
   # One job per variant and Python version. A variant's wheels used to be built
-  # one after another in a single job, which with four Python versions and the
+  # one after another in a single job, which with five Python versions and the
   # full CUDA arch list approached the 6-hour limit of a hosted runner. Each job
   # uploads a part artifact; merge-wheels assembles them per variant.
   build-manylinux-wheels:
@@ -46,7 +46,7 @@ jobs:
       fail-fast: false
       matrix:
         dist-tag: ${{ fromJSON(needs.plan.outputs.dist-tags) }}
-        python: [cp311, cp312, cp313, cp314]
+        python: [cp311, cp312, cp313, cp314, cp315]
         exclude:
           # torch 2.9 cannot torch.compile on Python 3.14: its cp314 wheel
           # installs, but runs uncompiled. Python 3.14 users get cu132 or
@@ -55,6 +55,12 @@ jobs:
           - {dist-tag: cu128, python: cp314}
           - {dist-tag: cu129, python: cp314}
           - {dist-tag: cu130, python: cp314}
+          # torch 2.9 and 2.12 are not Python 3.15 targets.
+          - {dist-tag: cu126, python: cp315}
+          - {dist-tag: cu128, python: cp315}
+          - {dist-tag: cu129, python: cp315}
+          - {dist-tag: cu130, python: cp315}
+          - {dist-tag: cu132, python: cp315}
         # One row per variant, matched by dist-tag; its keys apply to every
         # Python version of that variant.
         include:
@@ -105,30 +111,30 @@ jobs:
             cuda-version: '13.2'
             dist-tag: 'cu132'
             build-cuda: '1'
-            builder-image: 'pytorch/manylinux2_28-builder@sha256:92e9a8cf7caa9d460570aa94dc8ea6a2406dfb5626ac04323a617821dab9403b'
-          - torch-version: '2.14.1'
-            torch-cuda: 'cu132'
-            cuda-version: '13.2'
+            builder-image: 'pytorch/manylinux2_28-builder@sha256:27442c40e99fca684c931c2521c868261a20cf8d95cb232133c02e6324b8b4dc'
+          - torch-version: '2.15.0'
+            torch-cuda: 'cu134'
+            cuda-version: '13.4'
             # newest torch on newest CUDA is published as the -cuda-latest package
             dist-tag: 'cuda-latest'
             build-cuda: '1'
-            builder-image: 'pytorch/manylinux2_28-builder@sha256:92e9a8cf7caa9d460570aa94dc8ea6a2406dfb5626ac04323a617821dab9403b'
+            builder-image: 'pytorch/manylinux2_28-builder@sha256:9f978392436fb92c501eddc5a6150ad714b199969a6223fee6da9835f0698a52'
           # CPU-only build based on latest PyTorch. This row needs no nvcc, so it
           # uses the stock manylinux_2_28 image rather than PyTorch's builder --
           # but pinned by digest like the CUDA rows above. cibuildwheel resolves
           # the "manylinux_2_28" alias through its own table, and that table is
-          # rewritten on every cibuildwheel release: 4.2.0 -> 4.2.1 moved all of
-          # them from 2026.08.04-1 to 2026.09.05-1. Leaving the alias unpinned
+          # rewritten on every cibuildwheel release: 4.2.1 -> 4.3.4 moved all of
+          # them from 2026.09.05-1 to 2026.10.21-1. Leaving the alias unpinned
           # meant a dependabot patch bump silently changed the compiler and
           # system libraries this wheel is built against, with no diff saying so.
-          # The digest below is what cibuildwheel 4.2.1 selects, so pinning it is
+          # The digest below is what cibuildwheel 4.3.4 selects, so pinning it is
           # a no-op today; updating the image is now its own reviewable change.
-          - torch-version: '2.14.1'
+          - torch-version: '2.15.0'
             torch-cuda: 'cpu'
             cuda-version: 'none'
             dist-tag: 'cpu'
             build-cuda: '0'
-            builder-image: 'quay.io/pypa/manylinux_2_28_x86_64@sha256:53390351aeb4688114b02c36a23b3e6ce1166ee9b7afc5df1a4f776354fc764c'
+            builder-image: 'quay.io/pypa/manylinux_2_28_x86_64@sha256:b74a5b6f1705ecff17be8bd792589bef9b3b039766d12205720ecd2a9e919192'
 
     steps:
     - uses: actions/checkout@v5
