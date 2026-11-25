@@ -84,7 +84,7 @@ import torch.nn as nn
 
 from torch_harmonics.cache import SharedBufferMixin, shared_table
 from torch_harmonics.grid import GridS2
-from torch_harmonics.utils import ensure_contiguous
+from torch_harmonics.utils import _contiguous, ensure_contiguous
 
 
 def _pad_dim_right(x: torch.Tensor, dim: int, target_size: int, value: float = 0.0) -> torch.Tensor:
@@ -98,30 +98,135 @@ def _pad_dim_right(x: torch.Tensor, dim: int, target_size: int, value: float = 0
     return nn.functional.pad(x, tuple(pad_spec), value=value)
 
 
-def rfft(x: torch.Tensor, nmodes: Optional[int] = None, dim: int = -1, **kwargs) -> torch.Tensor:
+# the normalization of the irfft that applies the adjoint of an rfft of the given normalization
+_ADJOINT_NORM = {None: "forward", "backward": "forward", "ortho": "ortho", "forward": "backward"}
+
+
+def _bin_weights(nbins: int, n: int, dim: int, ndim: int, single: Tuple[float, float], double: Tuple[float, float], dtype: torch.dtype, device: torch.device) -> torch.Tensor:
     """
-    Real FFT with the correct padding behavior.
-    If nmodes is given and larger than x.size(dim), x is zero-padded along dim before FFT.
+    Per-bin factors ``(re, im)`` of the one-sided bins ``0 .. nbins - 1`` of a length ``n`` real signal, shaped to
+    multiply :func:`torch.view_as_real` of a spectrum along ``dim``: ``single`` on the bins without a mirror image
+    (DC and, for even ``n``, Nyquist), ``double`` on every other one.
+
+    Built on the device from an ``arange``: setting single entries of a device tensor from Python copies a scalar
+    from the host and synchronizes the stream, once per call.
+    """
+    k = torch.arange(nbins, device=device)
+    is_single = k == 0
+    if n % 2 == 0:
+        is_single = is_single | (k == n // 2)
+    # Python scalars enter the kernels as arguments, not as tensors copied from the host
+    re = torch.where(is_single, single[0], double[0]).to(dtype)
+    im = torch.where(is_single, single[1], double[1]).to(dtype)
+    weights = torch.stack((re, im), dim=-1)
+    shape = [1] * (ndim + 1)
+    shape[dim] = nbins
+    shape[-1] = 2
+    return weights.reshape(shape)
+
+
+def _scale_bins(x: torch.Tensor, n: int, dim: int, single: Tuple[float, float], double: Tuple[float, float]) -> torch.Tensor:
+    """
+    The spectrum ``x`` with its real and imaginary parts scaled bin by bin, see :func:`_bin_weights`, contiguous.
+
+    Works on the real view: one pointwise pass, which inductor can generate (it cannot for a complex buffer), and a
+    contiguous result also where ``x`` is strided, as the CPU/MKL FFT needs.
+    """
+    xr = torch.view_as_real(x)
+    weights = _bin_weights(x.shape[dim], n, dim, x.ndim, single, double, xr.dtype, x.device)
+    return torch.view_as_complex((xr * weights).contiguous())
+
+
+class _RealFFT(torch.autograd.Function):
+    r"""
+    :func:`torch.fft.rfft` along ``dim``, truncated to the first ``nmodes`` bins, with a backward that keeps only the
+    length of the input.
+
+    The backward of ``torch.fft.rfft`` keeps the whole input -- its formula reads one size of it, and autograd saves
+    the tensor for that -- and returns the real part of a full-length complex inverse; the backward of a truncating
+    slice zero-fills and copies the full spectrum on top. The gradient is :math:`\mathrm{Re} \sum_k g_k e^{2 \pi i j
+    k / n}` over the kept bins: a c2r inverse of ``g`` with the bins it counts twice halved and the imaginary parts of
+    the single ones zeroed, which pads the truncated bins itself. Nothing is saved, and the inverse is half size.
     """
 
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, nmodes: int, dim: int, norm: Optional[str]) -> torch.Tensor:
+        ctx.n = x.shape[dim]
+        ctx.dim = dim % x.ndim
+        ctx.norm = norm
+        y = fft.rfft(x, dim=dim, norm=norm)
+        if nmodes < y.shape[dim]:
+            y = y.narrow(dim, 0, nmodes)
+        # contiguous through the real view, which inductor can generate code for
+        return _contiguous(y)
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor):
+        grad = _scale_bins(grad, ctx.n, ctx.dim, single=(1.0, 0.0), double=(0.5, 0.5))
+        return fft.irfft(grad, n=ctx.n, dim=ctx.dim, norm=_ADJOINT_NORM[ctx.norm]), None, None, None
+
+
+def _norm_kwarg(kwargs: dict) -> Optional[str]:
+    """The ``norm`` keyword of the ``torch.fft`` call the wrappers stand for; any other one is an error."""
     if "n" in kwargs:
         raise ValueError("The 'n' argument is not allowed. Use 'nmodes' instead.")
+    norm = kwargs.pop("norm", None)
+    if kwargs:
+        raise TypeError(f"unexpected keyword arguments {sorted(kwargs)}")
+    return norm
 
-    x = ensure_contiguous(fft.rfft(x, dim=dim, **kwargs))
 
-    if nmodes is not None and nmodes > x.shape[dim]:
-        x = _pad_dim_right(x, dim, nmodes, value=0.0)
-    elif nmodes is not None and nmodes < x.shape[dim]:
-        x = x.narrow(dim, 0, nmodes)
+def rfft(x: torch.Tensor, nmodes: Optional[int] = None, dim: int = -1, **kwargs) -> torch.Tensor:
+    """
+    Real FFT along ``dim``, keeping the first ``nmodes`` bins.
 
-    return x
+    The same as ``torch.fft.rfft(x, dim=dim, norm=norm)`` cut to ``nmodes`` bins along ``dim``, or zero-padded to
+    them where ``nmodes`` exceeds ``x.size(dim) // 2 + 1``, and contiguous. The backward keeps nothing of the input
+    but its length, does not rebuild the truncated spectrum, and returns a contiguous gradient; see
+    :class:`_RealFFT`.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Real input.
+    nmodes : int, optional
+        Number of bins returned. Defaults to all ``x.size(dim) // 2 + 1`` of them.
+    dim : int, optional
+        Dimension of the transform, by default ``-1``.
+    norm : str, optional
+        Normalization, as for :func:`torch.fft.rfft`. No other keyword is accepted.
+    """
+    norm = _norm_kwarg(dict(kwargs))
+    nbins = x.shape[dim] // 2 + 1
+    nmodes = nbins if nmodes is None else nmodes
+    y = _RealFFT.apply(x, min(nmodes, nbins), dim, norm)
+    if nmodes > nbins:
+        y = _pad_dim_right(y, dim, nmodes, value=0.0)
+    return y
 
 
 def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> torch.Tensor:
     """
-    Torch version of IRFFT handles paddign and truncation correctly.
-    This routine only applies Hermitian symmetry to avoid artifacts which occur depending on the backend.
+    Inverse real FFT of the one-sided spectrum ``x`` along ``dim``, to length ``n``.
+
+    Missing bins up to ``n // 2 + 1`` are zero and extra ones are dropped, as in :func:`torch.fft.irfft`. The
+    imaginary parts of the DC and (even ``n``) Nyquist bins are zeroed first, so that the result does not depend
+    on how the backend treats them. The mask is built on the device, so that a call has no host-to-device copy
+    and no stream synchronization.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Complex one-sided spectrum.
+    n : int, optional
+        Length of the output along ``dim``, by default ``2 * (x.size(dim) - 1)``.
+    dim : int, optional
+        Dimension of the transform, by default ``-1``.
+    norm : str, optional
+        Normalization, as for :func:`torch.fft.irfft`. No other keyword is accepted.
     """
+    norm = _norm_kwarg(dict(kwargs))
+    dim = dim % x.ndim
 
     if n is None:
         n = 2 * (x.size(dim) - 1)
@@ -131,23 +236,12 @@ def irfft(x: torch.Tensor, n: Optional[int] = None, dim: int = -1, **kwargs) -> 
     if x.size(dim) == 0 and n > 0:
         x = _pad_dim_right(x, dim, 1)
 
-    # Zero the imaginary part of the DC bin (and Nyquist bin if present) to
-    # enforce Hermitian symmetry. We do this functionally via torch.complex()
-    # rather than in-place assignment (x[..., k].imag = 0.0) because the
-    # in-place write on a strided complex view breaks autograd's backward pass
-    # on CPU+MKL (DftiCommitDescriptor rejects the resulting stride pattern).
-    imag_scale = torch.ones(x.size(dim), dtype=x.real.dtype, device=x.device)
-    imag_scale[0] = 0.0
-    if (n % 2 == 0) and (n // 2 < x.size(dim)):
-        imag_scale[n // 2] = 0.0
-    shape = [1] * x.ndim
-    shape[dim] = -1
-    imag_scale = imag_scale.reshape(*shape)
-    x = torch.complex(x.real, x.imag * imag_scale)
+    # Zero the imaginary part of the DC bin (and Nyquist bin if present), functionally
+    # rather than by an in-place write to a strided complex view, which breaks autograd's
+    # backward on CPU+MKL (DftiCommitDescriptor rejects the resulting stride pattern).
+    x = _scale_bins(x, n, dim, single=(1.0, 0.0), double=(1.0, 1.0))
 
-    x = ensure_contiguous(fft.irfft(x, n=n, dim=dim, **kwargs))
-
-    return x
+    return ensure_contiguous(fft.irfft(x, n=n, dim=dim, norm=norm))
 
 
 def _ring_groups(nlon_per_lat: torch.Tensor) -> List[Tuple[int, torch.Tensor]]:
@@ -340,7 +434,8 @@ class RingFFT(SharedBufferMixin, nn.Module):
             x = x.index_select(-1, self._pixel_order)
         spectra = []
         for pixels, n, count in zip(torch.split(x, self._sizes, dim=-1), self._lengths, self._counts):
-            spectrum = torch.fft.rfft(pixels.reshape(*lead, count, n), dim=-1, norm="forward")
+            # rfft, whose backward does not keep the field, see _RealFFT
+            spectrum = rfft(pixels.reshape(*lead, count, n), dim=-1, norm="forward")
             spectra.append(nn.functional.pad(spectrum, (0, self.nbins - spectrum.shape[-1])))
         spectrum = torch.cat(spectra, dim=-2) if len(spectra) > 1 else spectra[0]
 
