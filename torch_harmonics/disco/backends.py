@@ -60,9 +60,10 @@ device or dtype change -- so they can be set at any time before then:
 ``TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL`` (default ``1``)
     Allows ``regular-kpacked`` (and with it ``regular-fft``).
 ``TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL`` (default ``0``)
-    Lets ``regular-kpacked`` and ``regular-fft`` run their fp16/bf16 forward on the Hankel/Toeplitz kernel
-    on B200 / GB200 (see :mod:`.optimized.disco_plan_hankel`); ``layer.backend.plan.hankel_forward`` tells
-    whether a layer does.
+    Allows the Hankel/Toeplitz forward in ``regular-kpacked`` and ``regular-fft`` (see
+    :mod:`.optimized.disco_plan_hankel`). Not a backend of its own: where it is allowed, those backends take it
+    for their fp16/bf16 forward on a B200 / GB200 whose extension holds it, and run the kpacked forward for the
+    sizes it does not take. ``layer.backend.plan.hankel_forward`` tells whether a layer's plan has it.
 
 Of the allowed backends, a layer takes the first in ``BACKENDS`` that can serve it on its device: the
 frequency-space scatter where it is eligible, then the kpacked forward, then the arc kernels. ``1``, ``true``,
