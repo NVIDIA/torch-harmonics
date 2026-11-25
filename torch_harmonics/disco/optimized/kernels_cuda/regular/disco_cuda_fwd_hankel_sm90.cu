@@ -1446,7 +1446,6 @@ struct HkParams {
     unsigned ncg_recip;                          // floor(2^32 / NCG), saturated for NCG == 1
     int nvs;                                     // log2 of the number of views (3 or 5)
     int nst, xs_bytes, stage_bytes, bar_off;
-    int keep;          // wgmma groups a consumer keeps in flight after each piece (< nst - 1)
     int z_off;         // one all-zero Toeplitz chunk after the barrier area
     int *ictr;         // dynamic item counter (zeroed per call)
     const int *rowsig; // per item row (group): 0 or 4, the input shift of the GEMM-row output blocks
@@ -1489,8 +1488,6 @@ template <int DW, int NWG_, int CPS = 1, int RG = 1> struct HkCfg {
     static constexpr int NPW = CPS == 1 ? 2 : 1;
     static constexpr int THREADS = 128 * (1 + NWG);
 };
-// wgmma groups (one per piece) a consumer warp keeps in flight; fewer where the stages are few (see the consumer)
-#define WG_INFLIGHT 4
 
 __device__ __forceinline__ void tma_load_4d(unsigned dst, const void *tmap, int c0, int c1, int c2, int c3, unsigned bar)
 {
@@ -2074,36 +2071,28 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
     } else if (warp >= 4) {
         // ---------------- consumer warpgroup 1 + w: M tiles m = w + NWG t (t < TPW) ----------------
         // Every warp waits for each stage and releases it (one arrival per warp) once the wgmma group that read
-        // it has completed.  Up to WG_INFLIGHT pieces' groups stay in flight, bounded by the stages: with keep
-        // groups pending after a wait, the stages of the pieces up to q - keep - 1 are free (a carried stage is
-        // freed with the next piece), so the producer can fill piece q + 1 when nst >= keep + 2.
+        // it has completed.  One piece's group stays in flight behind the next one's issue where there are three
+        // stages or more (deeper measured slower on H100: it holds the stages longer); with two, the wait after
+        // each piece lets the producer fill the stage of piece q + 1 (a carried stage is freed with the next piece).
         constexpr int TPW = Cfg::TPW;
         constexpr int R = Wgmma<MN>::R; // accumulator registers per m64 half
         const int w = (warp >> 2) - 1;  // this warpgroup
         const int wq = warp & 3;        // its warp: rows 16 wq .. 16 wq + 15 of each m64 half
         const bool bf = p.bf16 != 0;
         const unsigned z16 = (smem_u32(smem) + (unsigned)p.z_off) >> 4;
-        const int keep = p.keep;
+        const bool keep = nst >= 3; // one group in flight
         // Output offsets: 64-bit to the channel, 32-bit within it (the host checks K * Ho * Wo < 2^32), so the
         // epilogue keeps 32-bit address arithmetic while the whole output may exceed 2^32 elements.
         const unsigned kstride = (unsigned)p.Ho * (unsigned)p.Wo;
         float acc[TPW][2][R];
-        // the stages pending release, one 16-bit entry per wgmma group (newest lowest): (r0 + 1) << 8 | (r1 + 1)
-        uint64_t ring = 0;
-        int nring = 0;
-        auto release = [&](unsigned e) {
+        // the stages the in-flight group frees once it has completed (-1: none)
+        int rel0 = -1, rel1 = -1;
+        auto release = [&]() {
             if (lane == 0) {
-                if (e >> 8) mbar_arrive(EMPTY((int)(e >> 8) - 1));
-                if (e & 0xFFu) mbar_arrive(EMPTY((int)(e & 0xFFu) - 1));
+                if (rel0 >= 0) mbar_arrive(EMPTY(rel0));
+                if (rel1 >= 0) mbar_arrive(EMPTY(rel1));
             }
-        };
-        // release the oldest groups until at most k remain (they have completed: the caller waited for that)
-        auto drain = [&](int k) {
-            while (nring > k) {
-                --nring;
-                release((unsigned)(ring >> (16 * nring)) & 0xFFFFu);
-            }
-            ring &= nring ? ((1ull << (16 * nring)) - 1) : 0ull;
+            rel0 = rel1 = -1;
         };
         int s = 0;
         unsigned ph = 0;
@@ -2183,9 +2172,8 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 }
                 wgmma_commit();
                 // this group frees the pending stage (if it consumed its last chunk) and its own (unless carried)
-                const unsigned ent = (unsigned)((comb ? pend + 1 : 0) << 8) | (unsigned)(carry ? 0 : s + 1);
-                ring = (ring << 16) | ent;
-                ++nring;
+                const int r0 = comb ? pend : -1;
+                const int r1 = carry ? -1 : s;
                 if (carry) {
                     pend = s;
                     pa = xs16 + (unsigned)(nc - 1);
@@ -2193,20 +2181,24 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 } else {
                     pend = -1;
                 }
-                switch (keep) {
-                case 3: wgmma_wait<3>(); break;
-                case 2: wgmma_wait<2>(); break;
-                case 1: wgmma_wait<1>(); break;
-                default: wgmma_wait<0>(); break;
+                if (keep) {
+                    wgmma_wait<1>(); // the previous piece's group has completed
+                    release();
+                    rel0 = r0;
+                    rel1 = r1;
+                } else {
+                    wgmma_wait<0>();
+                    rel0 = r0;
+                    rel1 = r1;
+                    release();
                 }
-                drain(keep);
                 if (++s == nst) {
                     s = 0;
                     ph ^= 1u;
                 }
             }
             wgmma_wait<0>();
-            drain(0);
+            release();
             // (per tile with constant indices, see the epilogue; no pieces: the outputs are zero)
 #define HK_FINISH_TILE(T)                                                                                              \
     if constexpr (TPW > T) {                                                                                           \
@@ -2361,7 +2353,7 @@ namespace
         // launch parameters (HkParams and the preprocessing)
         int nb = 0, HB = 0, RPC = 0, G = 0, NCG = 0, NG = 0, nitems = 0, ticket = 1, nvs = 3;
         unsigned ncg_recip = 0;
-        int nst = 0, xs_bytes = 0, stage_bytes = 0, bar_off = 0, z_off = 0, keep = 0;
+        int nst = 0, xs_bytes = 0, stage_bytes = 0, bar_off = 0, z_off = 0;
         int nc_cap = 0, nunit = 0, grid = 0, TY = 0, tpl = 0, xpre = 0, xres = 0, hrot = 0, Lc = 0, threads = 0;
         long long cap = 0;
         size_t smem = 0;
@@ -2477,9 +2469,6 @@ namespace
         if (nst > 16) nst = 16;
         if (nst < 2) return;
         c.nst = nst;
-        c.keep = std::min(WG_INFLIGHT - 1, nst - 2);
-        if (const char *e = getenv("TORCH_HARMONICS_HANKEL_SM90_KEEP")) // TEMPORARY: in-flight depth sweep
-            c.keep = std::max(0, std::min(std::min(atoi(e), WG_INFLIGHT - 1), nst - 2));
         c.bar_off = nst * c.stage_bytes;
         c.z_off = c.bar_off + bar_bytes;
         c.smem = (size_t)c.bar_off + bar_bytes + z_bytes;
@@ -2878,7 +2867,6 @@ namespace disco_kernels
         prm.ncg_recip = c.ncg_recip;
         prm.nvs = c.nvs;
         prm.nst = c.nst;
-        prm.keep = c.keep;
         prm.xs_bytes = c.xs_bytes;
         prm.stage_bytes = c.stage_bytes;
         prm.bar_off = c.bar_off;
@@ -2944,14 +2932,13 @@ namespace disco_kernels
     }
 
     // The configuration the forward takes for these sizes on the current device, for tests:
-    // [ok, DW, MT, CPS, RG, variant, co, plan_bytes, scratch_bytes, nst, keep]
+    // [ok, DW, MT, CPS, RG, variant, co, plan_bytes, scratch_bytes, nst]
     std::vector<int64_t> forward_hankel_sm90_config(int64_t BC, int64_t K, int64_t kpad, int64_t Hi, int64_t Wi,
                                                     int64_t Ho, int64_t Wo, int64_t nnz)
     {
         const cudaDeviceProp &prop = *at::cuda::getCurrentDeviceProperties();
         const HkConfig c = make_config(BC, K, kpad, Hi, Wi, Ho, Wo, nnz, prop);
-        return {c.ok,  c.DW,  c.MT, c.CPS, c.RG, c.variant, c.co, (int64_t)c.plan_bytes, (int64_t)c.scratch_bytes,
-                c.nst, c.keep};
+        return {c.ok, c.DW, c.MT, c.CPS, c.RG, c.variant, c.co, (int64_t)c.plan_bytes, (int64_t)c.scratch_bytes, c.nst};
     }
 
     TORCH_LIBRARY_FRAGMENT(disco_kernels, m)
