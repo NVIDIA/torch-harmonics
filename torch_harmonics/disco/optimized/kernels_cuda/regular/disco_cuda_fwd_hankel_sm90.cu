@@ -81,6 +81,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
@@ -1445,6 +1446,7 @@ struct HkParams {
     unsigned ncg_recip;                          // floor(2^32 / NCG), saturated for NCG == 1
     int nvs;                                     // log2 of the number of views (3 or 5)
     int nst, xs_bytes, stage_bytes, bar_off;
+    int keep;          // wgmma groups a consumer keeps in flight after each piece (< nst - 1)
     int z_off;         // one all-zero Toeplitz chunk after the barrier area
     int *ictr;         // dynamic item counter (zeroed per call)
     const int *rowsig; // per item row (group): 0 or 4, the input shift of the GEMM-row output blocks
@@ -2080,7 +2082,7 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
         const int wq = warp & 3;        // its warp: rows 16 wq .. 16 wq + 15 of each m64 half
         const bool bf = p.bf16 != 0;
         const unsigned z16 = (smem_u32(smem) + (unsigned)p.z_off) >> 4;
-        const int keep = min(WG_INFLIGHT - 1, nst - 2);
+        const int keep = p.keep;
         // Output offsets: 64-bit to the channel, 32-bit within it (the host checks K * Ho * Wo < 2^32), so the
         // epilogue keeps 32-bit address arithmetic while the whole output may exceed 2^32 elements.
         const unsigned kstride = (unsigned)p.Ho * (unsigned)p.Wo;
@@ -2357,7 +2359,7 @@ namespace
         // launch parameters (HkParams and the preprocessing)
         int nb = 0, HB = 0, RPC = 0, G = 0, NCG = 0, NG = 0, nitems = 0, ticket = 1, nvs = 3;
         unsigned ncg_recip = 0;
-        int nst = 0, xs_bytes = 0, stage_bytes = 0, bar_off = 0, z_off = 0;
+        int nst = 0, xs_bytes = 0, stage_bytes = 0, bar_off = 0, z_off = 0, keep = 0;
         int nc_cap = 0, nunit = 0, grid = 0, TY = 0, tpl = 0, xpre = 0, xres = 0, hrot = 0, Lc = 0, threads = 0;
         long long cap = 0;
         size_t smem = 0;
@@ -2473,6 +2475,9 @@ namespace
         if (nst > 16) nst = 16;
         if (nst < 2) return;
         c.nst = nst;
+        c.keep = std::min(WG_INFLIGHT - 1, nst - 2);
+        if (const char *e = getenv("TORCH_HARMONICS_HANKEL_SM90_KEEP")) // TEMPORARY: in-flight depth sweep
+            c.keep = std::max(0, std::min(std::min(atoi(e), WG_INFLIGHT - 1), nst - 2));
         c.bar_off = nst * c.stage_bytes;
         c.z_off = c.bar_off + bar_bytes;
         c.smem = (size_t)c.bar_off + bar_bytes + z_bytes;
@@ -2871,6 +2876,7 @@ namespace disco_kernels
         prm.ncg_recip = c.ncg_recip;
         prm.nvs = c.nvs;
         prm.nst = c.nst;
+        prm.keep = c.keep;
         prm.xs_bytes = c.xs_bytes;
         prm.stage_bytes = c.stage_bytes;
         prm.bar_off = c.bar_off;
@@ -2936,13 +2942,14 @@ namespace disco_kernels
     }
 
     // The configuration the forward takes for these sizes on the current device, for tests:
-    // [ok, DW, MT, CPS, RG, variant, co, plan_bytes, scratch_bytes]
+    // [ok, DW, MT, CPS, RG, variant, co, plan_bytes, scratch_bytes, nst, keep]
     std::vector<int64_t> forward_hankel_sm90_config(int64_t BC, int64_t K, int64_t kpad, int64_t Hi, int64_t Wi,
                                                     int64_t Ho, int64_t Wo, int64_t nnz)
     {
         const cudaDeviceProp &prop = *at::cuda::getCurrentDeviceProperties();
         const HkConfig c = make_config(BC, K, kpad, Hi, Wi, Ho, Wo, nnz, prop);
-        return {c.ok, c.DW, c.MT, c.CPS, c.RG, c.variant, c.co, (int64_t)c.plan_bytes, (int64_t)c.scratch_bytes};
+        return {c.ok,  c.DW,  c.MT, c.CPS, c.RG, c.variant, c.co, (int64_t)c.plan_bytes, (int64_t)c.scratch_bytes,
+                c.nst, c.keep};
     }
 
     TORCH_LIBRARY_FRAGMENT(disco_kernels, m)
