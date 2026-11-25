@@ -1591,7 +1591,8 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
     constexpr int NPW = Cfg::NPW;
     extern __shared__ __align__(1024) unsigned char smem[];
     const int tid = threadIdx.x;
-    const int warp = tid >> 5;
+    // broadcast: warp-uniform to ptxas (the wgmma issue below must not sit in a path it deems divergent)
+    const int warp = __shfl_sync(0xffffffffu, tid >> 5, 0);
     const int lane = tid & 31;
     if constexpr (TX)
         if (warp == 0 && lane < (1 << p.nvs)) prefetch_tmap(&tmap_x.m[lane]);
@@ -2117,9 +2118,10 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 qs = 0;
                 qph ^= 1u;
             }
-            const int item = e.x;
+            // broadcast: the branches around the wgmma issue must be warp-uniform to ptxas, or it serializes them
+            const int item = __shfl_sync(0xffffffffu, e.x, 0);
             if (item >= p.nitems) break;
-            const int np = e.y;
+            const int np = __shfl_sync(0xffffffffu, e.y, 0);
             int ho, cg;
             decode_item(p, item, ho, cg);
             const int c0 = cg * p.G;
@@ -2145,7 +2147,7 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
             unsigned pa = 0, pb = 0; // its A / B start (16-byte units)
             for (int q = 0; q < np; ++q) {
                 mbar_wait(FULL(s), ph); // TMA-written operands: the mbarrier completion orders them
-                const int nc = sks[s];
+                const int nc = __shfl_sync(0xffffffffu, sks[s], 0); // (broadcast: see the item)
                 const unsigned xs16 = (smem_u32(smem) + (unsigned)(s * p.stage_bytes)) >> 4;
                 const unsigned ts16 = xs16 + (unsigned)(p.xs_bytes >> 4);
                 auto bdesc = [&](unsigned c) -> uint64_t {
