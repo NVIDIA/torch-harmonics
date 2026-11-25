@@ -123,11 +123,11 @@ use. They are read whenever a layer selects its backend, so they must be set
 before the layers are built or moved to the GPU. See
 {ref}`disco-backends` for how the backends are chosen.
 
-| Variable                                      | Default | Description                                                                                                                                                                                                                                |
-| --------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL`     | `0`     | Allow the frequency-space input gradient of DISCO convolutions (backend `regular-fft`, fp16/bf16, H100 and B200 / GB200; needs `9.0a` / `10.0a` builds). Faster, but uses more memory.                                                     |
-| `TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL` | `1`     | Allow the tensor-core forward of DISCO convolutions (backend `regular-kpacked`, fp16/bf16, H100 and B200 / GB200 / GB300; needs `9.0a` / `10.0a` / `10.3a` builds), which `regular-fft` builds on.                                         |
-| `TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL`  | `0`     | Allow the Hankel/Toeplitz tensor-core forward in `regular-kpacked` and `regular-fft` (fp16/bf16, B200 / GB200; needs `10.0a` builds), which take it where it serves the call. Faster, but takes scratch of about twice the input per call. |
+| Variable                                      | Default | Description                                                                                                                                                                                                                                                  |
+| --------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL`     | `0`     | Allow the frequency-space input gradient of DISCO convolutions (backend `regular-fft`, fp16/bf16, H100 and B200 / GB200; needs `9.0a` / `10.0a` builds). Faster, but uses more memory.                                                                       |
+| `TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL` | `1`     | Allow the tensor-core forward of DISCO convolutions (backend `regular-kpacked`, fp16/bf16, H100 and B200 / GB200 / GB300; needs `9.0a` / `10.0a` / `10.3a` builds), which `regular-fft` builds on.                                                           |
+| `TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL`  | `0`     | Allow the Hankel/Toeplitz tensor-core forward in `regular-kpacked` and `regular-fft` (fp16/bf16, H100 and B200 / GB200; needs `9.0a` / `10.0a` builds), which take it where it serves the call. Faster, but takes scratch of about twice the input per call. |
 
 (docker)=
 

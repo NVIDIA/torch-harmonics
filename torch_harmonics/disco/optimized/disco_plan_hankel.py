@@ -29,16 +29,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 r"""
-The Hankel/Toeplitz tensor-core forward of the regular DISCO contraction, on sm_100a (B200 / GB200).
+The Hankel/Toeplitz tensor-core forward of the regular DISCO contraction, on sm_100a (B200 / GB200) and
+sm_90a (H100).
 
-A Kernel Factory candidate (``kernels_cuda/regular/disco_cuda_fwd_hankel_sm100.cu``), built into
-``torch_harmonics.disco._C_sm100``. For every output row it cuts psi's support into pieces of consecutive
+A Kernel Factory candidate for sm_100a (``kernels_cuda/regular/disco_cuda_fwd_hankel_sm100.cu``, built into
+``torch_harmonics.disco._C_sm100``) and its wgmma port to sm_90a (``disco_cuda_fwd_hankel_sm90.cu``, in
+``torch_harmonics.disco._C_sm90``), which keeps its pieces, operand layouts and producer and holds the
+accumulators in registers instead of tensor memory. For every output row it cuts psi's support into pieces of consecutive
 longitudes on one input latitude and contracts each piece as a GEMM of the input longitudes (a Hankel
 matrix, straight from shared memory) and the filter values (a Toeplitz matrix) on the tensor cores, with
 channels and longitude blocks as the GEMM rows. fp16 and bf16 activations, psi in the kpacked layout,
 fp32 accumulation; the result is rounded once to the activations' dtype.
 
-Its ops, ``forward_hankel_sm100_``:
+Their ops, ``forward_hankel_sm100_`` and ``forward_hankel_sm90_``:
 
 ``plan``
     Everything the forward derives from psi for a number of planes B * C, a dtype and an input shape: the
@@ -52,8 +55,8 @@ Its ops, ``forward_hankel_sm100_``:
     The launch configuration for given sizes on the current device, for tests.
 
 The backends of the kpacked forward (``regular-kpacked``, ``regular-fft``) run it where
-``TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL=1`` allows it, on compute capability 10.0 (B200 / GB200) devices
-whose build holds the 10.0a image. Per call it takes scratch of about twice the input's size, the input
+``TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL=1`` allows it, on compute capability 10.0 (B200 / GB200) and 9.0
+(H100) devices whose build holds the 10.0a / 9.0a image. Per call it takes scratch of about twice the input's size, the input
 extended along longitude.
 """
 
@@ -79,7 +82,7 @@ for _family, _prefix in disco_arch.HANKEL_FORWARD_OPS.items():
 
 
 def hankel_forward_available(device: torch.device) -> bool:
-    """Whether the Hankel/Toeplitz forward can run on ``device``: a compute capability 10.0 GPU and a build holding its image."""
+    """Whether the Hankel/Toeplitz forward can run on ``device``: a compute capability 10.0 or 9.0 GPU and a build holding its image."""
     if device.type != "cuda":
         return False
     index = device.index if device.index is not None else torch.cuda.current_device()

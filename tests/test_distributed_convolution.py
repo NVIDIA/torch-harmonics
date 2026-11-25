@@ -684,7 +684,7 @@ class TestDistributedDiscreteContinuousConvolution(ShardedFieldMixin, unittest.T
         """
         if not hankel_forward_available(self.device):
             # the same verdict on every rank: they run on the same kind of device and build
-            self.skipTest("the Hankel/Toeplitz forward needs a 10.0 GPU and a build with 10.0a")
+            self.skipTest("the Hankel/Toeplitz forward needs a 9.0 or 10.0 GPU and a build with 9.0a / 10.0a")
 
         set_seed(333)
         B = 2

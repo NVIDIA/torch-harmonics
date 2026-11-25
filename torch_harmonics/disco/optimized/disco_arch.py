@@ -35,7 +35,8 @@ They live in extensions of their own, one per target family, built for exactly t
 ``TORCH_CUDA_ARCH_LIST`` asks for (see ``_DISCO_ARCH_EXTENSIONS`` in ``setup.py``):
 
 ``torch_harmonics.disco._C_sm90``
-    ``sm_90a``: the WGMMA kpacked forward, op ``forward_kpacked_sm90``, and the frequency-space
+    ``sm_90a``: the WGMMA kpacked forward, op ``forward_kpacked_sm90``, the Hankel/Toeplitz
+    tensor-core forward, ops ``forward_hankel_sm90_{plan,run,config}``, and the frequency-space
     arc scatter, ops ``scatter_fft_sm90_{plan,run,config}``.
 ``torch_harmonics.disco._C_sm100``
     ``sm_100a`` and/or ``sm_103a``: the tcgen05 kpacked forward, op ``forward_kpacked_sm100``, the
@@ -86,11 +87,12 @@ FFT_SCATTER_OPS: Dict[str, str] = {
 
 #: the prefix of the Hankel/Toeplitz forward's ops (``<prefix>_plan``, ``_run``, ``_config``) of each extension family
 HANKEL_FORWARD_OPS: Dict[str, str] = {
+    "sm90": "forward_hankel_sm90",
     "sm100": "forward_hankel_sm100",
 }
 
-#: the compute capabilities the Hankel/Toeplitz forward was validated on: B200 / GB200
-HANKEL_FORWARD_CAPABILITIES: FrozenSet[Tuple[int, int]] = frozenset({(10, 0)})
+#: the compute capabilities the Hankel/Toeplitz forward runs on: H100 and B200 / GB200
+HANKEL_FORWARD_CAPABILITIES: FrozenSet[Tuple[int, int]] = frozenset({(9, 0), (10, 0)})
 
 #: the compute capabilities the frequency-space scatter was validated on: H100 and B200 / GB200; a 10.3 (GB300) keeps
 #: the arc scatter

@@ -62,7 +62,7 @@ device or dtype change -- so they can be set at any time before then:
 ``TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL`` (default ``0``)
     Allows the Hankel/Toeplitz forward in ``regular-kpacked`` and ``regular-fft`` (see
     :mod:`.optimized.disco_plan_hankel`). Not a backend of its own: where it is allowed, those backends take it
-    for their fp16/bf16 forward on a B200 / GB200 whose extension holds it, and run the kpacked forward for the
+    for their fp16/bf16 forward on an H100 or B200 / GB200 whose extension holds it, and run the kpacked forward for the
     sizes it does not take. ``layer.backend.plan.hankel_forward`` tells whether a layer's plan has it.
 
 Of the allowed backends, a layer takes the first in ``BACKENDS`` that can serve it on its device: the
