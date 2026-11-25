@@ -132,7 +132,8 @@ def _scale_bins(x: torch.Tensor, n: int, dim: int, single: Tuple[float, float], 
     Works on the real view: one pointwise pass, which inductor can generate (it cannot for a complex buffer), and a
     contiguous result also where ``x`` is strided, as the CPU/MKL FFT needs.
     """
-    xr = torch.view_as_real(x)
+    # a conjugate view has no real view of its own
+    xr = torch.view_as_real(x.resolve_conj())
     weights = _bin_weights(x.shape[dim], n, dim, x.ndim, single, double, xr.dtype, x.device)
     return torch.view_as_complex((xr * weights).contiguous())
 
@@ -149,16 +150,25 @@ class _RealFFT(torch.autograd.Function):
     the single ones zeroed, which pads the truncated bins itself. Nothing is saved, and the inverse is half size.
     """
 
+    # forward and backward are composed of torch ops, so torch.func.vmap can batch them as they are
+    generate_vmap_rule = True
+
+    # forward without ctx, and setup_context, as torch.func transforms require
     @staticmethod
-    def forward(ctx, x: torch.Tensor, nmodes: int, dim: int, norm: Optional[str]) -> torch.Tensor:
-        ctx.n = x.shape[dim]
-        ctx.dim = dim % x.ndim
-        ctx.norm = norm
+    def forward(x: torch.Tensor, nmodes: int, dim: int, norm: Optional[str]) -> torch.Tensor:
         y = fft.rfft(x, dim=dim, norm=norm)
         if nmodes < y.shape[dim]:
             y = y.narrow(dim, 0, nmodes)
         # contiguous through the real view, which inductor can generate code for
         return _contiguous(y)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        # the length, not the input: nothing is saved for backward
+        x, _, dim, norm = inputs
+        ctx.n = x.shape[dim]
+        ctx.dim = dim % x.ndim
+        ctx.norm = norm
 
     @staticmethod
     def backward(ctx, grad: torch.Tensor):

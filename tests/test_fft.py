@@ -250,3 +250,39 @@ class TestFFTWrappers(unittest.TestCase):
         actual.pow(2).sum().backward()
         self.assertTrue(compare_tensors("compiled", actual, expected, atol=1e-6, rtol=0.0))
         self.assertTrue(compare_tensors("compiled grad", x.grad, grad, atol=1e-6, rtol=0.0))
+
+    @parameterized.expand([[16, 9], [16, 5], [15, 8]])
+    def test_conjugated_spectrum(self, nlon, nmodes):
+        """irfft accepts a conjugate view, as torch.fft.irfft does, and differentiates through it."""
+        x = torch.randn(3, nmodes, device=self.device, dtype=torch.complex128)
+        xc = x.clone().requires_grad_()
+        out = irfft(xc.conj(), n=nlon, norm="forward")
+
+        # reference: the resolved conjugate with the DC and Nyquist imaginary parts zeroed
+        ref = x.conj().resolve_conj().clone()
+        ref[:, 0] = ref[:, 0].real
+        if nlon % 2 == 0 and nlon // 2 < nmodes:
+            ref[:, nlon // 2] = ref[:, nlon // 2].real
+        ref = ref.requires_grad_()
+        expected = torch.fft.irfft(ref, n=nlon, norm="forward")
+        self.assertTrue(compare_tensors("irfft conj", out, expected, atol=0.0, rtol=0.0, ulps=_FFT_ULPS))
+
+        # the gradient through the conjugate view is the conjugate of the plain one, up to the zeroed imaginary parts
+        g = torch.randn_like(out)
+        out.backward(g)
+        expected.backward(g)
+        grad = ref.grad.conj()
+        grad[:, 0] = grad[:, 0].real
+        if nlon % 2 == 0 and nlon // 2 < nmodes:
+            grad[:, nlon // 2] = grad[:, nlon // 2].real
+        self.assertTrue(compare_tensors("irfft conj grad", xc.grad, grad, atol=0.0, rtol=0.0, ulps=_FFT_ULPS))
+
+    def test_torch_func(self):
+        """torch.func.grad and vmap through rfft agree with autograd."""
+        x = torch.randn(4, 16, device=self.device, dtype=torch.float64)
+        fn = lambda t: rfft(t, nmodes=6, norm="forward").abs().pow(2).sum()
+        xg = x.clone().requires_grad_()
+        fn(xg).backward()
+        self.assertTrue(compare_tensors("func.grad", torch.func.grad(fn)(x), xg.grad, atol=0.0, rtol=0.0, ulps=_FFT_ULPS))
+        per_row = torch.func.vmap(torch.func.grad(fn))(x)
+        self.assertTrue(compare_tensors("vmap(grad)", per_row, xg.grad, atol=0.0, rtol=0.0, ulps=_FFT_ULPS))
