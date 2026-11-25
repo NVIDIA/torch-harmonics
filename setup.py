@@ -113,6 +113,8 @@ _DISCO_ARCH_EXTENSIONS = {
         [
             "torch_harmonics/disco/optimized/disco_interface_sm100.cpp",
             "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_dense_kpacked_sm100.cu",
+            # the Hankel/Toeplitz tensor-core forward (see disco_plan_hankel.py)
+            "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_fwd_hankel_sm100.cu",
             # the frequency-space arc scatter (experimental, see disco_plan_fft.py), shared with _C_sm90
             "torch_harmonics/disco/optimized/kernels_cuda/regular/disco_cuda_bwd_fft.cu",
         ],
