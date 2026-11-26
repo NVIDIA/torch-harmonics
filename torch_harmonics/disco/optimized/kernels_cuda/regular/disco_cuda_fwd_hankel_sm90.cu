@@ -81,7 +81,6 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <algorithm>
@@ -1575,11 +1574,10 @@ __device__ __forceinline__ void mma_tiles(float (&acc)[TPW][2][Wgmma<MN>::R], co
 #undef HK_MMA_TILE
 }
 
-template <int DW, bool TX, int NWG_, int CPS, int RG, bool LP, int NV, bool Z>
+template <int DW, bool TX, int NWG_, int CPS, int RG, int NV, bool Z>
 __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams &p)
 {
     static_assert(NV == 8 || NV == NVMAX);
-    static_assert(!LP || RG == 1);
     using Cfg = HkCfg<DW, NWG_, CPS, RG>;
     constexpr int MN = Cfg::MN;
     constexpr int MN1 = Cfg::MN1;
@@ -1677,22 +1675,137 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 if (fin) xall = true;
             }
         };
-        if constexpr (LP) {
-            // For short input rows a single lane can issue each piece's independent TMA/bulk-copy
-            // transaction.  Issue a prefix of ready stages in parallel across the producer warp;
-            // scratch-overflow pieces still fall back to a whole-warp Toeplitz build.
-            auto meta = [&](int it_, int &np_, int64_t &pb_) {
-                np_ = 0;
-                pb_ = 0;
-                if (it_ < p.nitems) {
-                    int h_, t_;
-                    decode_item(p, it_, h_, t_);
-                    np_ = p.npieces[h_];
-                    pb_ = p.off[h_];
+        auto meta = [&](int it_, int &np_, int64_t &pb_) {
+            np_ = 0;
+            pb_ = 0;
+            if (it_ < p.nitems) {
+                int h_, t_;
+                decode_item(p, it_, h_, t_);
+                np_ = p.npieces[h_];
+                pb_ = p.off[h_ * RG];
+            }
+        };
+        int s = 0;
+        unsigned ph = 0;
+        int P = 0;
+        int qs = 0, nq = 0;
+        unsigned qph = 0;
+        const unsigned xbytes = (unsigned)grows * 16u;
+        // Both producer warps walk the same piece stream, but each issues alternating stages.
+        auto issue_item = [&](int np, int64_t pbase, int c0, Piece &mine) {
+            for (int q = 0; q < np; ++q, ++P) {
+                if (q > 0 && (q & 31) == 0) {
+                    if (q + lane < np) mine = p.pieces[pbase + q + lane];
+                    lat_check(q + lane < np ? mine.hi : 0, q + lane < np);
                 }
-            };
+                if (NPW > 1 && (P & 1) != warp) {
+                    if (++s == nst) {
+                        s = 0;
+                        ph ^= 1u;
+                    }
+                    continue;
+                }
+                const int hi = __shfl_sync(0xffffffffu, mine.hi, q & 31);
+                const int S = __shfl_sync(0xffffffffu, mine.S, q & 31);
+                const int toff = __shfl_sync(0xffffffffu, mine.toff, q & 31);
+                const int nc = __shfl_sync(0xffffffffu, mine.nc, q & 31);
+                if (P >= nst) mbar_wait(EMPTY(s), ph ^ 1u);
+                unsigned char *st = smem + (size_t)s * p.stage_bytes;
+                const unsigned xa = smem_u32(st);
+                const unsigned ta = xa + (unsigned)p.xs_bytes;
+                const unsigned tbytes = (unsigned)((nc + (Z ? 0 : 1)) * MN * 16);
+                if (toff < 0) {
+                    Piece pc;
+                    pc.hi = hi;
+                    pc.S = S;
+                    pc.n = __shfl_sync(0xffffffffu, mine.n, q & 31);
+                    pc.p1 = __shfl_sync(0xffffffffu, mine.p1, q & 31);
+                    pc.n1 = __shfl_sync(0xffffffffu, mine.n1, q & 31);
+                    pc.p2 = __shfl_sync(0xffffffffu, mine.p2, q & 31);
+                    pc.jb = __shfl_sync(0xffffffffu, mine.jb, q & 31);
+                    uint4 *ts = reinterpret_cast<uint4 *>(st + p.xs_bytes);
+                    if (RG == 1) {
+                        for (int e = lane; e < (nc + (Z ? 0 : 1)) * MN; e += 32) {
+                            const int kc = e / MN;
+                            const int n = e - kc * MN;
+                            const int k = n / DW;
+                            ts[e] = kc < nc ? toeplitz8(p.val, pc, 8 * kc, k, n - k * DW, ps, p.K, p.kpad) :
+                                              make_uint4(0, 0, 0, 0);
+                        }
+                    } else {
+                        const PieceX px = p.pxs[pbase + q];
+                        for (int e = lane; e < (nc + (Z ? 0 : 1)) * MN; e += 32) {
+                            const int kc = e / MN;
+                            const int n0 = e - kc * MN;
+                            const int r = n0 / MN1;
+                            const int n = n0 - r * MN1;
+                            const int k = n / DW;
+                            ts[e] = kc < nc ? toeplitz8x(p.val, pc.S, pc.n, pc.jb, px, r, 8 * kc, k, n - k * DW, ps,
+                                                         p.K, p.kpad, p.Wi) :
+                                              make_uint4(0, 0, 0, 0);
+                        }
+                    }
+                    asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+                }
+                if (toff < 0) __syncwarp();
+                const int B8 = S >> 3;
+                if (elect_one()) {
+                    sks[s] = nc;
+                    mbar_expect_tx(FULL(s), xbytes + (toff >= 0 ? tbytes : 0u));
+                    if (toff >= 0) bulk_load_reuse(ta, p.T + toff, tbytes, FULL(s), tpolicy);
+                    if (TX) {
+                        int q0 = B8 - p.hrot;
+                        if (q0 < 0) q0 += p.nb;
+                        tma_load_4d(xa, &tmap_x.m[q0 & ((1 << p.nvs) - 1)], 0, q0 >> p.nvs, hi, c0, FULL(s));
+                    }
+                }
+                if (!TX) {
+                    for (int cl = lane; cl < p.G; cl += 32) {
+                        const int c = c0 + cl;
+                        int ch = B8;
+                        const uint16_t *src = p.x + ((size_t)(c < p.BC ? c : p.BC - 1) * p.Hi + hi) * p.Wi;
+                        unsigned d = xa + (unsigned)(cl * p.RPC) * 16u;
+                        int rem = p.RPC;
+                        while (rem > 0) {
+                            const int l = min(rem, p.nb - ch);
+                            bulk_load(d, src + 8 * ch, (unsigned)l * 16u, FULL(s));
+                            d += (unsigned)l * 16u;
+                            rem -= l;
+                            ch = 0;
+                        }
+                    }
+                }
+                if (!TX) __syncwarp();
+                if (++s == nst) {
+                    s = 0;
+                    ph ^= 1u;
+                }
+            }
+        };
+        if (NPW > 1 && warp == 1) {
+            for (;;) {
+                mbar_wait(QFULL(qs), qph);
+                const int2 e = qbuf[qs];
+                const int64_t pbase = qpb[qs];
+                __syncwarp();
+                if (lane == 0) mbar_arrive(QEMPTY(qs));
+                if (++qs == QN) {
+                    qs = 0;
+                    qph ^= 1u;
+                }
+                const int item = e.x;
+                if (item >= p.nitems) break;
+                const int np = e.y;
+                int ho, cg;
+                decode_item(p, item, ho, cg);
+                Piece mine;
+                if (lane < np) mine = p.pieces[pbase + lane];
+                lat_check(lane < np ? mine.hi : 0, lane < np);
+                issue_item(np, pbase, cg * p.G, mine);
+            }
+        } else {
             int ticket_next = 0, ticket_left = 0;
-            auto claim_one = [&]() {
+            auto claim = [&]() {
                 if (ticket_left == 0) {
                     int base = 0;
                     if (lane == 0) base = atomicAdd(p.ictr, p.ticket);
@@ -1702,25 +1815,23 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 --ticket_left;
                 return ticket_next++;
             };
-
-            int s = 0, P = 0, qs = 0, nq = 0;
-            unsigned ph = 0, qph = 0;
+            // Item pipeline: while item i is issued, item i+1's pieces, item i+2's row metadata and the
+            // claim of item i+3 are in flight (no dependent global round trips at item boundaries).
             int item = (int)blockIdx.x;
-            int item1 = claim_one();
+            int item1 = claim();
             int np, np1;
             int64_t pbase, pb1;
             meta(item, np, pbase);
             meta(item1, np1, pb1);
             Piece mine;
             if (lane < np) mine = p.pieces[pbase + lane];
-            int fut = claim_one();
-            const unsigned xb = (unsigned)grows * 16u;
-            const unsigned rpcb = (unsigned)p.RPC * 16u;
-
+            int fut = claim();
             while (true) {
+                // publish the item to the MMA, epilogue and second-producer warps
                 if (nq >= QN) mbar_wait(QEMPTY(qs), qph ^ 1u);
                 if (lane == 0) {
                     qbuf[qs] = make_int2(item, np);
+                    if (NPW > 1) qpb[qs] = pbase;
                     mbar_arrive(QFULL(qs));
                 }
                 __syncwarp();
@@ -1731,7 +1842,6 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 ++nq;
                 if (item >= p.nitems) break;
                 lat_check(lane < np ? mine.hi : 0, lane < np);
-
                 int ho, cg;
                 decode_item(p, item, ho, cg);
                 const int c0 = cg * p.G;
@@ -1741,136 +1851,8 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 int np2;
                 int64_t pb2;
                 meta(item2, np2, pb2);
-                fut = claim_one();
-
-                for (int q0 = 0; q0 < np; q0 += 32) {
-                    const int npass = min(32, np - q0);
-                    if (q0 > 0) {
-                        if (lane < npass) mine = p.pieces[pbase + q0 + lane];
-                        lat_check(lane < npass ? mine.hi : 0, lane < npass);
-                    }
-                    int sl = s + lane;
-                    unsigned phl = ph;
-                    while (sl >= nst) {
-                        sl -= nst;
-                        phl ^= 1u;
-                    }
-                    const bool reused = P + lane >= nst;
-                    const unsigned bad = __ballot_sync(0xffffffffu, lane < npass && mine.toff < 0);
-                    int done = 0;
-                    while (done < npass) {
-                        const unsigned remaining_bad = bad & (0xffffffffu << done);
-                        if (remaining_bad & (1u << done)) {
-                            const int sd = __shfl_sync(0xffffffffu, sl, done);
-                            const unsigned phd = __shfl_sync(0xffffffffu, phl, done);
-                            if (__shfl_sync(0xffffffffu, (int)reused, done)) mbar_wait(EMPTY(sd), phd ^ 1u);
-
-                            Piece pc;
-                            pc.hi = __shfl_sync(0xffffffffu, mine.hi, done);
-                            pc.S = __shfl_sync(0xffffffffu, mine.S, done);
-                            pc.n = __shfl_sync(0xffffffffu, mine.n, done);
-                            pc.p1 = __shfl_sync(0xffffffffu, mine.p1, done);
-                            pc.n1 = __shfl_sync(0xffffffffu, mine.n1, done);
-                            pc.p2 = __shfl_sync(0xffffffffu, mine.p2, done);
-                            pc.jb = __shfl_sync(0xffffffffu, mine.jb, done);
-                            pc.nc = __shfl_sync(0xffffffffu, mine.nc, done);
-                            unsigned char *st = smem + (size_t)sd * p.stage_bytes;
-                            const unsigned xa = smem_u32(st);
-                            uint4 *ts = reinterpret_cast<uint4 *>(st + p.xs_bytes);
-                            for (int e = lane; e < (pc.nc + (Z ? 0 : 1)) * MN; e += 32) {
-                                const int kc = e / MN;
-                                const int n = e - kc * MN;
-                                const int k = n / DW;
-                                ts[e] = kc < pc.nc ? toeplitz8(p.val, pc, 8 * kc, k, n - k * DW, ps, p.K, p.kpad) :
-                                                     make_uint4(0, 0, 0, 0);
-                            }
-                            asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
-                            __syncwarp();
-                            if (lane == 0) {
-                                sks[sd] = pc.nc;
-                                mbar_expect_tx(FULL(sd), xb);
-                            }
-                            __syncwarp();
-                            const int B8 = pc.S >> 3;
-                            if constexpr (TX) {
-                                int q0 = B8 - p.hrot;
-                                if (q0 < 0) q0 += p.nb;
-                                if (lane == 0)
-                                    tma_load_4d(xa, &tmap_x.m[q0 & ((1 << p.nvs) - 1)], 0, q0 >> p.nvs, pc.hi, c0,
-                                                FULL(sd));
-                            } else {
-                                for (int cl = lane; cl < p.G; cl += 32) {
-                                    const int c = c0 + cl;
-                                    int ch = B8;
-                                    const uint16_t *src = p.x + ((size_t)(c < p.BC ? c : p.BC - 1) * p.Hi + pc.hi) * p.Wi;
-                                    unsigned dst = xa + (unsigned)cl * rpcb;
-                                    for (int rem = p.RPC; rem;) {
-                                        const int len = min(rem, p.nb - ch);
-                                        bulk_load(dst, src + 8 * ch, (unsigned)len * 16u, FULL(sd));
-                                        dst += (unsigned)len * 16u;
-                                        rem -= len;
-                                        ch = 0;
-                                    }
-                                }
-                            }
-                            __syncwarp();
-                            ++done;
-                            continue;
-                        }
-
-                        int lim = remaining_bad ? (__ffs(remaining_bad) - 1) : npass;
-                        lim = min(lim, done + nst);
-                        bool ready = false;
-                        if (lane >= done && lane < lim) ready = !reused || mbar_test(EMPTY(sl), phl ^ 1u);
-                        const unsigned ready_mask = __ballot_sync(0xffffffffu, ready);
-                        const unsigned first_not_ready = ~(ready_mask >> done);
-                        const int count = first_not_ready ? (__ffs(first_not_ready) - 1) : (32 - done);
-                        if (count == 0) {
-                            if (lane == done) mbar_wait(EMPTY(sl), phl ^ 1u);
-                            __syncwarp();
-                            continue;
-                        }
-
-                        if (lane >= done && lane < done + count) {
-                            const unsigned tb = (unsigned)(mine.nc + (Z ? 0 : 1)) * MN * 16u;
-                            const unsigned xa = smem_u32(smem + (size_t)sl * p.stage_bytes);
-                            sks[sl] = mine.nc;
-                            mbar_expect_tx(FULL(sl), xb + tb);
-                            bulk_load_reuse(xa + (unsigned)p.xs_bytes, p.T + mine.toff, tb, FULL(sl), tpolicy);
-                            const int B8 = mine.S >> 3;
-                            if constexpr (TX) {
-                                int q0 = B8 - p.hrot;
-                                if (q0 < 0) q0 += p.nb;
-                                tma_load_4d(xa, &tmap_x.m[q0 & ((1 << p.nvs) - 1)], 0, q0 >> p.nvs, mine.hi, c0,
-                                            FULL(sl));
-                            } else {
-                                for (int cl = 0; cl < p.G; ++cl) {
-                                    const int c = c0 + cl;
-                                    int ch = B8;
-                                    const uint16_t *src
-                                        = p.x + ((size_t)(c < p.BC ? c : p.BC - 1) * p.Hi + mine.hi) * p.Wi;
-                                    unsigned dst = xa + (unsigned)cl * rpcb;
-                                    for (int rem = p.RPC; rem;) {
-                                        const int len = min(rem, p.nb - ch);
-                                        bulk_load(dst, src + 8 * ch, (unsigned)len * 16u, FULL(sl));
-                                        dst += (unsigned)len * 16u;
-                                        rem -= len;
-                                        ch = 0;
-                                    }
-                                }
-                            }
-                        }
-                        __syncwarp();
-                        done += count;
-                    }
-                    P += npass;
-                    s += npass;
-                    while (s >= nst) {
-                        s -= nst;
-                        ph ^= 1u;
-                    }
-                }
-
+                fut = claim();
+                issue_item(np, pbase, c0, mine);
                 item = item1;
                 np = np1;
                 pbase = pb1;
@@ -1878,194 +1860,6 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
                 item1 = item2;
                 np1 = np2;
                 pb1 = pb2;
-            }
-        } else {
-            auto meta = [&](int it_, int &np_, int64_t &pb_) {
-                np_ = 0;
-                pb_ = 0;
-                if (it_ < p.nitems) {
-                    int h_, t_;
-                    decode_item(p, it_, h_, t_);
-                    np_ = p.npieces[h_];
-                    pb_ = p.off[h_ * RG];
-                }
-            };
-            int s = 0;
-            unsigned ph = 0;
-            int P = 0;
-            int qs = 0, nq = 0;
-            unsigned qph = 0;
-            const unsigned xbytes = (unsigned)grows * 16u;
-            // Both producer warps walk the same piece stream, but each issues alternating stages.
-            auto issue_item = [&](int np, int64_t pbase, int c0, Piece &mine) {
-                for (int q = 0; q < np; ++q, ++P) {
-                    if (q > 0 && (q & 31) == 0) {
-                        if (q + lane < np) mine = p.pieces[pbase + q + lane];
-                        lat_check(q + lane < np ? mine.hi : 0, q + lane < np);
-                    }
-                    if (NPW > 1 && (P & 1) != warp) {
-                        if (++s == nst) {
-                            s = 0;
-                            ph ^= 1u;
-                        }
-                        continue;
-                    }
-                    const int hi = __shfl_sync(0xffffffffu, mine.hi, q & 31);
-                    const int S = __shfl_sync(0xffffffffu, mine.S, q & 31);
-                    const int toff = __shfl_sync(0xffffffffu, mine.toff, q & 31);
-                    const int nc = __shfl_sync(0xffffffffu, mine.nc, q & 31);
-                    if (P >= nst) mbar_wait(EMPTY(s), ph ^ 1u);
-                    unsigned char *st = smem + (size_t)s * p.stage_bytes;
-                    const unsigned xa = smem_u32(st);
-                    const unsigned ta = xa + (unsigned)p.xs_bytes;
-                    const unsigned tbytes = (unsigned)((nc + (Z ? 0 : 1)) * MN * 16);
-                    if (toff < 0) {
-                        Piece pc;
-                        pc.hi = hi;
-                        pc.S = S;
-                        pc.n = __shfl_sync(0xffffffffu, mine.n, q & 31);
-                        pc.p1 = __shfl_sync(0xffffffffu, mine.p1, q & 31);
-                        pc.n1 = __shfl_sync(0xffffffffu, mine.n1, q & 31);
-                        pc.p2 = __shfl_sync(0xffffffffu, mine.p2, q & 31);
-                        pc.jb = __shfl_sync(0xffffffffu, mine.jb, q & 31);
-                        uint4 *ts = reinterpret_cast<uint4 *>(st + p.xs_bytes);
-                        if (RG == 1) {
-                            for (int e = lane; e < (nc + (Z ? 0 : 1)) * MN; e += 32) {
-                                const int kc = e / MN;
-                                const int n = e - kc * MN;
-                                const int k = n / DW;
-                                ts[e] = kc < nc ? toeplitz8(p.val, pc, 8 * kc, k, n - k * DW, ps, p.K, p.kpad) :
-                                                  make_uint4(0, 0, 0, 0);
-                            }
-                        } else {
-                            const PieceX px = p.pxs[pbase + q];
-                            for (int e = lane; e < (nc + (Z ? 0 : 1)) * MN; e += 32) {
-                                const int kc = e / MN;
-                                const int n0 = e - kc * MN;
-                                const int r = n0 / MN1;
-                                const int n = n0 - r * MN1;
-                                const int k = n / DW;
-                                ts[e] = kc < nc ? toeplitz8x(p.val, pc.S, pc.n, pc.jb, px, r, 8 * kc, k, n - k * DW, ps,
-                                                             p.K, p.kpad, p.Wi) :
-                                                  make_uint4(0, 0, 0, 0);
-                            }
-                        }
-                        asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
-                    }
-                    if (toff < 0) __syncwarp();
-                    const int B8 = S >> 3;
-                    if (elect_one()) {
-                        sks[s] = nc;
-                        mbar_expect_tx(FULL(s), xbytes + (toff >= 0 ? tbytes : 0u));
-                        if (toff >= 0) bulk_load_reuse(ta, p.T + toff, tbytes, FULL(s), tpolicy);
-                        if (TX) {
-                            int q0 = B8 - p.hrot;
-                            if (q0 < 0) q0 += p.nb;
-                            tma_load_4d(xa, &tmap_x.m[q0 & ((1 << p.nvs) - 1)], 0, q0 >> p.nvs, hi, c0, FULL(s));
-                        }
-                    }
-                    if (!TX) {
-                        for (int cl = lane; cl < p.G; cl += 32) {
-                            const int c = c0 + cl;
-                            int ch = B8;
-                            const uint16_t *src = p.x + ((size_t)(c < p.BC ? c : p.BC - 1) * p.Hi + hi) * p.Wi;
-                            unsigned d = xa + (unsigned)(cl * p.RPC) * 16u;
-                            int rem = p.RPC;
-                            while (rem > 0) {
-                                const int l = min(rem, p.nb - ch);
-                                bulk_load(d, src + 8 * ch, (unsigned)l * 16u, FULL(s));
-                                d += (unsigned)l * 16u;
-                                rem -= l;
-                                ch = 0;
-                            }
-                        }
-                    }
-                    if (!TX) __syncwarp();
-                    if (++s == nst) {
-                        s = 0;
-                        ph ^= 1u;
-                    }
-                }
-            };
-            if (NPW > 1 && warp == 1) {
-                for (;;) {
-                    mbar_wait(QFULL(qs), qph);
-                    const int2 e = qbuf[qs];
-                    const int64_t pbase = qpb[qs];
-                    __syncwarp();
-                    if (lane == 0) mbar_arrive(QEMPTY(qs));
-                    if (++qs == QN) {
-                        qs = 0;
-                        qph ^= 1u;
-                    }
-                    const int item = e.x;
-                    if (item >= p.nitems) break;
-                    const int np = e.y;
-                    int ho, cg;
-                    decode_item(p, item, ho, cg);
-                    Piece mine;
-                    if (lane < np) mine = p.pieces[pbase + lane];
-                    lat_check(lane < np ? mine.hi : 0, lane < np);
-                    issue_item(np, pbase, cg * p.G, mine);
-                }
-            } else {
-                int ticket_next = 0, ticket_left = 0;
-                auto claim = [&]() {
-                    if (ticket_left == 0) {
-                        int base = 0;
-                        if (lane == 0) base = atomicAdd(p.ictr, p.ticket);
-                        ticket_next = __shfl_sync(0xffffffffu, base, 0);
-                        ticket_left = p.ticket;
-                    }
-                    --ticket_left;
-                    return ticket_next++;
-                };
-                // Item pipeline: while item i is issued, item i+1's pieces, item i+2's row metadata and the
-                // claim of item i+3 are in flight (no dependent global round trips at item boundaries).
-                int item = (int)blockIdx.x;
-                int item1 = claim();
-                int np, np1;
-                int64_t pbase, pb1;
-                meta(item, np, pbase);
-                meta(item1, np1, pb1);
-                Piece mine;
-                if (lane < np) mine = p.pieces[pbase + lane];
-                int fut = claim();
-                while (true) {
-                    // publish the item to the MMA, epilogue and second-producer warps
-                    if (nq >= QN) mbar_wait(QEMPTY(qs), qph ^ 1u);
-                    if (lane == 0) {
-                        qbuf[qs] = make_int2(item, np);
-                        if (NPW > 1) qpb[qs] = pbase;
-                        mbar_arrive(QFULL(qs));
-                    }
-                    __syncwarp();
-                    if (++qs == QN) {
-                        qs = 0;
-                        qph ^= 1u;
-                    }
-                    ++nq;
-                    if (item >= p.nitems) break;
-                    lat_check(lane < np ? mine.hi : 0, lane < np);
-                    int ho, cg;
-                    decode_item(p, item, ho, cg);
-                    const int c0 = cg * p.G;
-                    Piece nmine;
-                    if (lane < np1) nmine = p.pieces[pb1 + lane];
-                    const int item2 = fut;
-                    int np2;
-                    int64_t pb2;
-                    meta(item2, np2, pb2);
-                    fut = claim();
-                    issue_item(np, pbase, c0, mine);
-                    item = item1;
-                    np = np1;
-                    pbase = pb1;
-                    mine = nmine;
-                    item1 = item2;
-                    np1 = np2;
-                    pb1 = pb2;
-                }
             }
         }
     } else if (warp >= 4) {
@@ -2253,17 +2047,17 @@ __device__ __forceinline__ void hk_body(const TmapX<NV> &tmap_x, const HkParams 
     // warps NPW .. 3 of warpgroup 0 have no role
 }
 
-template <int DW, bool TX, int NWG, int CPS, int RG, bool LP, int NV, bool Z>
+template <int DW, bool TX, int NWG, int CPS, int RG, int NV, bool Z>
 __global__ void __launch_bounds__(HkCfg<DW, NWG, CPS, RG>::THREADS, CPS)
     disco_hk_wg(const __grid_constant__ TmapX<NV> tmap_x, const HkParams p)
 {
-    hk_body<DW, TX, NWG, CPS, RG, LP, NV, Z>(tmap_x, p);
+    hk_body<DW, TX, NWG, CPS, RG, NV, Z>(tmap_x, p);
 }
 // the main-kernel entry of a configuration
-template <int DW, bool TX, int NWG, int CPS, int RG, bool LP = false, int NV = NVMAX, bool Z = false>
+template <int DW, bool TX, int NWG, int CPS, int RG, int NV = NVMAX, bool Z = false>
 static constexpr auto disco_hk_kernel()
 {
-    return &disco_hk_wg<DW, TX, NWG, CPS, RG, LP, NV, Z>;
+    return &disco_hk_wg<DW, TX, NWG, CPS, RG, NV, Z>;
 }
 
 // =====================================================================================================================
@@ -2337,7 +2131,8 @@ namespace
     }
 
     // which main kernel of a family <DW, NWG, CPS, RG> runs
-    enum MainVariant : int { MV_LP_NV = 0, MV_LP_8 = 1, MV_TX_NV = 2, MV_TX_8 = 3, MV_BULK = 4 };
+    // (numbered as in the sm_100a file; its lane-parallel producer variants 0 and 1 measured slower on H100)
+    enum MainVariant : int { MV_TX_NV = 2, MV_TX_8 = 3, MV_BULK = 4 };
 
     struct HkConfig {
         bool ok = false;
@@ -2369,17 +2164,9 @@ namespace
     {
         constexpr bool ZCFG = CPS != 3;
         switch (c.variant) {
-        case MV_LP_NV:
-        case MV_LP_8:
-            if constexpr (RG == 1) {
-                if (c.variant == MV_LP_NV)
-                    return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, true, NVMAX, ZCFG>();
-                return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, true, 8, ZCFG>();
-            }
-            return nullptr;
-        case MV_TX_NV: return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, false, NVMAX, ZCFG>();
-        case MV_TX_8: return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, false, 8, ZCFG>();
-        default: return (const void *)disco_hk_kernel<DW, false, NWG, CPS, RG, false, 8>();
+        case MV_TX_NV: return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, NVMAX, ZCFG>();
+        case MV_TX_8: return (const void *)disco_hk_kernel<DW, true, NWG, CPS, RG, 8, ZCFG>();
+        default: return (const void *)disco_hk_kernel<DW, false, NWG, CPS, RG, 8>();
         }
     }
 
@@ -2445,7 +2232,6 @@ namespace
         c.tx = c.RPC / 8 <= 256 && c.G <= 256;
         // 512-byte TMA rows when the channel pitch is a whole number of them, else 128-byte rows
         c.nvs = (c.RPC % 32 == 0) ? 5 : 3;
-        const bool lp_ok = RG == 1 && c.tx && c.G >= 4 && c.RPC <= 128;
         constexpr bool ZCFG = CPS != 3;
         c.shared_z = c.tx && ZCFG;
         const int nv = 1 << c.nvs;
@@ -2474,13 +2260,7 @@ namespace
         c.smem = (size_t)c.bar_off + bar_bytes + z_bytes;
         c.ticket = c.nitems >= 64 * c.grid ? 4 : 1;
 
-        bool lp = false;
-        if constexpr (RG == 1) lp = CPS != 1 && lp_ok;
-        if (const char *e = getenv("TORCH_HARMONICS_HANKEL_SM90_NOLP")) // TEMPORARY: LP A/B
-            if (atoi(e) != 0) lp = false;
-        if (lp)
-            c.variant = c.nvs == 5 ? MV_LP_NV : MV_LP_8;
-        else if (c.tx && c.nvs == 5)
+        if (c.tx && c.nvs == 5)
             c.variant = MV_TX_NV;
         else if (c.tx)
             c.variant = MV_TX_8;
