@@ -348,10 +348,35 @@ class KpackedPlanS2(ArcPlanS2):
 
     Everything else is the arc plan's: the scatter, and the gather of fp32/fp64. The forward is the op of the
     arch-specific extension for the plan's device, ``kpacked_op``, which the backend sets (see ``disco_arch``).
+
+    Where the backend also sets ``hankel_plan_op`` / ``hankel_run_op`` (B200 / GB200, see ``disco_plan_hankel``),
+    the forward of fp16/bf16 runs the Hankel/Toeplitz kernel instead, through its plan: the gather's call state,
+    built once per number of planes, dtype and input shape. Sizes that kernel does not take run the kpacked op
+    inside it.
     """
 
     #: the kpacked forward for the plan's device, e.g. ``torch.ops.disco_kernels.forward_kpacked_sm90.default``
     kpacked_op = None
+
+    #: the Hankel/Toeplitz forward's ops for the plan's device, or None where the kpacked op runs
+    hankel_plan_op = None
+    hankel_run_op = None
+
+    @property
+    def has_call_state(self):
+        return self.hankel_plan_op is not None
+
+    @property
+    def hankel_forward(self) -> bool:
+        """Whether the fp16/bf16 forward runs the Hankel/Toeplitz kernel."""
+        return self.hankel_plan_op is not None
+
+    def call_state(self, op, bc, dtype, in_shape, t):
+        if op != "gather" or self.hankel_plan_op is None or dtype not in _HALF_DTYPES:
+            return ()
+        pack_idx, pack_val, pack_offset = (self._get(t, name) for name in KPACKED_STATE)
+        nlat_in, nlon_in = in_shape
+        return (self.hankel_plan_op(pack_idx, pack_val, pack_offset, bc, self.kernel_size, nlat_in, nlon_in, self.nlon_out, dtype),)
 
     def __init__(self, state_names, kernel_size, contract_shape, split_row_offsets=None):
         super().__init__(state_names, kernel_size, contract_shape, split_row_offsets)
@@ -366,4 +391,6 @@ class KpackedPlanS2(ArcPlanS2):
         if x.dtype not in _HALF_DTYPES:
             return super().gather(x, t, tc)
         pack_idx, pack_val, pack_offset = (self._get(t, name) for name in KPACKED_STATE)
+        if tc:
+            return self.hankel_run_op(x, tc[0], pack_idx, pack_val, pack_offset, self.kernel_size, self.nlat_out, self.nlon_out)
         return self.kpacked_op(x, pack_idx, pack_val, pack_offset, self.kernel_size, self.nlat_out, self.nlon_out)

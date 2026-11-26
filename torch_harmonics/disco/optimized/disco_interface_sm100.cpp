@@ -30,7 +30,8 @@
 
 // The extension torch_harmonics.disco._C_sm100: the DISCO kernels that need the arch-specific target(s)
 // sm_100a and/or sm_103a, compiled for nothing else (see _DISCO_ARCH_EXTENSIONS in setup.py). Today the tcgen05 kpacked
-// forward (Blackwell) and the frequency-space arc scatter (disco_cuda_bwd_fft.cu, ops scatter_fft_sm100_*).
+// forward (Blackwell), the Hankel/Toeplitz tensor-core forward (disco_cuda_fwd_hankel_sm100.cu, ops
+// forward_hankel_sm100_*) and the frequency-space arc scatter (disco_cuda_bwd_fft.cu, ops scatter_fft_sm100_*).
 //
 // Importing the module registers its operators in the disco_kernels namespace. Its TARGETS attribute lists the
 // targets the build holds images for, which torch_harmonics/disco/optimized/disco_arch.py matches against the device:

@@ -111,6 +111,12 @@ class BackendS2:
         Python-side metadata (offset tables, padding) lives on the backend instance,
         which is created afresh for each selection.
 
+    ``variant(device)``
+        What else ``prepare`` reads besides the layer, e.g. an environment variable that picks
+        a kernel, as a hashable key; ``None`` by default. Part of the key under which identical
+        layers share their prepared state, so a layer built after such a setting changed
+        prepares its own state instead of reusing one prepared under the old setting.
+
     and whatever evaluation methods the layer calls. They read the prepared state back
     off the layer by name.
     """
@@ -124,6 +130,10 @@ class BackendS2:
     @classmethod
     def available(cls, layer: torch.nn.Module, device: torch.device) -> bool:
         raise NotImplementedError
+
+    @classmethod
+    def variant(cls, device: torch.device) -> Optional[Hashable]:
+        return None
 
     def prepare(self, layer: torch.nn.Module, device: torch.device) -> Optional[Dict[str, torch.Tensor]]:
         raise NotImplementedError
@@ -199,7 +209,7 @@ class BackendSelectionMixin:
             else:
                 # looked up, prepared and stored in one locked step, so layers selecting at once
                 # in several threads prepare the state once
-                prepared = shared_value(("backend-state", cls, layer_key, device, getattr(self, "dtype", None)), prepare)
+                prepared = shared_value(("backend-state", cls, cls.variant(device), layer_key, device, getattr(self, "dtype", None)), prepare)
             if prepared is None:
                 continue
             backend, state = prepared

@@ -59,6 +59,11 @@ device or dtype change -- so they can be set at any time before then:
     Allows ``regular-fft``. It runs the kpacked forward, so it also needs the kpacked kernel allowed.
 ``TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL`` (default ``1``)
     Allows ``regular-kpacked`` (and with it ``regular-fft``).
+``TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL`` (default ``0``)
+    Allows the Hankel/Toeplitz forward in ``regular-kpacked`` and ``regular-fft`` (see
+    :mod:`.optimized.disco_plan_hankel`). Not a backend of its own: where it is allowed, those backends take it
+    for their fp16/bf16 forward on a B200 / GB200 whose extension holds it, and run the kpacked forward for the
+    sizes it does not take. ``layer.backend.plan.hankel_forward`` tells whether a layer's plan has it.
 
 Of the allowed backends, a layer takes the first in ``BACKENDS`` that can serve it on its device: the
 frequency-space scatter where it is eligible, then the kpacked forward, then the arc kernels. ``1``, ``true``,
@@ -133,10 +138,12 @@ from .optimized.disco_optimized import (
 )
 from .optimized.disco_plan import ARC_STATE, KPACKED_STATE, ArcPlanS2, KpackedPlanS2
 from .optimized.disco_plan_fft import FftPlanS2, build_fft_state, fft_scatter_available
+from .optimized.disco_plan_hankel import hankel_forward_available
 
 #: the environment variables that allow or disallow the arch-specific kernels, see the module docstring
 ENABLE_FFT_KERNEL = "TORCH_HARMONICS_DISCO_ENABLE_FFT_KERNEL"
 ENABLE_KPACKED_KERNEL = "TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL"
+ENABLE_HANKEL_KERNEL = "TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
@@ -162,6 +169,11 @@ def fft_kernel_enabled() -> bool:
 def kpacked_kernel_enabled() -> bool:
     """Whether ``TORCH_HARMONICS_DISCO_ENABLE_KPACKED_KERNEL`` allows the kpacked forward (default: yes)."""
     return _env_flag(ENABLE_KPACKED_KERNEL, True)
+
+
+def hankel_kernel_enabled() -> bool:
+    """Whether ``TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL`` allows the Hankel/Toeplitz forward (default: no)."""
+    return _env_flag(ENABLE_HANKEL_KERNEL, False)
 
 
 if optimized_kernels_is_available():
@@ -363,10 +375,26 @@ class RegularKpackedBackend(RegularOptimizedBackend):
         self.plan = self._kpacked_plan(layer, state, device)
         return state
 
+    @classmethod
+    def variant(cls, device):
+        # prepare reads the Hankel/Toeplitz switch: layers built on either side of it must not share a plan
+        return ("hankel", cls._hankel_forward(device))
+
+    @staticmethod
+    def _hankel_forward(device):
+        return hankel_kernel_enabled() and hankel_forward_available(device)
+
     def _kpacked_plan(self, layer, state, device):
-        """The plan over ``state``, with the kpacked forward of the arch-specific extension for ``device``."""
+        """
+        The plan over ``state``, with the kpacked forward of the arch-specific extension for ``device``.
+
+        And the Hankel/Toeplitz forward where ``TORCH_HARMONICS_DISCO_ENABLE_HANKEL_KERNEL`` allows it and ``device``
+        can run it.
+        """
         plan = self._make_plan(layer, state)
         plan.kpacked_op = disco_arch.kpacked_op(_device_index(device))
+        if self._hankel_forward(device):
+            plan.hankel_plan_op, plan.hankel_run_op = disco_arch.hankel_forward_ops(_device_index(device))
         return plan
 
     def _kpacked_state(self, layer, device):

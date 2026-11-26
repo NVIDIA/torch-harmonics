@@ -38,8 +38,9 @@ They live in extensions of their own, one per target family, built for exactly t
     ``sm_90a``: the WGMMA kpacked forward, op ``forward_kpacked_sm90``, and the frequency-space
     arc scatter, ops ``scatter_fft_sm90_{plan,run,config}``.
 ``torch_harmonics.disco._C_sm100``
-    ``sm_100a`` and/or ``sm_103a``: the tcgen05 kpacked forward, op ``forward_kpacked_sm100``, and
-    the frequency-space arc scatter, ops ``scatter_fft_sm100_{plan,run,config}``.
+    ``sm_100a`` and/or ``sm_103a``: the tcgen05 kpacked forward, op ``forward_kpacked_sm100``, the
+    Hankel/Toeplitz tensor-core forward, ops ``forward_hankel_sm100_{plan,run,config}``, and the
+    frequency-space arc scatter, ops ``scatter_fft_sm100_{plan,run,config}``.
 
 The frequency-space scatter is one source (``kernels_cuda/regular/disco_cuda_bwd_fft.cu``) built
 into both; each registers its ops under its family's name, so a build with both loads both.
@@ -82,6 +83,14 @@ FFT_SCATTER_OPS: Dict[str, str] = {
     "sm90": "scatter_fft_sm90",
     "sm100": "scatter_fft_sm100",
 }
+
+#: the prefix of the Hankel/Toeplitz forward's ops (``<prefix>_plan``, ``_run``, ``_config``) of each extension family
+HANKEL_FORWARD_OPS: Dict[str, str] = {
+    "sm100": "forward_hankel_sm100",
+}
+
+#: the compute capabilities the Hankel/Toeplitz forward was validated on: B200 / GB200
+HANKEL_FORWARD_CAPABILITIES: FrozenSet[Tuple[int, int]] = frozenset({(10, 0)})
 
 #: the compute capabilities the frequency-space scatter was validated on: H100 and B200 / GB200; a 10.3 (GB300) keeps
 #: the arc scatter
@@ -172,3 +181,32 @@ def fft_scatter_config_op(device_index: int):
     if not fft_scatter_supported_on_device(device_index):
         raise RuntimeError(f"this build has no frequency-space scatter for CUDA device {device_index}")
     return getattr(torch.ops.disco_kernels, FFT_SCATTER_OPS[device_family(device_index)] + "_config").default
+
+
+def hankel_forward_registered(family: str) -> bool:
+    """Whether the extension of ``family`` was built and registered the Hankel/Toeplitz forward's ops."""
+    return family in HANKEL_FORWARD_OPS and extension(family) is not None and hasattr(torch.ops.disco_kernels, HANKEL_FORWARD_OPS[family] + "_run")
+
+
+def hankel_forward_supported_on_device(device_index: int) -> bool:
+    """Whether the Hankel/Toeplitz forward can run on CUDA device ``device_index`` with this build."""
+    if torch.cuda.get_device_capability(device_index) not in HANKEL_FORWARD_CAPABILITIES:
+        return False
+    family = device_family(device_index)
+    return family is not None and hankel_forward_registered(family)
+
+
+def _hankel_op(device_index: int, suffix: str):
+    if not hankel_forward_supported_on_device(device_index):
+        raise RuntimeError(f"this build has no Hankel/Toeplitz forward for CUDA device {device_index} (compute capability {torch.cuda.get_device_capability(device_index)})")
+    return getattr(torch.ops.disco_kernels, HANKEL_FORWARD_OPS[device_family(device_index)] + suffix).default
+
+
+def hankel_forward_ops(device_index: int):
+    """The Hankel/Toeplitz forward's ``(plan, run)`` ops for CUDA device ``device_index`` (see ``hankel_forward_supported_on_device``)."""
+    return _hankel_op(device_index, "_plan"), _hankel_op(device_index, "_run")
+
+
+def hankel_forward_config_op(device_index: int):
+    """The op reporting the configuration the Hankel/Toeplitz forward takes for given sizes on CUDA device ``device_index`` (for tests)."""
+    return _hankel_op(device_index, "_config")

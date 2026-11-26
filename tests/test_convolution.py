@@ -61,6 +61,7 @@ from torch_harmonics.disco.optimized import disco_arch
 from torch_harmonics.disco.optimized.disco_optimized import _kpacked_k_pad
 from torch_harmonics.disco.optimized.disco_plan import ArcPlanS2
 from torch_harmonics.disco.optimized.disco_plan_fft import fft_scatter_available
+from torch_harmonics.disco.optimized.disco_plan_hankel import hankel_forward_available
 from torch_harmonics.filter_basis import get_filter_basis
 from torch_harmonics.grid import RegularGridS2
 from torch_harmonics.quadrature import compute_theta_cutoff, precompute_latitudes, precompute_longitudes
@@ -1788,8 +1789,8 @@ class TestFftScatter(unittest.TestCase):
     device = torch.device("cuda")
 
     def setUp(self):
-        # the backend is off by default: allow it for these tests
-        env = mock.patch.dict(os.environ, {disco_backends.ENABLE_FFT_KERNEL: "1"})
+        # the backend is off by default: allow it for these tests; the forward stays the kpacked op's
+        env = mock.patch.dict(os.environ, {disco_backends.ENABLE_FFT_KERNEL: "1", disco_backends.ENABLE_HANKEL_KERNEL: "0"})
         env.start()
         self.addCleanup(env.stop)
 
@@ -2015,6 +2016,159 @@ class TestFftScatter(unittest.TestCase):
         self.assertTrue(torch.equal(out_compiled, out))
         self.assertTrue(compare_tensors("input grad", x2.grad.float(), x1.grad.float(), atol=1e-3, rtol=1e-3))
         self.assertTrue(compare_tensors("weight grad", conv.weight.grad.float(), weight_grad.float(), atol=1e-3, rtol=1e-3))
+
+
+def _hankel_forward_here():
+    return torch.cuda.is_available() and hankel_forward_available(torch.device("cuda"))
+
+
+@unittest.skipUnless(_hankel_forward_here(), "the Hankel/Toeplitz forward needs a 10.0 GPU and a build with 10.0a in TORCH_CUDA_ARCH_LIST")
+class TestHankelForward(unittest.TestCase):
+    """The Hankel/Toeplitz forward (forward_hankel_sm100) in the kpacked plan, against the kpacked op."""
+
+    device = torch.device("cuda")
+
+    def _conv(self, hankel, in_channels, out_channels, in_shape, out_shape, kernel_shape=(3, 3), fused=False):
+        with mock.patch.dict(os.environ, {disco_backends.ENABLE_HANKEL_KERNEL: "1" if hankel else "0"}):
+            set_seed(333)
+            conv = DiscreteContinuousConvS2(
+                as_grid("equiangular", nlat=in_shape[0], nlon=in_shape[1]),
+                as_grid("equiangular", nlat=out_shape[0], nlon=out_shape[1]),
+                in_channels,
+                out_channels,
+                kernel_shape,
+                basis_type="harmonic",
+                bias=False,
+                theta_cutoff=2.5 * torch.pi / float(out_shape[0] - 1),
+                fused=fused,
+            ).to(self.device)
+        self.assertEqual(conv.backend.name, "regular-kpacked")
+        self.assertEqual(conv.backend.plan.hankel_forward, hankel)
+        return conv
+
+    def _pair(self, *args, **kwargs):
+        return self._conv(True, *args, **kwargs), self._conv(False, *args, **kwargs)
+
+    def _config(self, conv, bc, in_shape, out_shape):
+        """The configuration the kernel takes: [ok, DW, SB, CPS, RG, variant, co, plan bytes, scratch bytes]."""
+        op = disco_arch.hankel_forward_config_op(torch.cuda.current_device())
+        return op(bc, conv.kernel_size, conv.psi_kpacked_vals.shape[1], *in_shape, *out_shape, conv.psi_kpacked_idx.shape[0])
+
+    def _check(self, conv, conv_ref, batch, in_shape, dtype, exact=False):
+        x = torch.randn(batch, conv.groupsize * conv.groups, *in_shape, device=self.device, dtype=dtype)
+        x1, x2 = x.clone().requires_grad_(True), x.clone().requires_grad_(True)
+        out, out_ref = conv(x1), conv_ref(x2)
+        grad = torch.randn_like(out)
+        out.backward(grad)
+        out_ref.backward(grad)
+        if exact:
+            self.assertTrue(torch.equal(out, out_ref))
+            return
+        # fp32 accumulation in both, in another order, rounded once; bf16 keeps 8 mantissa bits to fp16's 11
+        tol = 1e-2 if dtype == torch.float16 else 5e-2
+        self.assertTrue(compare_tensors("output", out.float(), out_ref.float(), atol=tol, rtol=tol))
+        self.assertTrue(compare_tensors("input grad", x1.grad.float(), x2.grad.float(), atol=tol, rtol=tol))
+        self.assertTrue(compare_tensors("weight grad", conv.weight.grad.float(), conv_ref.weight.grad.float(), atol=tol, rtol=tol))
+        conv.weight.grad = conv_ref.weight.grad = None
+
+    @parameterized.expand(
+        [
+            [in_ch, out_ch, in_shape, out_shape, fused, dtype]
+            for in_ch, out_ch, in_shape, out_shape, fused in (
+                # pscale 1, 2 and 4, weight-first and fused
+                (4, 4, (32, 64), (32, 64), False),
+                (4, 4, (32, 64), (16, 32), False),
+                (4, 4, (32, 64), (16, 32), True),
+                (8, 2, (64, 128), (16, 32), False),
+                (2, 16, (64, 128), (32, 64), True),
+            )
+            for dtype in (torch.float16, torch.bfloat16)
+        ]
+    )
+    def test_matches_the_kpacked_forward(self, in_channels, out_channels, in_shape, out_shape, fused, dtype):
+        conv, conv_ref = self._pair(in_channels, out_channels, in_shape, out_shape, fused=fused)
+        # batch sizes across the kernel's channel-group thresholds (B * C up to 32 runs three CTAs per SM)
+        for batch in (1, 2, 9, 24):
+            with self.subTest(batch=batch):
+                self.assertTrue(self._config(conv, batch * in_channels, in_shape, out_shape)[0])
+                self._check(conv, conv_ref, batch, in_shape, dtype)
+
+    @parameterized.expand(
+        [
+            # name, in_shape, out_shape, kernel_shape: sizes the tensor cores do not take, which run the kpacked op
+            ["pscale 3", (48, 96), (16, 32), (3, 3)],
+            ["more than 9 basis functions", (32, 64), (16, 32), (4, 4)],
+        ]
+    )
+    def test_falls_back_to_the_kpacked_forward(self, name, in_shape, out_shape, kernel_shape):
+        conv, conv_ref = self._pair(4, 4, in_shape, out_shape, kernel_shape=kernel_shape)
+        if conv.kernel_size <= 9 and name != "pscale 3":
+            raise unittest.SkipTest(f"{name}: kernel_shape {kernel_shape} has only {conv.kernel_size} basis functions")
+        self.assertFalse(self._config(conv, 8, in_shape, out_shape)[0])
+        self._check(conv, conv_ref, 2, in_shape, torch.float16, exact=True)
+
+    def test_plans_are_built_once_per_shape(self):
+        """The forward's plan is the gather's call state: built once per number of planes and dtype, then reused."""
+        conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
+        for batch, dtype in ((2, torch.float16), (2, torch.float16), (3, torch.float16), (2, torch.bfloat16)):
+            self._check(conv, conv_ref, batch, (32, 64), dtype)
+        keys = sorted((bc, str(dtype)) for op, bc, dtype, _ in conv.backend.plan._call_states if op == "gather")
+        self.assertEqual(keys, [(8, "torch.bfloat16"), (8, "torch.float16"), (12, "torch.float16")])
+        self.assertTrue(all(len(state) == 1 for (op, *_), state in conv.backend.plan._call_states.items() if op == "gather"))
+
+    def test_fft_backend_runs_it_too(self):
+        """regular-fft runs the kpacked plan's forward, so it takes the Hankel/Toeplitz forward as well."""
+        env = {disco_backends.ENABLE_HANKEL_KERNEL: "1", disco_backends.ENABLE_FFT_KERNEL: "1"}
+        if not fft_scatter_available(self.device):
+            raise unittest.SkipTest("no frequency-space scatter on this device")
+        with mock.patch.dict(os.environ, env):
+            conv = DiscreteContinuousConvS2(
+                as_grid("equiangular", nlat=32, nlon=64), as_grid("equiangular", nlat=16, nlon=32), 4, 4, (3, 3), basis_type="harmonic", theta_cutoff=2.5 * torch.pi / 15.0
+            ).to(self.device)
+        self.assertEqual(conv.backend.name, "regular-fft")
+        self.assertTrue(conv.backend.plan.hankel_forward)
+        conv_ref = self._conv(False, 4, 4, (32, 64), (16, 32))
+        with torch.no_grad():
+            conv.weight.copy_(conv_ref.weight)
+        x = torch.randn(2, 4, 32, 64, device=self.device, dtype=torch.bfloat16)
+        self.assertTrue(compare_tensors("output", conv(x).float(), conv_ref(x).float(), atol=5e-2, rtol=5e-2))
+
+    @parameterized.expand([[torch.float16], [torch.bfloat16]])
+    def test_unaligned_input(self, dtype):
+        """A contiguous input that starts inside its storage, off the 16-byte alignment the kernel reads in, runs as an aligned one."""
+        conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
+        base = torch.randn(2 * 4 * 32 * 64 + 2, device=self.device, dtype=dtype)
+        x = base[2:].view(2, 4, 32, 64)
+        self.assertTrue(x.is_contiguous())
+        self.assertNotEqual(x.data_ptr() % 16, 0)
+        with torch.no_grad():
+            out, out_aligned, out_ref = conv(x), conv(x.clone()), conv_ref(x)
+        self.assertTrue(torch.equal(out, out_aligned))
+        tol = 1e-2 if dtype == torch.float16 else 5e-2
+        self.assertTrue(compare_tensors("output", out.float(), out_ref.float(), atol=tol, rtol=tol))
+
+    @parameterized.expand([[torch.float16], [torch.bfloat16]])
+    def test_cuda_graph_replay(self, dtype):
+        """After an eager warmup, the forward captures into a CUDA graph and replays correctly on new inputs, also after eager calls in between."""
+        conv, _ = self._pair(8, 2, (32, 64), (16, 32))
+        static_x = torch.randn(2, 8, 32, 64, device=self.device, dtype=dtype)
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side), torch.no_grad():
+            for _ in range(2):
+                conv(static_x)
+        torch.cuda.current_stream().wait_stream(side)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph), torch.no_grad():
+            static_out = conv(static_x)
+        for _ in range(3):
+            x = torch.randn_like(static_x)
+            with torch.no_grad():
+                static_x.copy_(x)
+                conv(torch.randn_like(x))  # an eager call between replays
+            graph.replay()
+            with torch.no_grad():
+                self.assertTrue(torch.equal(static_out, conv(x)))
 
 
 class TestKpackedDeviceGate(unittest.TestCase):

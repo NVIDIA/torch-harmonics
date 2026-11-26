@@ -176,7 +176,10 @@ class FftPlanS2(KpackedPlanS2):
         return dtype in FFT_SCATTER_DTYPES
 
     def call_state(self, op, bc, dtype, in_shape, t):
-        if dtype not in FFT_SCATTER_DTYPES or op == "gather":
+        if op == "gather":
+            # the forward's, if the Hankel/Toeplitz forward runs (see KpackedPlanS2)
+            return super().call_state(op, bc, dtype, in_shape, t)
+        if dtype not in FFT_SCATTER_DTYPES:
             return ()
         nlat_in, nlon_in = in_shape
         plan = self.fft_plan_op
