@@ -2134,6 +2134,20 @@ class TestHankelForward(unittest.TestCase):
         self.assertTrue(compare_tensors("output", conv(x).float(), conv_ref(x).float(), atol=5e-2, rtol=5e-2))
 
     @parameterized.expand([[torch.float16], [torch.bfloat16]])
+    def test_unaligned_input(self, dtype):
+        """A contiguous input that starts inside its storage, off the 16-byte alignment the kernel reads in, runs as an aligned one."""
+        conv, conv_ref = self._pair(4, 4, (32, 64), (16, 32))
+        base = torch.randn(2 * 4 * 32 * 64 + 2, device=self.device, dtype=dtype)
+        x = base[2:].view(2, 4, 32, 64)
+        self.assertTrue(x.is_contiguous())
+        self.assertNotEqual(x.data_ptr() % 16, 0)
+        with torch.no_grad():
+            out, out_aligned, out_ref = conv(x), conv(x.clone()), conv_ref(x)
+        self.assertTrue(torch.equal(out, out_aligned))
+        tol = 1e-2 if dtype == torch.float16 else 5e-2
+        self.assertTrue(compare_tensors("output", out.float(), out_ref.float(), atol=tol, rtol=tol))
+
+    @parameterized.expand([[torch.float16], [torch.bfloat16]])
     def test_cuda_graph_replay(self, dtype):
         """After an eager warmup, the forward captures into a CUDA graph and replays correctly on new inputs, also after eager calls in between."""
         conv, _ = self._pair(8, 2, (32, 64), (16, 32))

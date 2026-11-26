@@ -496,8 +496,9 @@ namespace
         TORCH_CHECK(plan.scalar_type() == at::kByte && plan.dim() == 1 && (size_t)plan.numel() == c.plan_bytes,
                     HK_NAME ": the plan (", plan.numel(), " bytes) was not built for these sizes (", c.plan_bytes,
                     " bytes); build it with " HK_NAME "_plan for B * C = ", B * C);
-        // the input rows are read in 16-byte chunks
-        TORCH_CHECK(reinterpret_cast<uintptr_t>(inp.data_ptr()) % 16 == 0, HK_NAME ": inp must be 16-byte aligned");
+        // the input rows are read in 16-byte chunks: a contiguous view that starts inside its storage (a slice) is
+        // copied to storage of its own, which the allocator aligns (rows are whole chunks, Wi being a multiple of 8)
+        if (reinterpret_cast<uintptr_t>(inp.data_ptr()) % 16 != 0) inp = inp.clone();
 
         auto out = at::empty({B, C, K, Ho, Wo}, inp.options());
         auto scratch = at::empty({(int64_t)c.scratch_bytes}, inp.options().dtype(at::kByte));
