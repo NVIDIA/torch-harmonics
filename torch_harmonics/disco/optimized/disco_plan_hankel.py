@@ -49,8 +49,8 @@ Their ops, ``forward_hankel_sm100_`` and ``forward_hankel_sm90_``:
     The gather's call state of the kpacked plan (``KpackedPlanS2``), built once per key and kept. Zero
     bytes where the kernel does not apply.
 ``run``
-    The forward through such a plan. Sizes the kernel does not take -- pscale 3 or above 8, kernel_size
-    above 9, ``nlon_out`` not a multiple of 8 -- run the shipped kpacked forward inside it.
+    The forward through such a plan. Sizes the kernel does not take -- pscale other than 1, 2, 4 or 8,
+    kernel_size above 9, ``nlon_out`` not a multiple of 8 -- run the shipped kpacked forward inside it.
 ``config``
     The launch configuration for given sizes on the current device, for tests.
 

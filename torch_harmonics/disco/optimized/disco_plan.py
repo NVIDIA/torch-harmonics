@@ -349,7 +349,7 @@ class KpackedPlanS2(ArcPlanS2):
     Everything else is the arc plan's: the scatter, and the gather of fp32/fp64. The forward is the op of the
     arch-specific extension for the plan's device, ``kpacked_op``, which the backend sets (see ``disco_arch``).
 
-    Where the backend also sets ``hankel_plan_op`` / ``hankel_run_op`` (B200 / GB200, see ``disco_plan_hankel``),
+    Where the backend also sets ``hankel_plan_op`` / ``hankel_run_op`` (H100, B200 / GB200, see ``disco_plan_hankel``),
     the forward of fp16/bf16 runs the Hankel/Toeplitz kernel instead, through its plan: the gather's call state,
     built once per number of planes, dtype and input shape. Sizes that kernel does not take run the kpacked op
     inside it.
