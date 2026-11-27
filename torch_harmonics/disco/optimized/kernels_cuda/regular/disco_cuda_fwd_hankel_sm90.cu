@@ -39,12 +39,13 @@
 // descriptor over overlapping core matrices; a piece's odd last chunk pairs with the next piece's first through a
 // K-direction stride that spans the two stages). Changed, as Hopper has no tensor memory:
 //
-// * the accumulators are registers of the warpgroup that issues the MMAs: consumer warpgroup 1 + m owns M tile m
-//   (two m64 halves), accumulates an item over its pieces and stores it (the sm_100a kernel's separate MMA
-//   issuer and epilogue warps, and its double-buffered accumulators, are gone);
+// * the accumulators are registers of the warpgroup that issues the MMAs: consumer warpgroup 1 + w owns the M
+//   tiles w + NWG t, t < TPW (two m64 halves each), accumulates an item over its pieces and stores it (the
+//   sm_100a kernel's separate MMA issuer and epilogue warps, and its double-buffered accumulators, are gone);
 // * a stage is released once the wgmma group that read it has completed (wgmma.wait_group), one per warp;
-// * the families are <DW, MT, CPS, RG> with MT = 2 at one CTA per SM or MT = 1 at two: the row pairs at DW 8
-//   (MMA width 144) and the three-CTA small-channel family of the sm_100a kernel are not taken.
+// * the families are <DW, NWG, CPS, RG>: two consumer warpgroups at one CTA per SM or one at two, each warpgroup
+//   holding TPW M tiles (up to 4, as many as the registers allow at the MMA width), so MT = NWG * TPW: the row
+//   pairs at DW 8 (MMA width 144) and the three-CTA small-channel family of the sm_100a kernel are not taken.
 //
 // As there, NaN or Inf in an input longitude the stencil does not reach may still reach outputs (the Toeplitz
 // zeros multiply it); accepted.
@@ -298,8 +299,8 @@ template <int R> __device__ __forceinline__ void fence_acc(float (&d)[R])
 // piece, so the A operand of M tile m starts at slot 128 m.  The slots come from one 4-D TMA box
 // of the longitude-extended input copy (TX) or from per-channel bulk copies (two runs at the seam).
 // Warp roles (sm_90a): warpgroup 0 holds the producer warp(s) (warps 0 .. NPW-1, the rest idle); warpgroup
-// 1 + m owns M tile m: it issues the tile's wgmmas (two m64 halves per k-step), keeps the accumulators in its
-// registers through the item and stores them (fp32 -> fp16 / bf16 -> global).
+// 1 + w owns the M tiles w + NWG t (t < TPW): it issues their wgmmas (two m64 halves per tile and k-step), keeps
+// the accumulators in its registers through the item and stores them (fp32 -> fp16 / bf16 -> global).
 // ------------------------------------------------------------------------------------------
 // The configuration of a main-kernel family <DW, NWG, CPS, RG>: NWG consumer warpgroups, each owning TPW M tiles of
 // 128 GEMM rows, so MT = NWG * TPW tiles per item; CPS CTAs per SM.  The accumulators are registers, TPW * MN per
@@ -928,10 +929,10 @@ namespace
         }
     }
 
-    // The CTA shape of a (DW, RG): two CTAs per SM with one M tile each, which overlap one CTA's epilogue with the
-    // other's MMAs (the accumulators are registers, not double-buffered), when the channels fill their items;
-    // otherwise one CTA per SM with two M tiles, whose items cover twice the channels (as the sm_100a kernel's
-    // choice between its two- and one-CTA families).
+    // The CTA shape of a (DW, RG): two CTAs per SM with one consumer warpgroup each, which overlap one CTA's
+    // epilogue with the other's MMAs (the accumulators are registers, not double-buffered), when the channels fill
+    // their items; otherwise one CTA per SM with two consumer warpgroups, whose items cover more channels (as the
+    // sm_100a kernel's choice between its two- and one-CTA families).
     template <int DW, int RG = 1> void configure_hk(HkConfig &c, const cudaDeviceProp &prop)
     {
         const int BC = c.BC, Wi = c.Wi, ps = c.ps;
