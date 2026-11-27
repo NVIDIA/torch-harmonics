@@ -2022,7 +2022,7 @@ def _hankel_forward_here():
     return torch.cuda.is_available() and hankel_forward_available(torch.device("cuda"))
 
 
-@unittest.skipUnless(_hankel_forward_here(), "the Hankel/Toeplitz forward needs a 10.0 GPU and a build with 10.0a in TORCH_CUDA_ARCH_LIST")
+@unittest.skipUnless(_hankel_forward_here(), "the Hankel/Toeplitz forward needs a 9.0 or 10.0 GPU and a build with 9.0a / 10.0a in TORCH_CUDA_ARCH_LIST")
 class TestHankelForward(unittest.TestCase):
     """The Hankel/Toeplitz forward (forward_hankel_sm100) in the kpacked plan, against the kpacked op."""
 
